@@ -2,159 +2,18 @@
 
 ## Unreleased
 
-- **Releases ship by PR, from a stabilization branch.** A release now cuts
-  `release/X.Y.Z` off `dev` into its own worktree, hardens there while `dev`
-  keeps moving, and opens a PR to `main`; the operator's merge is the ship. A
-  new `release.yml` workflow turns the merge into the annotated tag (message:
-  the version's changelog section), pushed with a write deploy key so it both
-  clears the `v*` tag ruleset (the Actions app can't be a bypass actor on a
-  personal repo) and fires `publish.yml`'s tag trigger like a hand-pushed tag —
-  one publish path. The release branch merges back into `dev` afterward; `main` is a
-  merge-commit chain rather than synthesized snapshots. CI runs on
-  `release/**`. `docs/releasing.md` is rewritten around the new flow.
-- **`arguana` is off the benchmark candidate list.** Counterargument retrieval over
-  standalone argument passages is not the task this archive serves, and the row it
-  would have bought was already the worst value-per-minute on the page — 1,406
-  queries that are each an entire document, over an hour of query time per pass.
-  Dropped from `beir_eval.REFERENCE` (so the lab inventory no longer lists it) and
-  from `docs/benchmarks.md`; the built corpus and download are deleted from the
-  eval cache. The BEIR `ignore_identical_ids` self-hit rule stays — it is the
-  published protocol, not an arguana accommodation.
-- **A schema mismatch is reported as itself, not as thousands of failing imports.**
-  A daemon holds its declared models for its whole lifetime, so an index migrated,
-  rebuilt, or restored underneath a running one leaves the two disagreeing until
-  something restarts the process — and every import then fails on the first column
-  the daemon expects and the index lacks. What that looks like is one opaque `no
-  such column` per session, per poll, for as long as it takes someone to notice
-  (4,832 of them in a day here, naming a column and never the disagreement that
-  explains it). The watcher now runs the existing schema introspection at startup,
-  records a mismatch under its own health key, and raises a notice naming the
-  repair. Deliberately non-fatal: a mismatch is usually partial, and a daemon that
-  refuses to start captures nothing at all.
-- **A capture failure says how big it is.** The `watch-errors` notice reported one
-  failed poll and a source that had failed every poll for a day identically, and
-  the second is the one that means conversations are being lost while the harness
-  prunes them on its own schedule. It now carries the failure count the health
-  record already held.
-- **A notice's identity survives its count crossing a thousand.** `_fingerprint`
-  elides digits so a silence tracks the condition rather than the number in it, but
-  it elided them one run at a time — so a grouped `4,832` hashed differently from
-  `12` and an operator's dismissal expired exactly when the fault got bad enough to
-  need a thousands separator. Grouped digits are now one number to the shape.
-- **A Cursor poll costs what moved, not what the store holds.** `state.vscdb` is
-  the editor's whole key-value store — 759 MB here, 37k message bodies — and Cursor
-  writes to it constantly, so the watcher's mtime fingerprint advanced many times an
-  hour whether or not a conversation did. Each of those polls read and JSON-parsed
-  every bubble in the store (264 MB) to discover, from the composer blobs, that
-  nothing had changed: 4.6s per pass, 90% of the watch loop's total, for a source
-  that produced zero events in five days. Two changes: the key scans use half-open
-  ranges instead of `LIKE` (opaque to SQLite's planner, so `LIKE 'composerData:%'`
-  degraded to a full table scan of the 759 MB table — 785ms, against 2ms for the
-  index seek), and the set of composers past their watermark is now computed from
-  the composer blobs alone, so bubbles are read only for conversations that actually
-  moved. Measured on the live store: **4,606ms → 15ms**, with the same
-  `processed` count, so the watcher's "checked" figure still means what it says.
-- **Ingest faults now have a durable record: `<home>/ingest-errors.jsonl`.** Every
-  existing fault signal was perishable or lossy — `watch_errors_last` keeps the last
-  five messages and is *cleared on green*, `ingest-runs.jsonl` keeps a count with no
-  messages, and the messages themselves only reached the daemon's stderr, which
-  nothing reads and nothing bounds (36 MB here). That left the one question an
-  archive most needs answered — "was ingest ever broken, for how long, how badly" —
-  answerable only by a human opening a log. A two-day file-descriptor exhaustion
-  that fired 64,648 times and then resolved left no trace at all. Rows fold by
-  signature (ids, paths, and numbers normalized out) and are written at powers of
-  ten, so a fault that fires 65,000 times costs five rows and first sightings are
-  never delayed. Replaying this install's real watcher log: 77,640 messages → 114
-  rows, 51 KB. `thread-archive status` grew a `faults:` line reporting the history
-  the `watch:` line above it is designed to forget.
-- **The README is a landing page; the reference moved to `docs/`.** The README's
-  reference sections now live as focused docs — `install.md`, `cli.md`,
-  `retrieval.md`, `mcp.md`, `web-viewer.md`, `architecture.md`, `stability.md`,
-  `import-drift.md`, `scope.md` — and the README itself is a short
-  first-impression page: pitch, quickstart, feature list, and a documentation
-  index. Content moved rather than changed; in-repo pointers to README sections
-  now name the docs files.
-- **A store with no vectors reads as empty rather than as an error.** The matrix
-  cache's staleness probe queried `event_vectors` unguarded, so an index nothing
-  has embedded into — no table at all, which is the shape of a freshly rebuilt one
-  — raised instead of answering "no vectors". The corpus graph's background refresh
-  reaches that probe on a read path and can only log what it catches, so every
-  restore drill (which rebuilds an index and then searches it, nightly) wrote a
-  page of traceback to the backup job's stderr for an ordinary state the graph
-  already degrades on. The probe now tokens an absent table as the empty store it
-  is, confirmed against `sqlite_master` so a lock or a corrupt page still raises —
-  those are not an empty store. Creating the table from the probe would be the
-  wrong repair: a staleness check is a read.
-- **An indexing batch no longer holds the embedding model for its whole run.** The model slot's use-lock serializes
-  forward passes on the shared model, so a document batch and a search query contend for it — and the query waits out
-  whatever pass is in flight. A 256-document drain holds the lock ~16s, which reaches a search as an *embed* that took
-  seconds on a process warm for an hour: measured 24ms idle against 1.1–2.2s with a batch running beside it, a 46–93×
-  penalty that reads as a slow pipeline and is a queue. The two collide in one process wherever serving and draining
-  share it — the watcher hosts the web viewer, and the MCP server runs the lazy catch-up whenever it owns the ingest
-  flock. `_encode` now takes the lock per `EMBED_BATCH_CHUNK` documents instead of per batch, bounding a query's wait
-  to one chunk (~1s) rather than the caller's whole batch. Throughput is unchanged — 256 docs encode at the same rate
-  whole or in sixteens, because the cost is per document — and the vectors are bit-identical, so nothing reindexes.
-- **An id-scoped semantic search no longer materializes ids the pack cannot hold.** The vector arm's scope mask —
-  what a `source`, `path`, `thread_id` or `agents='only'` scope builds — selected every matching event id from
-  `events`, then handed the array to a KNN that can only ever return rows the pack contains. On this corpus
-  `source='claude-code'` fetched 3.5M ids to mask 272k vectors: 94% of them named rows the matrix does not have, and
-  the fetch was the search's dominant cost (measured 2.0s end to end against 35ms unscoped, 1.3s of it in the mask).
-  The mask now intersects `event_vectors` in SQL, which is the same intersection the KNN applied anyway — the id set
-  it ends up with is identical — so the answer does not move and the cost roughly halves (2.0s → 1.1s; the mask
-  itself 1.3s → 0.6s). This is the id-scope twin of the fix that let a time window ride the pack's own dates, and
-  for the same reason: a mask should be built in the space it masks.
-- **The retrieval page's "typical search" excludes bulk sweeps.** Fixing the cold/warm classifier moved the warm pool
-  from 12 rows to ~160, and most of the new rows were pagination walks (`limit=50`, pages deep into the corpus) and
-  wide exports — real traffic, but different work, and pooling them lifted the headline median from ~0.15s to ~2.1s
-  without a single ordinary search getting slower. The warm pool is now split by workload: `warm_interactive`
-  (first page, `limit ≤ 10`) feeds the "typical search" and "slow 1 in 10" tiles, and bulk/paged traffic gets its
-  own tile instead of a share of the headline. A row recording neither a deep page nor a wide limit counts as
-  interactive — bulk is a claim about what was asked for and needs evidence.
-- **The retrieval page's cold/warm split is read off what a search paid, not off how young its process was.** The
-  regime was decided by a `uptime_s < 120s` proxy for a fact the ledger already carried — the probe's `cold` /
-  `matrix_built` flags, set when a search loads a model or builds a vector pack on the request thread. The proxy
-  disagreed with the fact in both directions and, over the observed window, misfiled two rows in three: warm searches
-  on freshly restarted daemons were drawn on the cold line while it read as evidence that pre-warming was broken. It
-  also swept in every search from the one-shot surfaces, whose processes are young by construction — so the cold line
-  was largely the CLI and per-client stdio servers, neither of which warms and neither of which any warm pass could
-  help. Searches and warm passes now record which **front door** served them (`mcp-http`, `mcp-stdio`, `cli`, `web`;
-  absent means recorded before the doors were named), the page breaks served latency and cold share down by door, and
-  restarts are attributed to the daemon that paid them rather than totalled across every service that warms.
-- **Stored thread summaries are no longer indexed.** They were only excluded at query time, so the index still carried
-  a doc and a vector per summarized thread (5.8k of each here) and two documented arguments — `content_type='summary'`
-  and `content_type='all'` — reached them. A summary is derived text a curation tool wrote *over* the archive, not the
-  record, so a search must not be able to answer from a machine's description of a conversation; a query-time
-  exclusion left that one argument away while still paying to store and embed what it hid. The thread-meta sync now
-  writes titles only, the embed drain's pool drops `summary`, and the sync's ordinary stale-doc path collects the
-  docs and vectors already written. Summaries are still stored and still read deliberately — `thread_read(...,
-  summary='short')`, the viewer, the librarian's writer — all unchanged. `content_type='all'` stays accepted as a
-  spelling of the default scope (which is now every indexed type) rather than becoming a filter that matches nothing.
-- `self-update` updates the PyPI distribution: it resolves the newest release, gates the wheel it downloaded on that
-  file's declared truth format, installs it, smoke-checks, and rolls back to the running version on failure. A clone
-  and a `uv tool`/`pipx` environment each report unavailable, naming the command that does move them.
-- Development moves to the `dev` branch; `main` now holds one snapshot commit per release, with the tags clones follow.
-- **Search returns every matching message.** Results are no longer grouped by thread: a conversation matching eight
-  times gives eight rows, each with its own snippet and context, and `limit` counts messages. The `group=` parameter
-  is gone (`thread`/`nested`/`dup`/`none`/`browse`), as is `collapse=` and the CLI's `--group` / `--collapse`. A fold
-  to one-row-per-thread bought brevity with the thing a search is for — it dropped every match after the first, and
-  answered "which threads mention this" with a smaller number than the truth. What survives is the same-anchor
-  dedup, which is deduplication rather than grouping: a title doc and the event it anchors to are one message.
-  Costed at ~1.8x rendered tokens for equal conversation coverage on real traffic, 3.4x worst case.
-- The viewer's search results and browse rows **paginate**. Both pages of `/search` carry a first/prev/next/last
-  walker above and below the rows, the page rides the URL (`?page=`) so a deep page is shareable and survives opening
-  a thread and coming back, and the results line says where the page sits in the match set — in the same words the
-  MCP renderer uses, `≥` and all, so the two surfaces describe one archive alike. The old "top 40 shown — narrow the
-  query" line is gone: it named a cut nothing could walk past.
-- A search whose candidate pool saturated now reports the **real** size of the match set (`count_matches`) rather than
-  how far the pool reached, still flagged `exhaustive=False`; `pages` divides what a walk can actually reach, so it
-  advertises no page that returns nothing. The walk itself is bounded by pool depth.
-- The docs read from the packaged install outward: PyPI badges, how a pip install updates, SECURITY.md's update model
-  covering both install shapes and PyPI's build attestation, and a provider plugin installed into whatever environment
-  archive runs from (venv, `uv tool --with`, `pipx inject`) rather than a clone's `.venv`.
-- The agent-driven installers (`claude-install.md`, `claude-install-ubuntu.md`) are gone: `pip install thread-archive`
-  plus `thread-archive setup` is the install, and the README's from-source block is the clone path. It absorbs what
-  only lived in them — the C toolchain the `[leiden]`/`[embeddings]` wheels can want, and the Python floor on older
-  Ubuntu.
+## 0.0.9 — 2026-07-29
+
+- Releases ship by PR: `release/X.Y.Z` stabilizes off `dev` in a worktree, the operator merging to `main` is the
+  ship, and `release.yml` turns the merge into the annotated tag and the PyPI publish.
+- Search returns every matching message — no thread grouping (`group=`/`collapse=` gone); viewer search and browse
+  paginate; a saturated pool reports the real match count; stored thread summaries are no longer indexed.
+- Retrieval cost: id-scoped semantic masks build in vector space (~2× faster), an indexing batch yields the embed
+  model per chunk so queries wait ~1s not the batch, and a Cursor poll costs what moved (4.6s → 15ms).
+- Ingest faults get a durable folded record (`ingest-errors.jsonl`; a `faults:` line in `status`); notices carry
+  failure counts; schema mismatches report as themselves; ops split interactive from bulk, cold starts by door.
+- `self-update` moves PyPI installs, format-gated with rollback; README is a landing page with reference in `docs/`;
+  the agent-driven installers and the `arguana` benchmark are gone.
 
 ## 0.0.8 — 2026-07-28
 
