@@ -309,11 +309,10 @@ on.
 
 ## The corpora are pinned
 
-Every comparison the bench makes assumes the corpus held still, and nothing
-upstream guarantees that: BEIR is a plain zip URL, three of the datasets are a
-`git clone` of a default branch, and the two Hugging Face files are
-`resolve/main` — a branch tip. So the guarantee is local, and it is a content
-hash of the files each harness actually reads.
+Every comparison the bench makes assumes the corpus held still, and no upstream
+here guarantees that: BEIR is a plain zip URL, three of the datasets are a `git
+clone`, and two are Hugging Face files. So the guarantee is local, and it is a
+content hash of the files each harness actually reads.
 
 ```
 python -m search_lab pins            # what is on disk vs what is accepted
@@ -329,11 +328,28 @@ there, including a force-pushed branch, a half-extracted zip, or a local edit.
 It does two jobs with the one hash. Each harness calls `verify()` before it
 builds, so a corpus that moved fails the run where it moved rather than being
 scored (*prevention*). And it supplies `corpus_id` for the per-question haystacks
-— `locomo`, `longmemeval`, `beam` build one home per question, so they have no
-snapshot manifest to read and previously reported **no corpus identity at all**,
-leaving the scored query count as their only guard. A dataset that changed
-content at a constant count was invisible to the gate on exactly those rows
-(*detection*).
+— `locomo`, `longmemeval` and `beam` build one home per question, so they have no
+snapshot manifest to read, and the hash is the only corpus identity they have.
+Without it the scored query count is their whole guard, and a dataset that changes
+content at a constant count reads as a ranking movement (*detection*).
+
+**The revision is what makes this reproducible rather than merely checkable.** A
+hash alone can only say *no*: a fresh box that fetches different bytes learns that
+it did, with no way to obtain the right ones. So each source also records the
+upstream revision producing exactly these bytes, and the documented fetch commands
+use it — `resolve/<sha>` rather than `resolve/main`, a `checkout` after the clone.
+**A revision is written down only once fetching it has been confirmed to reproduce
+the pinned hash** — a clean clone at that commit, a Hugging Face LFS `oid`, a
+GitHub blob sha, none of which need the corpus downloaded again. An unconfirmed
+revision is worse than none: it reads as provenance while sending the next person
+to bytes nobody compared.
+
+Two sources carry no revision, and each says why in its `upstream` string rather
+than leaving a blank that reads as an oversight. The three BEIR sets are
+**detection only** — BEIR publishes a zip at a fixed URL with no version in the
+path and no digest beside it, so there is no handle to record, and a drift there
+means the corpus is gone rather than re-fetchable. MTRAG's revision is not
+established: the fetched layout does not correspond to the repository's own paths.
 
 An unpinned dataset verifies as a no-op and is listed as unpinned: which corpora
 a box has is a fact about the box, and accepting a pin is a verb somebody types.

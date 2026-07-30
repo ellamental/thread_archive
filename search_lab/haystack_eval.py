@@ -56,13 +56,17 @@ certifies the stack retrieves conversational evidence competitively in general,
 the same complementary-tier caveat BEIR and CDR carry. Refuses the real archive
 home. The datasets are fetched by the recon step, not this script:
 
+    # Fetched at the revisions pinned in `search_lab/dataset_pins.py`, not at a
+    # branch tip: these produce the exact bytes the accepted numbers were measured
+    # on, and `pins` verifies that they did.
     # locomo ships in its repo; longmemeval-S is a 272MB HF file:
     #   git clone https://github.com/snap-research/locomo ~/.cache/thread-evals/locomo/repo
+    #   git -C ~/.cache/thread-evals/locomo/repo checkout 3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376
     #   curl -L -o ~/.cache/thread-evals/longmemeval/data/longmemeval_s_cleaned.json \\
-    #     https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
+    #     https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/98d7416c24c778c2fee6e6f3006e7a073259d48f/longmemeval_s_cleaned.json
     # beam ships as one parquet per tier:
     #   curl -L -o ~/.cache/thread-evals/beam/100K.parquet \\
-    #     https://huggingface.co/datasets/Mohammadta/BEAM/resolve/main/data/100K-00000-of-00001.parquet
+    #     https://huggingface.co/datasets/Mohammadta/BEAM/resolve/3205395e897e7318c7b094ef4e6047b9b82dbb03/data/100K-00000-of-00001.parquet
 
     .venv/bin/python search_lab/haystack_eval.py --dataset locomo
     .venv/bin/python search_lab/haystack_eval.py --dataset longmemeval
@@ -445,7 +449,9 @@ def run(args) -> int:
         repo = Path(args.locomo_repo).expanduser()
         src = repo / "data" / "locomo10.json"
         if not src.exists():
-            raise SystemExit(f"locomo data not found at {src}; clone snap-research/locomo there")
+            raise SystemExit(
+                f"locomo data not found at {src}; clone snap-research/locomo there "
+                f"at the pinned revision {dataset_pins.SOURCES['locomo'].revision}")
         dataset_pins.verify("locomo")
         groups = list(locomo_groups(repo))
     elif args.dataset == "beam":

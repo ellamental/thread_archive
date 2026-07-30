@@ -26,6 +26,17 @@
   count invisible to the gate. Verifying ~1 GB costs milliseconds: per-file digests
   are memoized on `(size, mtime_ns)`.
 
+- **The corpora are fetchable at the revision they were measured on.** A hash alone
+  only ever says *no* — a fresh box learns it has different bytes with no way to get
+  the right ones — so six of the nine sources now record the upstream revision that
+  reproduces the pinned hash, and the documented fetch commands use it
+  (`resolve/<sha>`, a `checkout` after the clone) instead of a branch tip. Each was
+  confirmed against the accepted hash before being written down, without
+  re-downloading: a clean clone at that commit for LoCoMo and CDR, the Hugging Face
+  LFS `oid` for LongMemEval and BEAM, GitHub blob shas for PerLTQA. The three BEIR
+  sets stay detection-only and say so — BEIR publishes a versionless zip URL with no
+  digest, so there is no handle to record.
+
 - **The bench has two depths and a release is gated on the quick one.** There were
   effectively three — a "standard" set that scored everything whole *except*
   PerLTQA, which carried a permanent 2,000-question sample, plus a `--quick` tier

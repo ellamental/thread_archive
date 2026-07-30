@@ -223,7 +223,8 @@ def run(args) -> int:
         if not path.exists():
             raise SystemExit(
                 f"PerLTQA data not found at {path}; fetch Dataset/en/ from "
-                f"github.com/Elvin-Yiming-Du/PerLTQA into {root}")
+                f"github.com/Elvin-Yiming-Du/PerLTQA into {root}, at the pinned "
+                f"revision {dataset_pins.SOURCES['perltqa'].revision}")
     dataset_pins.verify("perltqa")
 
     if args.fresh:

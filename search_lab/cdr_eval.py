@@ -156,8 +156,10 @@ def run(args) -> int:
     repo = Path(args.cdr_repo).expanduser()
     if not (repo / _DATA_SUBPATH / "corpus.json").exists():
         raise SystemExit(
-            f"CDR data not found under {repo}. Clone it first:\n"
-            f"  git clone https://github.com/l-yohai/CDR-Benchmark {repo}"
+            f"CDR data not found under {repo}. Clone it at the pinned revision:\n"
+            f"  git clone https://github.com/l-yohai/CDR-Benchmark {repo}\n"
+            f"  git -C {repo} checkout "
+            f"{dataset_pins.SOURCES['cdr'].revision}"
         )
     dataset_pins.verify("cdr")
 

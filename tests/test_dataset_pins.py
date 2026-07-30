@@ -207,6 +207,36 @@ def test_every_pin_carries_a_hash_and_where_it_came_from() -> None:
         assert entry.get("upstream"), name
 
 
+def test_a_recorded_revision_is_a_full_commit_sha() -> None:
+    """A revision is the handle a fresh box fetches by, so an abbreviated or
+    hand-typed one is a dead end at exactly the moment somebody needs it."""
+    for name, source in dataset_pins.SOURCES.items():
+        if source.revision is None:
+            continue
+        assert len(source.revision) == 40, name
+        assert all(c in "0123456789abcdef" for c in source.revision), name
+
+
+def test_a_source_without_a_revision_says_why_in_its_upstream() -> None:
+    """None is two different facts — the host publishes no such handle, or nobody
+    has established which one produced these bytes — and they call for different
+    work. A bare None reads as an oversight."""
+    for name, source in dataset_pins.SOURCES.items():
+        if source.revision is not None:
+            continue
+        assert "versionless" in source.upstream or "not established" in source.upstream, \
+            f"{name} records no revision and does not say why"
+
+
+def test_the_pin_file_carries_the_revision_the_registry_declares() -> None:
+    """The checked-in file is what a reader consults; a revision that lived only in
+    the registry would leave it describing bytes with no way back to them."""
+    pins = dataset_pins.load_pins()["datasets"]
+    for name, source in dataset_pins.SOURCES.items():
+        if source.revision and name in pins:
+            assert pins[name].get("revision") == source.revision, name
+
+
 def test_every_bench_row_reports_a_corpus_identity() -> None:
     """The gate refuses to read a delta across a corpus change, which it can only
     do for a row that states which corpus it ran on. A row returning None is

@@ -78,56 +78,88 @@ class Source:
     paths: tuple[str, ...]
 
     #: Where to re-fetch it, written so somebody staring at a drifted hash can act
-    #: on it. None of these are immutable handles, which is why the hash exists.
+    #: on it.
     upstream: str
+
+    #: The upstream revision that produces exactly these bytes — what makes a fresh
+    #: box able to *obtain* the pinned corpus rather than merely discover it has a
+    #: different one. The hash stays the authority; this is the handle that leads to
+    #: it, and the two are checked against each other before it is written down.
+    #:
+    #: **Only ever recorded once fetching it has been confirmed to reproduce the
+    #: pinned hash.** An unconfirmed revision is worse than none: it reads as
+    #: provenance while sending the next person to bytes nobody compared. The
+    #: confirmation differs by host — a clean clone at that commit, a Hugging Face
+    #: LFS ``oid``, a GitHub blob sha — and none of them require downloading the
+    #: corpus again.
+    #:
+    #: None where no revision is recorded; ``upstream`` says whether that is because
+    #: the host offers no such handle or because nobody has established which one.
+    revision: Optional[str] = None
 
 
 #: Every corpus any harness in this directory scores, on or off the bench manifest.
 #: ``trec-covid`` and ``mtrag`` are held off the manifest on cost but stay runnable
 #: by hand, and a hand-run number is worth no less care about what produced it.
 SOURCES: dict[str, Source] = {
+    # The three BEIR sets carry no revision because BEIR offers none: the corpus is
+    # a zip at a fixed URL on a university web server, with no version in the path
+    # and no digest published beside it. Re-serving different bytes there is
+    # undetectable upstream and unobtainable afterwards, so these are pinned for
+    # detection only — a drift here means the corpus is gone, not that it can be
+    # re-fetched.
     "scifact": Source(
         paths=("scifact/corpus.jsonl", "scifact/queries.jsonl",
                "scifact/qrels/test.tsv"),
-        upstream="public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip",
+        upstream="public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip"
+                 " — versionless: the URL is the only handle BEIR publishes",
     ),
     "nfcorpus": Source(
         paths=("nfcorpus/corpus.jsonl", "nfcorpus/queries.jsonl",
                "nfcorpus/qrels/test.tsv"),
-        upstream="public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip",
+        upstream="public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip"
+                 " — versionless: the URL is the only handle BEIR publishes",
     ),
     "trec-covid": Source(
         paths=("trec-covid/corpus.jsonl", "trec-covid/queries.jsonl",
                "trec-covid/qrels/test.tsv"),
-        upstream="public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/trec-covid.zip",
+        upstream="public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/trec-covid.zip"
+                 " — versionless: the URL is the only handle BEIR publishes",
     ),
     "locomo": Source(
         paths=("locomo/repo/data/locomo10.json",),
         upstream="github.com/snap-research/locomo (clone into locomo/repo)",
+        revision="3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
     ),
     "longmemeval": Source(
         paths=("longmemeval/data/longmemeval_s_cleaned.json",),
         upstream="huggingface.co/datasets/xiaowu0162/longmemeval-cleaned "
                  "(longmemeval_s_cleaned.json)",
+        revision="98d7416c24c778c2fee6e6f3006e7a073259d48f",
     ),
     "beam": Source(
         paths=("beam/100K.parquet",),
         upstream="huggingface.co/datasets/Mohammadta/BEAM "
                  "(data/100K-00000-of-00001.parquet)",
+        revision="3205395e897e7318c7b094ef4e6047b9b82dbb03",
     ),
     "perltqa": Source(
         paths=("perltqa/perltmem_en.json", "perltqa/perltqa_en.json"),
-        upstream="github.com/Elvin-Yiming-Du/PerLTQA",
+        upstream="github.com/Elvin-Yiming-Du/PerLTQA (Dataset/en)",
+        revision="8d9e19868e239740ef701e603ec205cd581f221b",
     ),
     "cdr": Source(
         paths=("CDR-Benchmark/cdr_benchmark_data/test_dataset/data/test/corpus.json",
                "CDR-Benchmark/cdr_benchmark_data/test_dataset/data/test/queries.json",
                "CDR-Benchmark/cdr_benchmark_data/test_dataset/data/test/relevant_docs.json"),
         upstream="github.com/l-yohai/CDR-Benchmark",
+        revision="b9954dddf0c94c0aae784cc422a5424b92e4c689",
     ),
     "mtrag": Source(
         paths=("mtrag/corpora", "mtrag/retrieval_tasks"),
-        upstream="github.com/IBM/mt-rag-benchmark (passage-level corpora + retrieval_tasks)",
+        upstream="github.com/IBM/mt-rag-benchmark (passage-level corpora + "
+                 "retrieval_tasks) — revision not established: the fetched layout "
+                 "does not correspond to the repository's own paths",
     ),
 }
 
@@ -276,10 +308,15 @@ def verify(dataset: str, path: Path = PINS_PATH,
     if got is None or got == want:
         return
     files = "\n  ".join(str(p) for p in source_paths(dataset, root))
+    source = SOURCES[dataset]
+    where = (f"  re-fetch at revision {source.revision}\n" if source.revision
+             else "  no upstream revision to re-fetch: these bytes are not "
+                  "recoverable from the source\n")
     raise SystemExit(
         f"{dataset}: corpus does not match its accepted pin.\n"
         f"  expected {want}, found {got}\n"
-        f"  upstream: {SOURCES[dataset].upstream}\n"
+        f"  upstream: {source.upstream}\n"
+        f"{where}"
         f"  files:\n  {files}\n"
         f"Scoring this would compare numbers across different data. Re-fetch the "
         f"pinned corpus, or accept the new one with "
@@ -304,12 +341,15 @@ def build_pins(previous: Optional[dict[str, Any]] = None,
                 out[dataset] = kept[dataset]
             continue
         paths = source_paths(dataset, root)
-        out[dataset] = {
+        entry: dict[str, Any] = {
             "sha256": got,
             "files": len(paths),
             "bytes": sum(p.stat().st_size for p in paths),
             "upstream": SOURCES[dataset].upstream,
         }
+        if SOURCES[dataset].revision:
+            entry["revision"] = SOURCES[dataset].revision
+        out[dataset] = entry
     return {
         "accepted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "datasets": out,
@@ -337,7 +377,10 @@ def states(path: Path = PINS_PATH,
         elif want is None:
             rows.append((dataset, "unpinned", f"{got} — accept with --update"))
         elif want == got:
-            rows.append((dataset, "pinned", got))
+            revision = SOURCES[dataset].revision
+            rows.append((dataset, "pinned",
+                         f"{got}  @{revision[:12]}" if revision
+                         else f"{got}  (no revision — detection only)"))
         else:
             rows.append((dataset, "DRIFTED", f"expected {want}, found {got}"))
     return rows
