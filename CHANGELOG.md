@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- **Runtime telemetry records only on a dev install.** The ledgers of *how the
+  archive ran* — served web requests, retrieval calls, ingest passes — are
+  instruments for whoever maintains thread-archive. Nothing in the
+  product reads them, their consumers are the dev panels and the bench, and
+  rotation retains every segment on purpose, so on an install that is merely run
+  they were a permanently growing record of what their operator searched for,
+  kept for a question nobody on that box was going to ask. They are now off
+  unless `config.json` says `"dev_mode": true` — the switch that already decided
+  whether preserved provider drift is a to-do worth warning about today. The
+  per-ledger environment switches still outrank the config in both directions, so
+  `THREAD_ARCHIVE_USAGE_LOG=1` still produces a trace on an operator's box
+  without making them a developer, and `=0` still silences one ledger on a dev
+  one. The contention sample behind those rows — the machine's load average, the
+  process's peak memory, the index's WAL — is skipped along with the write rather
+  than taken and discarded.
+
+  **Fault records are not telemetry and did not move.** Ingest errors, capture
+  skips, format drift, verify failures and the repair patch log all say
+  conversations may not have been preserved, which is what an archive owes an
+  operator who has never heard of `dev_mode`. Load runs stay outside the switch
+  too, both halves: `load-state.json` is the progress bar for a load that runs
+  for hours on a cold archive, and `load-runs.jsonl` is one row per load someone
+  started — a handful over an install's life, which the viewer's health page
+  renders as what building this archive cost.
+
+  The pages over the gated ledgers say when they are reading history rather than
+  a quiet window — `/telemetry` per ledger in its inventory, `/retrieval` at the
+  top — and `source ingest` says the same in a line, since "nothing happened" and
+  "nothing is written down" want opposite responses and had rendered identically.
+
 - **The dev panels open on an overview.** `http://127.0.0.1:8789/` used to be the
   search lab by another name; it is now a page of panels — the front doors and
   where a search spends its time, web requests and ingest, the bench's rows
@@ -16,6 +46,14 @@
   a dashboard is exactly where that number gets quoted as a headline — so the
   door table crosses over per door and the pooled figures are not on the page at
   all. `/lab` is unchanged and is still where the lab lives.
+
+  **The panels default to one window: 14 days.** `/retrieval` opened on 14 days
+  and `/telemetry` on 24 hours, so an overview had to pick one and disagree with
+  the other — the same door table on two pages with different numbers in it,
+  which reads as the instruments contradicting each other when it is one stretch
+  of time against another. There is one `DEFAULT_HOURS` now, in the API client
+  that carries the window, and all three pages open on it; telemetry grows the
+  14-day option it lacked. Each control still moves its own page from there.
 
   Three things the panels needed were missing from this app's stylesheet, which
   is a trimmed copy of the viewer's: `.muted` and `.error` were undefined (so
@@ -540,6 +578,17 @@
   after a live archive's incremental drain. Fail-soft — the vectors are in the index either way. Backfilled across
   the 30 already-embedded homes on this box (1.40 GB), and verified end to end: a real beam corpus with `index.db`
   deleted rebuilt to `vectors_restored 309` with the embedder switched off.
+
+- **The shipped viewer bundle carries no advisory.** `npm audit --omit=dev` on the published 0.0.9 frontend was red
+  on React Router (open redirect via a backslash in `<Link>`/`useNavigate`, and constructor injection through SSR
+  hydration) — neither reachable in a loopback SPA with internal routes and backend-validated ids, but a red audit
+  on a bundle we ask people to install is a claim we shouldn't make them evaluate. No 6.x carries the fix, and the
+  7.x line that clears those two is inside the range of a later RSC-mode advisory, so both frontends move to
+  react-router 8 and, with it, React 19 — `react-router-dom` was already a re-export shim in 7 and is gone in 8, so
+  imports come from `react-router`. Build-time PostCSS (path traversal via `sourceMappingURL`) moves up under Vite
+  in the same pass. The routes, the hooks and the shipped behavior are unchanged: the viewer's browser suite and
+  both component suites pass as written, and the committed bundle and `THIRD_PARTY_NOTICES.md` are rebuilt against
+  the new closure.
 
 ## 0.0.9 — 2026-07-29
 

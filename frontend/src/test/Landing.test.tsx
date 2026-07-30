@@ -2,7 +2,7 @@
 // grouped Today / Yesterday / Earlier, with loading, error, and empty states.
 import { describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { Landing } from '../components/Landing'
 import type { ThreadListItem } from '../api'
 import { mswError, mswJson, mswPending } from './msw'

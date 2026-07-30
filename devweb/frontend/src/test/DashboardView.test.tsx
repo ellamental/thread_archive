@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import type {
   BenchRunRecord,
   BenchRuns,
@@ -68,6 +68,7 @@ function retrieval(over: Partial<RetrievalReport> = {}): RetrievalReport {
       p50_ms: 22300, total_s: 67,
     },
     bench: null,
+    recording: true,
     ...over,
   }
 }
@@ -122,9 +123,10 @@ function telemetry(over: Partial<TelemetryReport> = {}): TelemetryReport {
       },
     ],
     ledgers: [
-      { file: 'web-requests.jsonl', label: 'web requests', view: 'telemetry', bytes: 4_000_000, segments: 1 },
-      { file: 'retrieval-usage.jsonl', label: 'retrieval calls', view: 'retrieval', bytes: 450_000, segments: 2 },
+      { file: 'web-requests.jsonl', label: 'web requests', view: 'telemetry', bytes: 4_000_000, segments: 1, recording: true },
+      { file: 'retrieval-usage.jsonl', label: 'retrieval calls', view: 'retrieval', bytes: 450_000, segments: 2, recording: true },
     ],
+    recording: true,
     ...over,
   }
 }
@@ -441,6 +443,19 @@ it('opens onto the page behind every panel', async () => {
   ] as const)
     for (const link of screen.getAllByRole('link', { name: label }))
       expect(link).toHaveAttribute('href', href)
+})
+
+it('opens on the window the instruments themselves open on', async () => {
+  const seen = recordRequests()
+  view()
+
+  // Both pages default to this too. A panel quoting one stretch of time beside a
+  // page reporting another shows the same table with different numbers in it,
+  // which reads as the two disagreeing.
+  await screen.findByRole('heading', { name: 'Front doors' })
+  expect(seen).toContain('/api/retrieval?hours=336')
+  expect(seen).toContain('/api/telemetry?hours=336')
+  expect(screen.getByRole('combobox')).toHaveValue('336')
 })
 
 it('says where this box keeps what the panels measured', async () => {

@@ -606,7 +606,7 @@ def thread_search(
         # concurrency peak is the exception and is folded in below, because the
         # peers that slow a search include the ones that arrive while it runs.
         with _contention.in_flight() as span, _probe.install() as probe:
-            context = _contention.sample()
+            context = _contention.sample() if _usage.enabled() else {}
             hits = _run(content_types)
 
         retrieval_ms = (time.monotonic() - started) * 1000.0
@@ -759,7 +759,7 @@ def thread_read(
     span: Any = None
     try:
         with _contention.in_flight() as span:
-            context = _contention.sample()
+            context = _contention.sample() if _usage.enabled() else {}
             out = api.read_thread(
                 thread_id,
                 limit=limit,

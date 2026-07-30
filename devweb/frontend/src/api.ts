@@ -133,6 +133,10 @@ export interface RetrievalReport {
   /** Keyed by query set. Two query sets are two populations of query and are
    *  never drawn as one line. */
   bench: Record<string, BenchPoint[]> | null
+  /** Whether the retrieval ledger under these sections is still being written.
+   *  It records only where `"dev_mode": true`, so a false here means the page is
+   *  history rather than a quiet window. */
+  recording: boolean
 }
 
 // --- developer telemetry ---------------------------------------------------
@@ -217,6 +221,9 @@ export interface TelemetryLedger {
   view: 'telemetry' | 'retrieval' | 'health' | string
   bytes: number
   segments: number
+  /** Whether this install is still writing this ledger. Runtime telemetry
+   *  records only where `"dev_mode": true`; fault ledgers record everywhere. */
+  recording: boolean
 }
 
 export interface TelemetryReport {
@@ -227,6 +234,10 @@ export interface TelemetryReport {
   ingest: TelemetryIngest
   faults: TelemetryFault[]
   ledgers: TelemetryLedger[]
+  /** False when this install records no runtime telemetry at all — the one state
+   *  where an empty page means "nothing is written down" rather than "nothing
+   *  happened", and the fix is a config line rather than a longer window. */
+  recording: boolean
 }
 
 // --- the search lab's inventory --------------------------------------------
@@ -445,13 +456,21 @@ export interface LabInventory {
 // unpacked by hand) — the server doesn't walk a tree to size it.
 
 
+/** The window every windowed view opens on.
+ *
+ *  One value, not one per view: the overview quotes retrieval and telemetry side
+ *  by side and links to both, and a page that opened on a default of its own
+ *  showed the same table with different numbers in it — which reads as the
+ *  instruments disagreeing when it is one stretch of time against another. */
+export const DEFAULT_HOURS = 14 * 24
+
 export const api = {
   // How search itself is doing — read off the retrieval ledgers, not the index,
   // so it keeps answering while a rebuild has the index unavailable.
-  retrieval: (hours = 14 * 24) => getJSON<RetrievalReport>(`/api/retrieval?hours=${hours}`),
+  retrieval: (hours = DEFAULT_HOURS) => getJSON<RetrievalReport>(`/api/retrieval?hours=${hours}`),
 
   // The operational ledgers a maintainer reads together.
-  telemetry: (hours = 24) => getJSON<TelemetryReport>(`/api/telemetry?hours=${hours}`),
+  telemetry: (hours = DEFAULT_HOURS) => getJSON<TelemetryReport>(`/api/telemetry?hours=${hours}`),
 
   // What the bench has to measure with: which benchmark rows are runnable, which
   // corpora on disk and what they hold.

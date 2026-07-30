@@ -27,18 +27,18 @@ directory walks, fingerprint stats, the targets it skipped — and on a source w
 many files and few changes that difference is the entire cost.
 
 Append-only JSONL, advisory, fail-soft — a ledger write must never break the
-ingest it describes. ``THREAD_ARCHIVE_INGEST_LOG=0`` disables it. Rotation
-retains every segment (see :mod:`.._ops.ledger`).
+ingest it describes. Recorded only on an install being developed on
+(:mod:`.._ops.telemetry`); ``THREAD_ARCHIVE_INGEST_LOG`` overrides either way.
+Rotation retains every segment (see :mod:`.._ops.ledger`).
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from .._ops import ledger
+from .._ops import ledger, telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +50,17 @@ def max_bytes() -> int:
     return ledger.env_max_bytes("THREAD_ARCHIVE_INGEST_MAX_BYTES", 16 * 1024 * 1024)
 
 
-def _enabled() -> bool:
-    return os.environ.get("THREAD_ARCHIVE_INGEST_LOG", "1").strip().lower() not in (
-        "0", "false", "no", "off",
-    )
+def enabled(home=None) -> bool:
+    """Whether this install records what ingest cost.
+
+    Off unless the install is being developed on (:mod:`.._ops.telemetry`);
+    ``THREAD_ARCHIVE_INGEST_LOG`` overrides in either direction.
+
+    Every writer here tests its "nothing to say" condition *before* asking this,
+    so the poll loop's common case — a pass that fingerprint-skipped every target —
+    still costs one attribute read rather than a config file.
+    """
+    return telemetry.recording("THREAD_ARCHIVE_INGEST_LOG", home)
 
 
 def record_pass(
@@ -75,10 +82,10 @@ def record_pass(
     them is only whether the pass's timings describe a clean import or a failing
     one, since work that fails slowly skews every percentile computed here.
     """
-    if not _enabled():
-        return
     try:
         if probe is None or not probe.ran:
+            return
+        if not enabled(home):
             return
         record: dict[str, Any] = {
             "at": datetime.now(timezone.utc).isoformat(),
@@ -141,10 +148,10 @@ def record_idle(
     once at flush, because a spot reading at the end of five minutes describes the
     end of five minutes.
     """
-    if not _enabled():
-        return
     try:
         if passes <= 0:
+            return
+        if not enabled(home):
             return
         record: dict[str, Any] = {
             "at": datetime.now(timezone.utc).isoformat(),
@@ -273,7 +280,7 @@ def record_maintenance(*, home, timings: dict[str, float], counts: dict) -> None
     The health record carries the same split but only for the *last* pass, so a
     rebalance that has been getting slower for a week is invisible there. Here it
     is a series."""
-    if not _enabled():
+    if not enabled(home):
         return
     try:
         record: dict[str, Any] = {
@@ -296,10 +303,10 @@ def record_embed(*, home, embedded: int, elapsed_ms: float, detail_ms: dict[str,
     embed nothing per pass. Recorded on every pass that embedded something, plus
     every pass that found a backlog it could not clear, since a drain falling
     behind is exactly the row a later question needs."""
-    if not _enabled():
-        return
     try:
         if not embedded and not pending:
+            return
+        if not enabled(home):
             return
         record: dict[str, Any] = {
             "at": datetime.now(timezone.utc).isoformat(),

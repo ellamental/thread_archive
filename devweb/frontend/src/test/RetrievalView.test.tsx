@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import type { RetrievalReport } from '../api'
 import { RetrievalView } from '../components/RetrievalView'
 import { mswError, mswJson, recordRequests } from './msw'
@@ -73,6 +73,7 @@ function report(over: Partial<RetrievalReport> = {}): RetrievalReport {
     bench: {
       observed: [{ at: '2026-07-26T19:00:00Z', commit: 'def', p50: 228, p95: 1412, p99: 2415, n_queries: 40, tuning: false }],
     },
+    recording: true,
     ...over,
   }
 }
@@ -264,6 +265,14 @@ it('draws an hourly window on the operator’s clock, not the ledger’s UTC', a
   expect([...served.querySelectorAll('circle title')].map((n) => n.textContent)).toContain(
     `${clock('2026-07-26T18:00:00Z').full} · 1 warm search · p50 220ms`,
   )
+})
+
+it('says when the ledger under the page is no longer being written', async () => {
+  // Without dev_mode the retrieval ledger stops growing, so the page is history.
+  // A reader who cannot see that reaches for a wider window instead of the config.
+  mswJson('/api/retrieval', report({ recording: false }))
+  view()
+  expect(await screen.findByText(/not recording retrieval calls/)).toBeInTheDocument()
 })
 
 it('surfaces a failed fetch instead of rendering an empty page', async () => {

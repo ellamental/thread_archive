@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import type { BenchRunRecord } from '../api'
 
 // The benchmark ledger, as both lab pages read it.

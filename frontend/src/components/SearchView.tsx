@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router'
 import { api, type SearchHit, type SearchResponse } from '../api'
 import { Pager } from './Pager'
 import { SearchBox } from './SearchBox'

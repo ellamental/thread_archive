@@ -29,14 +29,15 @@ being served from the same process — and one multi-second search is enough to 
 every request beside it look degraded.
 
 Advisory and fail-soft throughout, like every other telemetry writer here: a
-metrics write must never break the request it describes.
-``THREAD_ARCHIVE_WEB_METRICS=0`` disables it.
+metrics write must never break the request it describes. Recorded only on an
+install being developed on (:mod:`.._ops.telemetry`) — someone reading their own
+conversations is not served by a row per page they opened;
+``THREAD_ARCHIVE_WEB_METRICS`` overrides either way.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -44,6 +45,7 @@ from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 from .._config import resolve_paths
 from .._ops import ledger as _ledger
+from .._ops import telemetry as _telemetry
 
 if TYPE_CHECKING:  # the probe is duck-typed at runtime — no import cost per request
     from .._retrieval._probe import SearchProbe
@@ -85,10 +87,16 @@ def max_bytes() -> int:
     return _ledger.env_max_bytes("THREAD_ARCHIVE_WEB_METRICS_MAX_BYTES", 8 * 1024 * 1024)
 
 
-def _enabled() -> bool:
-    return os.environ.get("THREAD_ARCHIVE_WEB_METRICS", "1").strip().lower() not in (
-        "0", "false", "no", "off",
-    )
+def enabled(home: Optional[Any] = None) -> bool:
+    """Whether this install records served requests at all.
+
+    Off unless the install is being developed on (:mod:`.._ops.telemetry`);
+    ``THREAD_ARCHIVE_WEB_METRICS`` overrides in either direction. Public so the
+    handler can skip building a record — the contention sample above all — that
+    nothing is going to write, and so a reader of this ledger can tell an empty
+    window from an install that writes nothing.
+    """
+    return _telemetry.recording("THREAD_ARCHIVE_WEB_METRICS", home)
 
 
 def record_request(
@@ -120,7 +128,7 @@ def record_request(
     uploader's connection, not this archive's, and a row that looked like a GET of
     the same path would drag that time into the read-latency distribution.
     """
-    if not _enabled():
+    if not enabled():
         return
     record: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),

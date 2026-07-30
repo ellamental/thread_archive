@@ -1,4 +1,4 @@
-import { Link, Route, Routes, useLocation } from 'react-router-dom'
+import { Link, Route, Routes, useLocation } from 'react-router'
 
 import { BenchRunView } from './components/BenchRunView'
 import { DashboardView } from './components/DashboardView'

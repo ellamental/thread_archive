@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   api,
+  DEFAULT_HOURS,
   type BenchPoint,
   type Bucket,
   type LatencyBand,
@@ -279,7 +280,7 @@ function Legend({ items }: { items: { label: string; color: string; muted?: bool
 export function RetrievalView() {
   const [report, setReport] = useState<RetrievalReport | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [hours, setHours] = useState(14 * 24)
+  const [hours, setHours] = useState(DEFAULT_HOURS)
 
   useEffect(() => {
     let live = true
@@ -394,6 +395,16 @@ export function RetrievalView() {
           </select>
         </label>
       </header>
+
+      {!report.recording && (
+        // Same reason the telemetry page carries one: with the ledger unwritten,
+        // every section below is history, and a wider window will not help.
+        <p className="muted rv-not-recording">
+          This install is not recording retrieval calls — everything below is history.
+          The ledger writes only where <code>config.json</code> has{' '}
+          <code>"dev_mode": true</code>.
+        </p>
+      )}
 
       <section>
         <h2>What each door got</h2>

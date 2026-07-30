@@ -3,7 +3,7 @@
 // compaction-only rows, and the heaviest-sessions links into the reader.
 import { describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router'
 import { ModelStatsView } from '../components/ModelStatsView'
 import type { ModelStats } from '../api'
 import { mswError, mswJson, mswPending, recordRequests } from './msw'

@@ -7,7 +7,7 @@ import {
   type DirSize,
   type LabInventory,
 } from '../api'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { Pill, RunsTable } from './labRuns'
 
 // What the bench has to measure with. Every other view here is about the corpus

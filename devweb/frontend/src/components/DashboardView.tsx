@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import {
   api,
+  DEFAULT_HOURS,
   type BenchRunRecord,
   type BenchRuns,
   type Benchmark,
@@ -19,10 +20,11 @@ import { Pill, measure } from './labRuns'
 // links to the page that can actually explain it, and none of them restate that
 // page's reasoning: the prose lives where the detail does.
 //
-// One window drives retrieval and telemetry together, which neither page does
-// (they default to 14 days and 24 hours respectively). Read side by side they
+// One window drives retrieval and telemetry together. Read side by side they
 // have to cover the same stretch of time or the two halves of the screen are
-// answering about different afternoons.
+// answering about different afternoons — and it opens on the same window both
+// instruments do (`DEFAULT_HOURS`), so a panel and the page behind it quote the
+// same numbers until somebody moves one of them.
 //
 // What the panels may not do is pool. The retrieval page's whole argument is
 // that a median across front doors is a mixture nobody waited on, and a
@@ -269,7 +271,7 @@ function RecentRuns({ runs }: { runs: BenchRunRecord[] }) {
 }
 
 export function DashboardView() {
-  const [hours, setHours] = useState(24)
+  const [hours, setHours] = useState(DEFAULT_HOURS)
   const retrieval = useReport<RetrievalReport>(() => api.retrieval(hours), [hours])
   const telemetry = useReport<TelemetryReport>(() => api.telemetry(hours), [hours])
   // The inventory and the ledger are windowless — an inventory describes the box

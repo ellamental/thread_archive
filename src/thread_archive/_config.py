@@ -208,8 +208,17 @@ def source_enabled(cfg: dict, source_name: str) -> bool:
 def dev_mode(cfg: dict) -> bool:
     """Whether this install is being *developed on* rather than merely run.
 
-    Provider format drift is where the difference bites. A provider that grows a
-    new field, block type or line type costs the reader nothing — the value is
+    Two things turn on it. **Runtime telemetry** — the ledgers of served requests,
+    retrieval calls, ingest passes and load runs — records only here
+    (:mod:`.._ops.telemetry`): they are instruments for whoever maintains
+    thread-archive, nothing in the product reads them, and an install that is
+    merely run should not be accumulating a row per page someone opened. Fault
+    records are not part of that and never stop: an operator is owed the news that
+    conversations may not have been preserved.
+
+    Provider format drift is the second, and where the difference bites. A
+    provider that grows a new field, block type or line type costs the reader
+    nothing — the value is
     preserved under the anchor event's ``annotations["unmodeled"]`` — so the
     finding is a parser to-do for whoever maintains thread-archive, not a fault
     the operator must act on. On a dev install that to-do is the whole point and

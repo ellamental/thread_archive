@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { AllThreadsView, ALL_THREADS_PAGE_SIZE } from '../components/AllThreadsView'
 import type { ThreadListItem, ThreadTypeCount } from '../api'
 import { http, HttpResponse, mswError, mswHandler, mswJson, mswPending, recordRequests } from './msw'

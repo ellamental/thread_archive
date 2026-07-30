@@ -948,10 +948,16 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     from ._config import resolve_paths
     from ._watcher import ingest_log
 
-    res = ingest_log.summarize(resolve_paths(args.home).home, hours=args.hours)
+    home = resolve_paths(args.home).home
+    res = ingest_log.summarize(home, hours=args.hours)
     sources = res["sources"]
     if not sources and not res["maintenance"]["passes"]:
+        # A quiet window and an install that writes no ledger look the same from
+        # here, and the second is not fixed by asking for a longer one.
         print(f"no ingest recorded in the last {res['hours']}h")
+        if not ingest_log.enabled(home):
+            print('  (ingest timings are recorded only on an install with '
+                  '"dev_mode": true in config.json)')
         return 0
 
     print(f"ingest, last {res['hours']}h")

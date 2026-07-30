@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useLocation, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams } from 'react-router'
 import { api, type ThreadListItem } from '../api'
 import { DEV_PANELS_URL, devPanels } from '../dev'
 import { SearchBox } from './SearchBox'

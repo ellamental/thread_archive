@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import {
   api,
+  DEFAULT_HOURS,
   type TelemetryFault,
   type TelemetryIngestSource,
   type TelemetryReport,
@@ -12,6 +13,7 @@ const WINDOWS = [
   { hours: 24, label: '24 hours' },
   { hours: 72, label: '3 days' },
   { hours: 7 * 24, label: '7 days' },
+  { hours: 14 * 24, label: '14 days' },
   { hours: 30 * 24, label: '30 days' },
   { hours: 90 * 24, label: '90 days' },
 ]
@@ -61,7 +63,7 @@ function faultMagnitude(fault: TelemetryFault): string {
 }
 
 export function TelemetryView() {
-  const [hours, setHours] = useState(24)
+  const [hours, setHours] = useState(DEFAULT_HOURS)
   const [report, setReport] = useState<TelemetryReport | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -134,6 +136,17 @@ export function TelemetryView() {
         ledgers. This page is diagnostic: conversation content and search text are not
         recorded in the web-request data.
       </p>
+
+      {!report.recording && (
+        // Without this an install that writes nothing down renders exactly like a
+        // quiet one, and the reader reaches for a longer window instead of the
+        // config line that is actually missing. What is on the page is history.
+        <p className="telemetry-lede telemetry-bad">
+          This install is not recording its own runtime — everything below is
+          history. Runtime telemetry writes only where <code>config.json</code> has{' '}
+          <code>"dev_mode": true</code>. Ingest faults are recorded either way.
+        </p>
+      )}
 
       <div className="stat-tiles">
         <Tile
@@ -376,6 +389,7 @@ export function TelemetryView() {
               <tr>
                 <th>ledger</th>
                 <th>file</th>
+                <th>writing</th>
                 <th className="num">segments</th>
                 <th className="num">retained</th>
                 <th>deeper view</th>
@@ -386,6 +400,11 @@ export function TelemetryView() {
                 <tr key={ledger.file}>
                   <td>{ledger.label}</td>
                   <td><code>{ledger.file}</code></td>
+                  {/* Per ledger, not per page: the environment switches can
+                      silence one of these on an install still writing the rest. */}
+                  <td className={ledger.recording ? '' : 'telemetry-bad'}>
+                    {ledger.recording ? 'yes' : 'no'}
+                  </td>
                   <td className="num">{integer(ledger.segments)}</td>
                   <td className="num">{bytes(ledger.bytes)}</td>
                   <td>

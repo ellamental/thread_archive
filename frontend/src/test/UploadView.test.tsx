@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import type { DropZone } from '../api'
 import { UploadView } from '../components/UploadView'
 import { http, HttpResponse, mswHandler, mswJson } from './msw'

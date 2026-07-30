@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import type { BenchRunRecord, BenchRuns, LabInventory, RunQueries } from '../api'
 import { SearchLabView } from '../components/SearchLabView'
 import { mswError, mswJson } from './msw'

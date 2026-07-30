@@ -32,7 +32,8 @@ requests that every request beside it pays for.
 what the front door cost around a tool call, see :func:`record_serve`.)
 
 Append-only JSONL, advisory, fail-soft — a ledger write must never break the
-retrieval call it describes. ``THREAD_ARCHIVE_USAGE_LOG=0`` disables it. At
+retrieval call it describes. Recorded only on an install being developed on
+(:mod:`.._ops.telemetry`); ``THREAD_ARCHIVE_USAGE_LOG`` overrides either way. At
 ``max_bytes()`` the file rotates to a stamped segment and a fresh one starts;
 every segment is retained and every reader here walks all of them
 (:mod:`.._ops.ledger`), so the eval population is the whole history rather than
@@ -42,12 +43,12 @@ whatever fit in the current file.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .._config import resolve_paths
 from .._ops import ledger as _ledger
+from .._ops import telemetry as _telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -80,17 +81,23 @@ _MAX_RESULT_IDS = 20  # per-search result ids retained — enough to judge rank 
 def max_bytes() -> int:
     """Size at which the ledger rotates to a new segment (32 MB by default).
 
-    Read per call from ``THREAD_ARCHIVE_USAGE_MAX_BYTES``, like ``_enabled()``
+    Read per call from ``THREAD_ARCHIVE_USAGE_MAX_BYTES``, like ``enabled()``
     beside it: a constant would answer once at import and ignore any later word
     on it.
     """
     return _ledger.env_max_bytes("THREAD_ARCHIVE_USAGE_MAX_BYTES", 32 * 1024 * 1024)
 
 
-def _enabled() -> bool:
-    return os.environ.get("THREAD_ARCHIVE_USAGE_LOG", "1").strip().lower() not in (
-        "0", "false", "no", "off",
-    )
+def enabled(home: Any = None) -> bool:
+    """Whether this install records retrieval usage at all.
+
+    Off unless the install is being developed on (:mod:`.._ops.telemetry`);
+    ``THREAD_ARCHIVE_USAGE_LOG`` overrides in either direction. Public because the
+    callers that *assemble* a record — the contention sample most of all — should
+    not pay for one nothing will write, and because a reader of this ledger has to
+    be able to tell an empty window from an install that writes nothing.
+    """
+    return _telemetry.recording("THREAD_ARCHIVE_USAGE_LOG", home)
 
 
 def _append(record: dict) -> None:
@@ -202,7 +209,7 @@ def record_search(
     before/after over this file means anything: retrieval's caches are all
     process-local, restarts are frequent, and a comparison that cannot exclude a
     cold process is comparing cache states rather than code."""
-    if not _enabled():
+    if not enabled():
         return
     record: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),
@@ -260,7 +267,7 @@ def record_read(
     ``context`` is the same contention sample searches carry — a read hydrates from
     the same store ingest is writing, and its tail (milliseconds at the median,
     seconds at the worst) is exactly where that would show."""
-    if not _enabled():
+    if not enabled():
         return
     record: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),
@@ -289,7 +296,7 @@ def record_serve(record: dict[str, Any]) -> None:
     the ``search`` or ``read`` row written microseconds earlier — the pair is what
     separates a slow pipeline from a slow front door, which no single number
     can."""
-    if not _enabled():
+    if not enabled():
         return
     _append({"at": datetime.now(timezone.utc).isoformat(), **record})
 
@@ -340,7 +347,7 @@ def record_warm(
     that process writes. That join is the only way to ask whether a slow search ran
     before its own warm pass finished, which is a different fault from a slow
     search on a warmed process."""
-    if not _enabled():
+    if not enabled():
         return
     record: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),
@@ -390,7 +397,7 @@ def record_refresh(
     Cheap to write (one row per rebuild, not per request) and fail-soft like every
     other writer here: a background thread's telemetry must never take a search's
     process down with it."""
-    if not _enabled():
+    if not enabled():
         return
     record: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),

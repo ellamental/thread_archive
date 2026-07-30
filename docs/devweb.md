@@ -17,15 +17,34 @@ python -m devweb                                    # → http://127.0.0.1:8789
 | `/lab` | what the bench has to measure with: benchmark rows, corpora on disk, every recorded run |
 | `/lab/run/<id>` | one run's per-query detail, optionally diffed against another |
 
+**Most of the ledgers under these pages are written only on an install being
+developed on** — `"dev_mode": true` in the archive's `config.json`. Served
+requests, retrieval calls and ingest passes are a maintainer's instruments, and
+an install that is merely run should not accumulate a row per page its operator
+opened. Without that line the panels still render, over whatever history is on
+disk, and say so at the top of each page and per ledger in `/telemetry`'s
+inventory. Ingest faults and load runs are outside the switch and record
+everywhere. A single ledger can be moved either way for one process with its own
+environment variable — `THREAD_ARCHIVE_USAGE_LOG`, `THREAD_ARCHIVE_WEB_METRICS`,
+`THREAD_ARCHIVE_INGEST_LOG` — which outranks the config in both directions.
+
 The overview summarises and does not restate: every panel links to the page that
 explains it, and the reasoning lives there. What it may not do is pool. A median
 across front doors is a mixture nobody waited on — which is the retrieval page's
 whole argument, and a dashboard is exactly where that number would get quoted as
 the headline — so the door table comes across per door and the pooled figures
-stay off it. Its window drives retrieval and telemetry together, since two panels
-read side by side have to cover the same stretch of time; the bench inventory and
-the run ledger are windowless and do not move with it. Each panel fetches and
-fails on its own, so one unreadable ledger costs one panel rather than the page.
+stay off it. Each panel fetches and fails on its own, so one unreadable ledger
+costs one panel rather than the page.
+
+**One default window, 14 days** — `DEFAULT_HOURS` in `frontend/src/api.ts`, which
+the overview, `/retrieval` and `/telemetry` all open on, and which the client's
+own two windowed calls take when nothing is passed. Each page's control still
+moves its own window from there. They used to default apart (14 days and 24
+hours), which put the same door table on two pages with different numbers in it
+— the instruments looking like they disagreed when it was one stretch of time
+against another. On the overview the one control drives retrieval and telemetry
+together, since two panels read side by side have to cover the same stretch; the
+bench inventory and the run ledger are windowless and do not move with it.
 
 `python -m devweb --open` opens the browser once the server is up; `--port` and
 `--host` move it — though the viewer's link to here (below) is fixed at the

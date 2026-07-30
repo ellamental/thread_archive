@@ -69,6 +69,7 @@ const retrieval = {
   bench: {
     observed: [{ at: now, commit: 'abc1234', p50: 228, p95: 1412, p99: 2415, n_queries: 40, tuning: false }],
   },
+  recording: true,
 }
 
 const telemetry = {
@@ -143,12 +144,13 @@ const telemetry = {
     },
   ],
   ledgers: [
-    { file: 'web-requests.jsonl', label: 'web requests', view: 'telemetry', bytes: 4_500_000, segments: 1 },
-    { file: 'ingest-runs.jsonl', label: 'ingest work', view: 'telemetry', bytes: 930_000, segments: 1 },
-    { file: 'retrieval-usage.jsonl', label: 'retrieval calls', view: 'retrieval', bytes: 460_000, segments: 1 },
-    { file: 'load-runs.jsonl', label: 'load runs', view: 'health', bytes: 12_000, segments: 1 },
-    { file: 'ingest-errors.jsonl', label: 'ingest faults', view: 'telemetry', bytes: 2_000, segments: 1 },
+    { file: 'web-requests.jsonl', label: 'web requests', view: 'telemetry', bytes: 4_500_000, segments: 1, recording: true },
+    { file: 'ingest-runs.jsonl', label: 'ingest work', view: 'telemetry', bytes: 930_000, segments: 1, recording: true },
+    { file: 'retrieval-usage.jsonl', label: 'retrieval calls', view: 'retrieval', bytes: 460_000, segments: 1, recording: true },
+    { file: 'load-runs.jsonl', label: 'load runs', view: 'health', bytes: 12_000, segments: 1, recording: true },
+    { file: 'ingest-errors.jsonl', label: 'ingest faults', view: 'telemetry', bytes: 2_000, segments: 1, recording: true },
   ],
+  recording: true,
 }
 
 // The lab page is an inventory, so the fixture's job is to carry one of every

@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { App } from '../App'
 import { mswJson, recordRequests } from './msw'
 
@@ -19,10 +19,7 @@ it('renders the real application shell and landing route', async () => {
   })
 
   render(
-    <MemoryRouter
-      initialEntries={['/']}
-      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-    >
+    <MemoryRouter initialEntries={['/']}>
       <App />
     </MemoryRouter>,
   )

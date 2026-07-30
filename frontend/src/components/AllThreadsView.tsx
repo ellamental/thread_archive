@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router'
 import { api, type ThreadPage, type ThreadTypeCount } from '../api'
 import { Pager } from './Pager'
 

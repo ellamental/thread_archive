@@ -1203,7 +1203,8 @@ class _Handler(BaseHTTPRequestHandler):
             # in-flight span rather than only reading it: the viewer serves its
             # pages concurrently, and a surface that samples without entering makes
             # its own load invisible to every peak, its own included.
-            context={**_contention.sample(), **_contention.peak_inflight(span)},
+            context=({**_contention.sample(), **_contention.peak_inflight(span)}
+                     if _metrics.enabled() else None),
         )
         self.send_response(status)
         self.send_header("Content-Type", ctype)

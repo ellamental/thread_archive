@@ -1,4 +1,4 @@
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation } from 'react-router'
 
 function sectionLabel(pathname: string): string {
   if (pathname === '/') return 'Home'

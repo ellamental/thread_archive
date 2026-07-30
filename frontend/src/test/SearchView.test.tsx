@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { SearchView } from '../components/SearchView'
 import { SEARCH_PAGE_SIZE, type SearchHit } from '../api'
 import { http, HttpResponse, mswError, mswHandler, mswJson, mswPending, recordRequests } from './msw'

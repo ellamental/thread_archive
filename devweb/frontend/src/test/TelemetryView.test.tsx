@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import type { TelemetryReport } from '../api'
 import { TelemetryView } from '../components/TelemetryView'
 import { mswError, mswJson, recordRequests } from './msw'
@@ -84,6 +84,7 @@ const sample: TelemetryReport = {
       view: 'telemetry',
       bytes: 4_000_000,
       segments: 1,
+      recording: true,
     },
     {
       file: 'retrieval-usage.jsonl',
@@ -91,8 +92,10 @@ const sample: TelemetryReport = {
       view: 'retrieval',
       bytes: 450_000,
       segments: 2,
+      recording: true,
     },
   ],
+  recording: true,
 }
 
 function view() {
@@ -139,6 +142,20 @@ it('keeps empty ledgers legible instead of hiding their sections', async () => {
   expect(await screen.findByText('No web requests recorded in this window.')).toBeInTheDocument()
   expect(screen.getByText('No ingest work recorded in this window.')).toBeInTheDocument()
   expect(screen.getByText('No ingest faults retained.')).toBeInTheDocument()
+})
+
+it('says when the install writes nothing down, rather than reading as a quiet box', async () => {
+  // An install without dev_mode records no runtime telemetry, so an empty page
+  // means "not written down" and not "nothing happened" — opposite fixes.
+  mswJson('/api/telemetry', {
+    ...sample,
+    recording: false,
+    ledgers: sample.ledgers.map((ledger) => ({ ...ledger, recording: false })),
+  })
+  view()
+  expect(await screen.findByText(/not recording its own runtime/)).toBeInTheDocument()
+  // And per ledger, in the inventory that lists them.
+  expect(screen.getAllByText('no')).toHaveLength(sample.ledgers.length)
 })
 
 it('surfaces a failed fetch', async () => {

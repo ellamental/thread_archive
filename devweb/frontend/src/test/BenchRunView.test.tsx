@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { render, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter, Route, Routes } from 'react-router'
 import type { BenchRuns } from '../api'
 import { BenchRunView } from '../components/BenchRunView'
 import { mswError, mswJson } from './msw'
@@ -286,8 +286,14 @@ it('explains itself when the ledger cannot be read', async () => {
   expect(await screen.findByText(/Could not load the benchmark ledger/)).toBeInTheDocument()
 })
 
-/** A section, once the fetch behind it has landed. */
+/**
+ * A section, once the fetch behind it has landed. The heading renders off the
+ * ledger; a section with its own request (per-query detail) is still loading at
+ * that point, so wait the placeholder out rather than reading a half-built one.
+ */
 async function screenSection(name: string): Promise<HTMLElement> {
   const heading = await screen.findByRole('heading', { name })
-  return heading.closest('section') as HTMLElement
+  const section = heading.closest('section') as HTMLElement
+  await waitFor(() => expect(within(section).queryByText('Loading…')).toBeNull())
+  return section
 }

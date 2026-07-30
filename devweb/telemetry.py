@@ -113,19 +113,32 @@ def web_summary(home: Path, *, hours: int) -> dict[str, Any]:
     }
 
 
+#: Each ledger, with the predicate that says whether this install is still
+#: *writing* it, and whether ``dev_mode`` is what decides that. Ingest faults and
+#: load runs are outside the switch — the first because a fault means
+#: conversations may not have been preserved, the second because it is one row per
+#: load an operator started and their own health page renders it — so they say
+#: "yes" everywhere and are held out of the page-level verdict, which is about the
+#: ledgers ``dev_mode`` can silence.
 _LEDGERS = (
-    (metrics.LEDGER_FILE, "web requests", "telemetry"),
-    (ingest_log.LEDGER_FILE, "ingest work", "telemetry"),
-    (usage.LEDGER_FILE, "retrieval calls", "retrieval"),
-    (load_runs.LEDGER_FILE, "load runs", "health"),
-    (ingest_errors.LEDGER_FILE, "ingest faults", "telemetry"),
+    (metrics.LEDGER_FILE, "web requests", "telemetry", metrics.enabled, True),
+    (ingest_log.LEDGER_FILE, "ingest work", "telemetry", ingest_log.enabled, True),
+    (usage.LEDGER_FILE, "retrieval calls", "retrieval", usage.enabled, True),
+    (load_runs.LEDGER_FILE, "load runs", "health", load_runs.enabled, False),
+    (ingest_errors.LEDGER_FILE, "ingest faults", "telemetry", lambda home=None: True, False),
 )
 
 
 def _ledger_inventory(home: Path) -> list[dict[str, Any]]:
-    """Retained size and segment count for every operational telemetry ledger."""
+    """Retained size, segment count, and whether it is still being written.
+
+    The gated ledgers record only on an install being developed on, so an empty
+    page has two readings — nothing happened, or nothing is written down — and
+    they want opposite responses. The flag is what separates them, per ledger
+    rather than per page, because the environment switches can split them.
+    """
     rows = []
-    for filename, label, view in _LEDGERS:
+    for filename, label, view, recording, _gated in _LEDGERS:
         path = home / filename
         segments = ledger.segments(path)
         rows.append({
@@ -134,12 +147,15 @@ def _ledger_inventory(home: Path) -> list[dict[str, Any]]:
             "view": view,
             "bytes": ledger.total_bytes(path),
             "segments": len(segments),
+            "recording": bool(recording(home)),
         })
     return rows
 
 
 def report(home: Path, *, hours: int = 24) -> dict[str, Any]:
     """Assemble the developer telemetry report."""
+    ledgers = _ledger_inventory(home)
+    gated = {row[0] for row in _LEDGERS if row[4]}
     return {
         "home": str(home),
         "hours": hours,
@@ -147,5 +163,9 @@ def report(home: Path, *, hours: int = 24) -> dict[str, Any]:
         "web": web_summary(home, hours=hours),
         "ingest": ingest_log.summarize(home, hours=hours),
         "faults": ingest_errors.summarize(home),
-        "ledgers": _ledger_inventory(home),
+        "ledgers": ledgers,
+        # The page-level reading of the same fact: this install is not recording
+        # its own runtime at all. Distinct from every window being empty, and the
+        # only state where the fix is a config line rather than a longer window.
+        "recording": any(row["recording"] for row in ledgers if row["file"] in gated),
     }

@@ -98,6 +98,15 @@ def _isolate_archive(tmp_path, monkeypatch):
     # accumulate there and each open stays a pure store op; the registry has its
     # own coverage (test_archives_registry.py opts back in with a tmp path).
     monkeypatch.setenv("THREAD_ARCHIVE_REGISTRY", "0")
+    # Runtime telemetry records only on a dev install (_ops/telemetry.py), and a
+    # tmp home has no config.json — so every ledger assertion in this suite would
+    # otherwise be asserting over a file nothing writes, and pass for the wrong
+    # reason. Pinned on through the product's own per-ledger switches, which is
+    # exactly what a maintainer running the bench sets. test_telemetry_gate.py
+    # clears them to cover the default and the config path.
+    for _switch in ("THREAD_ARCHIVE_USAGE_LOG", "THREAD_ARCHIVE_WEB_METRICS",
+                    "THREAD_ARCHIVE_INGEST_LOG", "THREAD_ARCHIVE_LOAD_LOG"):
+        monkeypatch.setenv(_switch, "1")
     # The load policy is a process global a server sets at startup (see
     # model_slot): a test that starts one would otherwise leave every later test in
     # the worker serving lexical-only, which looks like a ranking bug rather than a

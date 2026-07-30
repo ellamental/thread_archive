@@ -1312,6 +1312,10 @@ a.session-link:hover { color: var(--accent); }
 .telemetry-page a { color: var(--accent); text-decoration: none; }
 .telemetry-page a:hover { text-decoration: underline; }
 .telemetry-path { margin-top: 12px; color: var(--muted); font-size: 11px; }
+/* The ledger under the page is not being written. Said once, near the top, in
+   the page's own warning colour rather than a banner treatment nothing else
+   here uses. */
+.rv-not-recording { max-width: 72ch; margin: 0 0 22px; }
 @media (prefers-color-scheme: dark) {
   .telemetry-bad { color: #e0806f; }
 }

@@ -72,6 +72,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 from thread_archive._retrieval.usage import PROBE_QUERIES, UNATTRIBUTED
+from thread_archive._retrieval.usage import enabled as _usage_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -592,7 +593,12 @@ def report(home: Optional[Path] = None, *, hours: int = DEFAULT_HOURS,
         home = resolve_paths().home
     bucket = bucket or default_bucket(hours)
     out: dict[str, Any] = {"home": str(home), "hours": hours, "bucket": bucket,
-                           "at": datetime.now(timezone.utc).isoformat()}
+                           "at": datetime.now(timezone.utc).isoformat(),
+                           # Whether the ledger under every section below is still
+                           # being written. It records only on an install being
+                           # developed on, and a page that cannot say so renders
+                           # "writes nothing down" and "served nothing" the same.
+                           "recording": _usage_enabled(home)}
 
     def section(fn, **kw):
         try:
