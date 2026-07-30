@@ -12,8 +12,13 @@ import json
 
 import pytest
 
-from thread_archive import _api as ta
-from thread_archive._web import route
+# The viewer is dev-only and ships in no wheel, so these run from a checkout and
+# stand down against an installed package (the Docker install lane runs this
+# suite against the wheel). See docs/web-viewer.md.
+pytest.importorskip("thread_archive._web", reason="the viewer is dev-only (no wheel carries it)")
+
+from thread_archive import _api as ta  # noqa: E402
+from thread_archive._web import route  # noqa: E402
 
 USER = {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",
         "cwd": "/proj", "message": {"role": "user", "content": "hello webview"}}
@@ -1163,6 +1168,44 @@ def test_a_served_search_records_where_its_time_went(archive_home):
 
     plain = [r for r in rows if r["path"] == "/api/status"][-1]
     assert "fts_ms" not in plain and "pool_size" not in plain
+
+
+@pytest.mark.integration
+def test_a_served_search_records_the_shape_of_the_ask(archive_home):
+    # How many rows were asked for and how far into the set is the largest thing
+    # separating one search's cost from another's. The viewer paints a fixed page,
+    # so without it every browse of a result set reads as a question that took a
+    # second — and the retrieval report cannot tell this door's questions from its
+    # walks. The query text still stays out.
+    import urllib.request
+    from urllib.parse import quote
+
+    from thread_archive._web import metrics, serve_in_thread, server
+
+    _seed(archive_home)
+    ta.open_archive(str(archive_home))
+    httpd = serve_in_thread(host="127.0.0.1", port=0)
+    try:
+        port = httpd.server_address[1]
+        for path in (f"/api/search?q={quote('hello webview')}&limit=40&page=2",
+                     "/api/search?q=hello", "/api/status"):
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=60) as r:
+                r.read()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    rows = [
+        json.loads(ln)
+        for ln in (archive_home / metrics.LEDGER_FILE).read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    walk, question = [r for r in rows if r["path"] == "/api/search"][-2:]
+    assert (walk["limit"], walk["page"]) == (40, 2)
+    # A bare URL is recorded as what actually ran, not as an absent field: the
+    # route and the ledger read the default through the same function.
+    assert (question["limit"], question["page"]) == (server.SEARCH_LIMIT, 1)
+    assert "limit" not in [r for r in rows if r["path"] == "/api/status"][-1]
 
 
 def test_concurrent_requests_are_counted_on_the_row(archive_home):

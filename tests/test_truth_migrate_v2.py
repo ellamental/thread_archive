@@ -1,4 +1,4 @@
-"""The one-shot integer-id → ULID truth migration (`migrate_thread_ulids`).
+"""The integer-id → ULID truth migration (`_truth.migrate_v2`).
 
 Drives the real `main()` over a hand-built v1 (pre-ULID) store — integer-named
 thread files, a legacy-shaped `index.db`, overlay snapshots, kg events — and
@@ -21,13 +21,13 @@ from pathlib import Path
 
 import pytest
 
-from thread_archive._scripts.migrate_thread_ulids import (
+from thread_archive._store.ulid import normalize_ulid, ulid_timestamp_ms
+from thread_archive._truth.migrate_v2 import (
     Migrator,
     _parse_ts_ms,
     build_mapping,
     main,
 )
-from thread_archive._store.ulid import normalize_ulid, ulid_timestamp_ms
 
 T1_START = "2026-01-01T09:00:00+00:00"   # tz-aware inserted_at
 T1_FIRST_EVENT = "2026-01-01T10:00:00"   # naive → treated as UTC
@@ -354,13 +354,13 @@ def test_migration_refuses_newer_truth(archive_home) -> None:
 
 
 def test_module_entrypoint_runs_main(archive_home) -> None:
-    """``python -m thread_archive._scripts.migrate_thread_ulids`` is the way an
-    operator runs this — a real child process, parsing its own argv and exiting
-    with main()'s return code."""
+    """``python -m thread_archive._truth.migrate_v2`` is the module door behind
+    ``thread-archive index migrate`` — a real child process, parsing its own argv
+    and exiting with main()'s return code."""
     (archive_home / "truth").mkdir(parents=True)
     (archive_home / "truth" / "manifest.json").write_text(json.dumps({"version": 2}))
     proc = subprocess.run(
-        [sys.executable, "-m", "thread_archive._scripts.migrate_thread_ulids",
+        [sys.executable, "-m", "thread_archive._truth.migrate_v2",
          "--home", str(archive_home)],
         capture_output=True, text=True,
     )

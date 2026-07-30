@@ -424,6 +424,18 @@ h1.title { font-size: 19px; margin: 0 0 4px; }
 }
 .model-switch-label b { color: var(--ink); font-weight: 600; font-family: ui-monospace, Menlo, monospace; text-transform: none; }
 
+/* the pull request a session recorded working on — a quiet one-line provenance
+   marker, not a message; the ref itself is monospace so it reads as an identifier */
+.pr-link {
+  display: flex; align-items: baseline; gap: 8px; margin: 8px 0; font-size: 12px;
+}
+.pr-link-tag {
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+}
+.pr-link a, .pr-link span:last-child {
+  font-family: ui-monospace, Menlo, monospace; color: var(--ink);
+}
+
 /* the safeguard reason behind a fallback — an inline amber callout, shown open */
 .safeguard {
   margin: 8px 0; padding: 9px 12px; border-radius: 8px;
@@ -1249,6 +1261,21 @@ a.session-link:hover { color: var(--accent); }
 .rv-swatch.muted { height: 1px; opacity: .5; }
 .rv-legend .rv-muted-key { opacity: .65; }
 .rv-mark { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 2 3; opacity: .5; }
+
+/* The door table is the page's headline, so its cells are read as tiles rather
+   than as table text: one big number per door per metric, with the count or
+   companion percentile under it. */
+.rv-doors th { text-align: right; vertical-align: bottom; }
+.rv-doors th:first-child { text-align: left; }
+.rv-doors td.rv-door { white-space: normal; min-width: 160px; max-width: 320px; padding-right: 22px; }
+.rv-doors td.rv-door code, .rv-doors td.rv-door > span:first-child { display: block; }
+.rv-doors td.rv-door .small { line-height: 1.35; }
+.rv-doors td.rv-cell { text-align: right; padding-top: 10px; padding-bottom: 10px; }
+.rv-doors .rv-cell .n { display: block; font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.rv-doors .rv-cell .s { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+/* The pooled row is data the page explicitly does not lead with. */
+.rv-doors tr.rv-mixture td { color: var(--muted); border-top: 1px solid var(--line); }
+.rv-doors tr.rv-mixture .rv-cell .n { font-weight: 500; }
 
 /* ---- developer telemetry ---- */
 .telemetry-page h1 { margin: 0; }

@@ -18,6 +18,16 @@ answer is a support tier plus a repair loop, not a promise nobody can keep:
   active raw files are snapshotted into `dumps/drift/<source>/` — bounded,
   incremental, never auto-deleted — so a fix that comes months later can still
   recover everything the provider has since pruned.
+- **`thread-archive source recheck <provider>` is the first move.** It re-reads
+  exactly the files the ledgers named, through the parser as it stands now.
+  Content the old parser missed lands, and records that come back clean are
+  *closed* — which is what retires the verdict, since a ledger is append-only and
+  a repair must never erase the drift it repaired. Closing is by re-read, not by
+  assertion: the stamp is taken before the re-parse, so findings the re-parse
+  itself records stay open and the source stays degraded. Run it after any
+  upgrade that claims a parser fix — that is a repair with no patch involved, and
+  otherwise nothing retires a verdict your upgrade already fixed. If the findings
+  come back, the drift is live and the patch loop below is next.
 - **The user's own agent writes the fix.** `thread-archive source fix <provider>`
   scaffolds an override patch under `<home>/plugins/` (module, tests, collected
   samples, drift evidence, per-provider quirk notes, and a `PROTOCOL.md`

@@ -24,12 +24,17 @@ const QUIET = 'var(--muted)'
  *  unlisted surface renders as itself rather than being dropped — a new front
  *  door must show up as traffic nobody has labelled yet, not as no traffic. */
 const SURFACES: Record<string, string> = {
-  'mcp-http': 'shared server — the door agents use',
-  'mcp-stdio': 'per-client stdio server — one process per agent, never warmed',
+  'mcp-http': 'shared server — warms once, serves every agent',
+  'mcp-stdio': 'one process per agent — never warmed',
   cli: 'terminal — one process per search, never warmed',
-  web: 'web viewer',
+  web: 'this viewer — long-lived, warms at startup',
   mcp: 'unattributed — recorded before the doors were named',
 }
+
+/** The pooled row: every door at once. Named rather than left as the page's
+ *  headline, because a median across doors that behave this differently is a
+ *  mixture nobody waited on. */
+const ALL_DOORS = 'all doors'
 
 function ms(v: number | null | undefined): string {
   if (v == null) return '—'
@@ -242,13 +247,16 @@ function LineChart({
   )
 }
 
-function Tile({ value, label, sub }: { value: string; label: string; sub?: string }) {
+/** One number in the door table, with the count or companion percentile that says
+ *  how much to trust it. A band with no samples renders as an em dash and its own
+ *  reason — a door that served no warm first-page search has no typical search,
+ *  which is a fact about the door rather than a hole in the page. */
+function Cell({ value, sub }: { value: string; sub?: string }) {
   return (
-    <div className="stat-tile">
-      <div className="n">{value}</div>
-      <div className="l">{label}</div>
-      {sub && <div className="s">{sub}</div>}
-    </div>
+    <td className="rv-cell">
+      <span className="n">{value}</span>
+      {sub && <span className="s">{sub}</span>}
+    </td>
   )
 }
 
@@ -285,6 +293,32 @@ export function RetrievalView() {
       live = false
     }
   }, [hours])
+
+  /** Every door that saw anything this window: the ones that served searches,
+   *  then the ones that only started up. A door that warmed and served nothing is
+   *  worth a row of its own — a process paying tens of seconds of model load for
+   *  traffic that never came is invisible in every other number on this page. The
+   *  two sections are assembled independently by the server, so each side of the
+   *  join is optional. */
+  const doors = useMemo(() => {
+    const served = report?.served?.by_surface ?? []
+    const starts = new Map((report?.restarts?.by_surface ?? []).map((s) => [s.surface, s]))
+    const rows = served.map((s) => ({ ...s, starts: starts.get(s.surface) }))
+    const idle = (report?.restarts?.by_surface ?? [])
+      .filter((s) => !served.some((d) => d.surface === s.surface))
+      .map((s) => ({
+        surface: s.surface,
+        n: 0,
+        n_cold: 0,
+        p50: 0,
+        p90: 0,
+        warm_interactive: undefined,
+        warm_bulk: undefined,
+        cold: undefined,
+        starts: s,
+      }))
+    return [...rows, ...idle]
+  }, [report])
 
   const servedSeries = useMemo(() => {
     const buckets: ServedBucket[] = report?.served?.buckets ?? []
@@ -361,47 +395,108 @@ export function RetrievalView() {
         </label>
       </header>
 
-      <div className="stat-tiles">
-        <Tile
-          value={ms(band(served?.warm_interactive, 'p50'))}
-          label="typical search"
-          sub={
-            served?.warm_interactive.n
-              ? `warm first-page · ${served.warm_interactive.n} calls`
-              : 'no search yet on a settled process'
-          }
-        />
-        <Tile
-          value={ms(band(served?.warm_interactive, 'p90'))}
-          label="slow 1 in 10"
-          sub={`p99 ${ms(band(served?.warm_interactive, 'p99'))}`}
-        />
-        <Tile
-          value={ms(band(served?.warm_bulk, 'p50'))}
-          label="bulk & paged"
-          sub={`${served?.warm_bulk.n ?? 0} wide or paged calls`}
-        />
-        <Tile
-          value={ms(band(served?.cold, 'p50'))}
-          label="first search after a restart"
-          sub={`${served?.cold.n ?? 0} of ${served?.n ?? 0} calls`}
-        />
-        <Tile
-          value={String(restarts?.n ?? 0)}
-          label="process starts"
-          sub={`${ms(restarts?.p50_ms)} each to warm up`}
-        />
-      </div>
+      <section>
+        <h2>What each door got</h2>
+        <p className="muted">
+          Every number here is per door, because the doors are not one population.
+          The shared server and this viewer warm at startup and keep their models
+          resident across calls; a stdio server and a terminal search are one process
+          per call, so every search they serve is that process's first — cold by
+          construction, and nothing a warm pass could fix. Pooled, the one-shot doors
+          are the whole cold line and the page reads as a warming failure in a server
+          that is warming correctly. <em>Typical search</em> is a warm first-page ask
+          at that door's own width; <em>bulk &amp; paged</em> is everything wider or
+          further into the set.
+        </p>
+        <div className="stat-table-wrap">
+          <table className="stat-table rv-doors">
+            <thead>
+              <tr>
+                <th>door</th>
+                <th>searches</th>
+                <th>typical search</th>
+                <th>slow 1 in 10</th>
+                <th>bulk &amp; paged</th>
+                <th>first search after a restart</th>
+                <th>process starts</th>
+              </tr>
+            </thead>
+            <tbody>
+              {doors.map((d) => (
+                <tr key={d.surface}>
+                  <td className="rv-door">
+                    <code>{d.surface}</code>
+                    <span className="muted small">
+                      {SURFACES[d.surface] ?? 'a door nobody has labelled yet'}
+                    </span>
+                  </td>
+                  <Cell
+                    value={String(d.n)}
+                    sub={d.n ? undefined : 'warmed, served none'}
+                  />
+                  <Cell
+                    value={ms(band(d.warm_interactive, 'p50'))}
+                    sub={
+                      d.warm_interactive?.n
+                        ? `${d.warm_interactive.n} calls`
+                        : d.n
+                          ? 'nothing warm and first-page'
+                          : undefined
+                    }
+                  />
+                  <Cell
+                    value={ms(band(d.warm_interactive, 'p90'))}
+                    sub={
+                      d.warm_interactive?.n
+                        ? `p99 ${ms(band(d.warm_interactive, 'p99'))}`
+                        : undefined
+                    }
+                  />
+                  <Cell
+                    value={ms(band(d.warm_bulk, 'p50'))}
+                    sub={d.warm_bulk?.n ? `${d.warm_bulk.n} wide or paged` : undefined}
+                  />
+                  <Cell
+                    value={ms(band(d.cold, 'p50'))}
+                    sub={d.n ? `${d.n_cold} of ${d.n} cold` : undefined}
+                  />
+                  <Cell
+                    value={d.starts ? String(d.starts.n) : '—'}
+                    sub={d.starts ? `${ms(d.starts.p50_ms)} each` : 'never warms'}
+                  />
+                </tr>
+              ))}
+              {/* The pooled row, named as the mixture it is and kept last. It is
+                  the total the window saw, not a latency anyone waited on. */}
+              <tr className="rv-mixture">
+                <td className="rv-door">
+                  <span>{ALL_DOORS}</span>
+                  <span className="muted small">a mixture, not anyone's experience</span>
+                </td>
+                <Cell value={String(served?.n ?? 0)} />
+                <Cell value={ms(band(served?.warm_interactive, 'p50'))} />
+                <Cell value={ms(band(served?.warm_interactive, 'p90'))} />
+                <Cell value={ms(band(served?.warm_bulk, 'p50'))} />
+                <Cell value={ms(band(served?.cold, 'p50'))} />
+                <Cell
+                  value={String(restarts?.n ?? 0)}
+                  sub={`${ms(restarts?.p50_ms)} each`}
+                />
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       <section>
-        <h2>What agents got</h2>
+        <h2>What that looked like over time</h2>
         <p className="muted">
-          Median served latency per {servedSeries.unit}. Warm and cold are drawn apart on
-          purpose — every cache search leans on is process-local, so a restart resets them
-          and the first search pays the reload. Averaging the two tracks the restart rate,
-          not the code. A search counts as cold when it recorded paying that load itself
-          (a model loaded or a vector pack built on the request thread), never because its
-          process happened to be young.
+          Median served latency per {servedSeries.unit}, every door together. Warm and cold
+          are drawn apart on purpose — every cache search leans on is process-local, so a
+          restart resets them and the first search pays the reload. Averaging the two tracks
+          the restart rate, not the code. A search counts as cold when it recorded paying
+          that load itself (a model loaded or a vector pack built on the request thread),
+          never because its process happened to be young.
           {servedSeries.unit === 'hour' &&
             ' At this resolution a point is often a handful of searches, sometimes one; hover for the count.'}
         </p>
@@ -424,51 +519,6 @@ export function RetrievalView() {
           </p>
         )}
       </section>
-
-      {/* One door is not a comparison, and every section here comes back
-          independently — a report assembled without this one must render the rest
-          rather than take the page down with it. */}
-      {(served?.by_surface?.length ?? 0) > 1 && (
-        <section>
-          <h2>Which door they came through</h2>
-          <p className="muted">
-            Only the shared server warms at startup and keeps its models resident across
-            calls. A stdio server and a terminal search are one process per call, so every
-            search they serve is that process's first — cold by construction, and nothing
-            a warm pass could fix. Read the cold column against the shared server's row;
-            pooled with the others it is a chart of how often somebody used a one-shot.
-          </p>
-          <div className="stat-table-wrap">
-            <table className="stat-table rv-surfaces">
-              <thead>
-                <tr>
-                  <th>surface</th>
-                  <th className="num">searches</th>
-                  <th className="num">cold</th>
-                  <th className="num">median</th>
-                  <th className="num">slow 1 in 10</th>
-                </tr>
-              </thead>
-              <tbody>
-                {served!.by_surface.map((s) => (
-                  <tr key={s.surface}>
-                    <td>
-                      <code>{s.surface}</code>
-                      <span className="muted small"> {SURFACES[s.surface] ?? ''}</span>
-                    </td>
-                    <td className="num">{s.n}</td>
-                    <td className="num">
-                      {s.n_cold} <span className="muted">({Math.round((100 * s.n_cold) / s.n)}%)</span>
-                    </td>
-                    <td className="num">{ms(s.p50)}</td>
-                    <td className="num">{ms(s.p90)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
 
       <section>
         <h2>Where the time goes</h2>
@@ -556,16 +606,11 @@ export function RetrievalView() {
         <section>
           <h2>Restarts</h2>
           <p className="muted">
-            Process starts per {restarts.bucket}, and what they cost. This is here because
-            it is the largest single influence on what agents feel: {ms(restarts.p50_ms)} of
+            Process starts per {restarts.bucket}, across every daemon that warms — which
+            door each belongs to is in the table above. This is here because it is the
+            largest single influence on what a caller feels: {ms(restarts.p50_ms)} of
             warm-up per start, {restarts.total_s.toFixed(0)}s across the window. Only
             {' '}{restarts.bucket}s with a start are listed.
-            {(restarts.by_surface?.length ?? 0) > 0 && (
-              <>
-                {' '}Counted across every daemon that warms — this window:{' '}
-                {restarts.by_surface.map((s) => `${s.surface} ${s.n}`).join(' · ')}.
-              </>
-            )}
           </p>
           <div className="stat-table-wrap">
             <table className="stat-table">

@@ -1,18 +1,32 @@
 # Web viewer
 
-The always-on watcher cohosts a local search + reader UI: `thread-archive watch --web`
-(the shipped watcher service passes it) serves at `http://127.0.0.1:8787` — a stdlib
-HTTP server handing out a pre-built React bundle plus a few JSON endpoints, in
-the watcher's *own* process. One process, one SQLite engine — the viewer reads
-concurrently with the watcher's writes, which WAL makes safe (`_store/_base.py`).
-No second daemon: the viewer exists where the persistent URL is.
+**The viewer is dev-only — it runs from a clone and ships in no wheel.**
+`thread_archive._web` and its built bundle are excluded from the wheel (the same
+treatment as `_dev`), because a browser UI is not what an install is for:
+preservation, retrieval, and the MCP server are, and the bundle alone was a
+quarter of the download. `thread_archive._viewer.viewer_available()` is the
+probe, and everything that would offer the viewer asks it first — so
+`thread-archive web` and `watch --web` are registered only where the viewer
+exists, `setup` offers a browser only there, and the service layer writes no
+unit carrying `--web` without one. An install neither advertises nor half-serves
+a UI it hasn't got.
+
+From a clone, the always-on watcher cohosts a local search + reader UI:
+`thread-archive watch --web` (the watcher service passes it) serves at
+`http://127.0.0.1:8787` — a stdlib HTTP server handing out a pre-built React
+bundle plus a few JSON endpoints, in the watcher's *own* process. One process,
+one SQLite engine — the viewer reads concurrently with the watcher's writes,
+which WAL makes safe (`_store/_base.py`). No second daemon: the viewer exists
+where the persistent URL is.
 
 `thread-archive web` opens that URL in a browser. An opener, not a server.
 `thread-archive web dev` turns on the dev panels (below) and opens it.
 
-**The URLs are a supported interface.** Other programs link into the viewer —
+**The URLs are steady within a clone.** Other programs link into the viewer —
 editor "open in archive" buttons, sibling consoles' navbars, health probes — so
-these paths keep working:
+these paths keep working (a promise to this machine's own family rather than a
+public interface, since no install has them — see
+[stability.md](stability.md)):
 
 | Path | What it is |
 | --- | --- |
@@ -32,8 +46,8 @@ no unmocked fetch — and `route-coverage.spec.ts` keeps that a bijection, so a
 new route without a browser case reds the suite.
 
 **Dev panels** are the exception to the table above, and deliberately not part of
-its contract. `/retrieval` reports on the search *pipeline* — served latency by
-warm and cold regime, per-stage costs; `/telemetry` reports web endpoint latency,
+its contract. `/retrieval` reports on the search *pipeline* — served latency per
+front door and by warm/cold regime, per-stage costs; `/telemetry` reports web endpoint latency,
 ingest cost, folded ingest faults, and retained ledger size; and `/lab` reports
 on what the bench has to measure it with. These are maintainer instruments rather
 than anything the archive is for, so **a viewer does not have them unless its
@@ -69,7 +83,8 @@ header — which no cross-origin form can set, so a page this server did not ser
 must first win a preflight that is never answered.
 
 **Runtime is node-free**: the bundle is built ahead of time and committed under
-`_web/static/`, so the install never touches node. Node is a *build*-only tool:
+`_web/static/`, so running the viewer from a clone never touches node (and an
+install, having no viewer, never touches it either). Node is a *build*-only tool:
 
 ```bash
 # rebuild the bundle after editing the frontend (node only here):

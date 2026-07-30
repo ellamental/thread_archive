@@ -12,18 +12,18 @@ thread-archive setup
 **`setup` is the onboarding.** On first run it discovers this machine's
 conversation stores and shows what it found — counts, sizes, date ranges —
 *before* touching anything, then asks: import (all, a selection, or skip),
-install the always-on watcher (launchd on macOS, systemd on Linux; includes
-the web viewer at :8787), **schedule a nightly backup** (a second question —
+install the always-on watcher (launchd on macOS, systemd on Linux),
+**schedule a nightly backup** (a second question —
 *where should backups go?* — that installs the daily backup → verify →
 restore-drill pipeline to a disk you name), wire the MCP server into detected
 clients (the `claude` CLI, or it prints the JSON block for any other client),
-and — with the watcher serving it — open the archive in your browser. Every
-choice is skippable and persists in `<home>/config.json`; a disabled source
-stays disabled across every ingest path — and across later runs of `setup`,
-which only changes a source's policy where you state a new one (the edit
-selection). The end state is a populated, searchable archive served over MCP,
-plus the `thread-archive` operator CLI and the pre-built web viewer (no node at
-any point). `thread-archive status` shows status; `thread-archive setup`
+and — from a clone, where the viewer exists — open the archive in your browser.
+Every choice is skippable and persists in `<home>/config.json`; a disabled
+source stays disabled across every ingest path — and across later runs of
+`setup`, which only changes a source's policy where you state a new one (the
+edit selection). The end state is a populated, searchable archive served over
+MCP, plus the `thread-archive` operator CLI. `thread-archive status` shows
+status; `thread-archive setup`
 revisits the choices. Non-interactive (agents,
 scripts): `thread-archive setup --yes` accepts every default — without `--yes`,
 a non-TTY run only prints guidance and never ingests, and neither shape opens a

@@ -57,7 +57,8 @@ src/thread_archive/
                     #   here, written and specified elsewhere (docs/format.md)
   _watcher/         # local-source watcher (self-feeding ingest)
   _mcp/             # the library-native read MCP server
-  _web/             # the viewer: stdlib server + built bundle (cohosted by `watch --web`)
+  _web/             # the viewer: stdlib server + built bundle (cohosted by `watch --web`);
+                      #   DEV-ONLY — excluded from the wheel, like _dev
   _service/         # `thread-archive service`: the watcher / MCP / nightly-backup agents behind a
                       #   platform registry — launchd (macOS) and systemd --user (Linux) backends
   _thread_import/   # vendored provider parsers (a clean, dependency-free island)

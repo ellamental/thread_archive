@@ -564,6 +564,7 @@ def test_offer_viewer_headless_host_prints_the_url(archive_home, capsys) -> None
     assert "No browser to open here — visit http://127.0.0.1:8787" in capsys.readouterr().out
 
 
+@pytest.mark.viewer
 def test_setup_ends_in_the_viewer_and_records_it(archive_home, capsys) -> None:
     # End to end: the watcher install serves the viewer, so first contact ends in
     # a browser and the verdict lands in config beside the other setup choices.

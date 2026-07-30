@@ -1,4 +1,5 @@
-"""The code axis: which conversations touched a file, and which produced a commit.
+"""The code axis: which conversations touched a file, produced a commit, or worked
+on a pull request.
 
 Search answers "where did we *talk* about X". This answers "where did we *do* X to
 this file" — a different question with a different index. The paths were always in
@@ -8,6 +9,12 @@ turns "which conversations edited rank.py" from a text search that happens to ma
 a path into an indexed lookup that can't miss the session that spelled the path
 differently.
 
+The three strands are evidence of different strengths, and the queries say so. A
+path is a fact (the tool named the file). A commit is an inference (file overlap
+inside an authorship window). A pull request is *testimony* — the harness recorded
+which PR the session was on — so it needs no window and no corroboration, and it is
+the only one of the three that can be wrong only by the harness being wrong.
+
 **The fold** (:func:`refresh_code_index`) is a cursor projection over the event log,
 the same shape as ``_store._metrics``: append-only monotonic ids mean folding only
 ``id > through_event_id`` is exact, ``projection_version`` makes the extraction rules
@@ -16,16 +23,18 @@ rather than trusting a stale watermark. It walks **id windows**, not row counts,
 every batch is a primary-key range scan of bounded width — an event-type index seek
 would have to sort a third of the corpus back into id order to resume.
 
-**The queries** (:func:`blame_path`, :func:`blame_commit`, :func:`thread_files`) are
-plain SQL over that projection, and they surface through the tools that already
-exist rather than through one of their own: :func:`blame_path` is what a
-``path``-scoped browse renders (:func:`.browse.browse_threads`),
-:func:`thread_files` is ``thread_read(summary='files')``, and
-:func:`blame_commit` backs the ``commit`` scope — the loop back from ``git blame``,
-resolving a sha to every session that *contributed* to it (the one that ran ``git
-commit`` is flagged among them, not substituted for them: a commit usually carries
-work from several sittings, and wherever a human commits out of band it carries
-nobody's).
+**The queries** (:func:`blame_path`, :func:`blame_commit`, :func:`blame_pr`,
+:func:`thread_files`) are plain SQL over that projection, and they surface through
+the tools that already exist rather than through ones of their own:
+:func:`blame_path` is what a ``path``-scoped browse renders
+(:func:`.browse.browse_threads`), :func:`thread_files` is
+``thread_read(summary='files')``, :func:`blame_commit` backs the ``commit`` scope —
+the loop back from ``git blame``, resolving a sha to every session that
+*contributed* to it (the one that ran ``git commit`` is flagged among them, not
+substituted for them: a commit usually carries work from several sittings, and
+wherever a human commits out of band it carries nobody's) — and :func:`blame_pr`
+backs the ``pr`` scope, resolving a pull request to the sessions that said they
+were working on it.
 """
 
 from __future__ import annotations
@@ -47,20 +56,24 @@ from ._paths import (
     basename_of,
     extract_commits,
     extract_paths,
+    extract_pr,
     normalize_path,
+    parse_pr_ref,
 )
 
 logger = logging.getLogger(__name__)
 
 #: Bump when the extraction rules change: a fold that finds a trailing version
-#: discards both projections and rebuilds, because rows written under older rules
+#: discards every projection and rebuilds, because rows written under older rules
 #: cannot be added to by newer ones.
-PROJECTION_VERSION = 1
+PROJECTION_VERSION = 2
 
 #: Event types the fold reads. Paths come from the tool *call* (which names the
-#: file); commits come from the tool *result* (which prints the sha).
+#: file); commits come from the tool *result* (which prints the sha); pull requests
+#: come from the harness's own marker, already structured.
 _PATH_EVENT_TYPES = ("tool_use_complete", "tool_use_started")
 _COMMIT_EVENT_TYPES = ("tool_execution_completed", "tool_use_complete")
+_PR_EVENT_TYPES = ("pr_link",)
 
 #: Ids per fold batch. Wide enough that the backfill isn't a million round trips,
 #: narrow enough that one batch is a bounded amount of work to lose to a kill.
@@ -116,17 +129,18 @@ def _read_cursor(s: Session) -> tuple[int, int]:
 
 
 def _reset(s: Session) -> None:
-    """Drop both projections and rewind the cursor — the response to a version
+    """Drop every projection and rewind the cursor — the response to a version
     change or a shrunken log. Safe because nothing here is truth."""
     s.execute(sa_text("DELETE FROM event_paths"))
     s.execute(sa_text("DELETE FROM event_commits"))
+    s.execute(sa_text("DELETE FROM event_prs"))
     s.execute(sa_text(
         "UPDATE code_cursor SET through_event_id = 0, projection_version = :v WHERE id = 1"
     ), {"v": PROJECTION_VERSION})
 
 
-def _fold_window(s: Session, lo: int, hi: int, cwds: dict[str, str]) -> tuple[int, int]:
-    """Fold events in ``(lo, hi]`` into both projections. Returns (paths, commits)."""
+def _fold_window(s: Session, lo: int, hi: int, cwds: dict[str, str]) -> tuple[int, int, int]:
+    """Fold events in ``(lo, hi]`` into every projection. Returns (paths, commits, prs)."""
     path_rows: list[dict] = []
     for eid, tid, etype, occurred_at, payload in s.execute(sa_text(
         "SELECT id, thread_id, event_type, occurred_at, payload FROM events "
@@ -166,6 +180,23 @@ def _fold_window(s: Session, lo: int, hi: int, cwds: dict[str, str]) -> tuple[in
                 "repo": cwds.get(tid), "occurred_at": str(occurred_at) if occurred_at else None,
             })
 
+    # Pull requests: already structured on the event, so this is a narrow read of
+    # one event type rather than a parse of anything.
+    pr_rows: list[dict] = []
+    for eid, tid, occurred_at, payload in s.execute(sa_text(
+        "SELECT id, thread_id, occurred_at, payload FROM events "
+        "WHERE id > :lo AND id <= :hi AND event_type = 'pr_link' ORDER BY id"
+    ), {"lo": lo, "hi": hi}):
+        p = payload if isinstance(payload, dict) else json.loads(payload or "{}")
+        found = extract_pr(p)
+        if not found:
+            continue
+        number, repo, url = found
+        pr_rows.append({
+            "event_id": eid, "thread_id": tid, "number": number, "repo": repo,
+            "url": url, "occurred_at": str(occurred_at) if occurred_at else None,
+        })
+
     if path_rows:
         s.execute(sa_text(
             "INSERT INTO event_paths "
@@ -177,13 +208,18 @@ def _fold_window(s: Session, lo: int, hi: int, cwds: dict[str, str]) -> tuple[in
             "INSERT INTO event_commits (event_id, thread_id, sha, subject, repo, occurred_at) "
             "VALUES (:event_id, :thread_id, :sha, :subject, :repo, :occurred_at)"
         ), commit_rows)
-    return len(path_rows), len(commit_rows)
+    if pr_rows:
+        s.execute(sa_text(
+            "INSERT INTO event_prs (event_id, thread_id, number, repo, url, occurred_at) "
+            "VALUES (:event_id, :thread_id, :number, :repo, :url, :occurred_at)"
+        ), pr_rows)
+    return len(path_rows), len(commit_rows), len(pr_rows)
 
 
 def refresh_code_index(
     *, max_batches: Optional[int] = None, session: Optional[Session] = None
 ) -> dict:
-    """Bring the path + commit projections up to date with the event log.
+    """Bring the path + commit + pull-request projections up to date with the event log.
 
     Idempotent and cheap when current (one indexed ``MAX(id)`` read, then a no-op).
     The first call on a fresh archive pays the backfill; ``max_batches`` bounds one
@@ -198,7 +234,7 @@ def refresh_code_index(
     with use_session(session) as s:
         upto = s.execute(sa_text("SELECT MAX(id) FROM events")).scalar()
         if upto is None:
-            return {"paths": 0, "commits": 0, "through": 0, "done": True}
+            return {"paths": 0, "commits": 0, "prs": 0, "through": 0, "done": True}
         upto = int(upto)
         through, version = _read_cursor(s)
         if version != PROJECTION_VERSION or through > upto:
@@ -207,16 +243,16 @@ def refresh_code_index(
         if own:
             s.commit()
         if through >= upto:
-            return {"paths": 0, "commits": 0, "through": through, "done": True}
+            return {"paths": 0, "commits": 0, "prs": 0, "through": through, "done": True}
         cwds = _thread_cwds(s)
 
-    paths = commits = batches = 0
+    paths = commits = prs = batches = 0
     while through < upto:
         if max_batches is not None and batches >= max_batches:
             break
         hi = min(through + _WINDOW, upto)
         with use_session(session) as s:
-            n_paths, n_commits = _fold_window(s, through, hi, cwds)
+            n_paths, n_commits, n_prs = _fold_window(s, through, hi, cwds)
             s.execute(sa_text(
                 "UPDATE code_cursor SET through_event_id = :hi, projection_version = :v "
                 "WHERE id = 1"
@@ -225,19 +261,21 @@ def refresh_code_index(
                 s.commit()
         paths += n_paths
         commits += n_commits
+        prs += n_prs
         batches += 1
         through = hi
 
-    if paths or commits:
+    if paths or commits or prs:
         logger.info(
-            "code index: folded %d path row(s), %d commit(s) through event %d",
-            paths, commits, through,
+            "code index: folded %d path row(s), %d commit(s), %d pr link(s) through event %d",
+            paths, commits, prs, through,
         )
-    return {"paths": paths, "commits": commits, "through": through, "done": through >= upto}
+    return {"paths": paths, "commits": commits, "prs": prs, "through": through,
+            "done": through >= upto}
 
 
 def rebuild_code_index(session: Optional[Session] = None) -> dict:
-    """Drop and re-derive both projections from the event log — the code-axis half
+    """Drop and re-derive every projection from the event log — the code-axis half
     of ``reindex``, and the heal for an index whose rows predate a rules change."""
     with use_session(session) as s:
         _read_cursor(s)  # ensure the row exists before resetting it
@@ -254,11 +292,16 @@ def code_index_status(session: Optional[Session] = None) -> dict:
         paths = s.execute(sa_text("SELECT count(*) FROM event_paths")).scalar() or 0
         distinct = s.execute(sa_text("SELECT count(DISTINCT path) FROM event_paths")).scalar() or 0
         commits = s.execute(sa_text("SELECT count(*) FROM event_commits")).scalar() or 0
+        prs = s.execute(sa_text("SELECT count(*) FROM event_prs")).scalar() or 0
+        distinct_prs = s.execute(sa_text(
+            "SELECT count(*) FROM (SELECT DISTINCT repo, number FROM event_prs)"
+        )).scalar() or 0
         upto = s.execute(sa_text("SELECT MAX(id) FROM events")).scalar() or 0
         if session is None:
             s.commit()
     return {
         "paths": int(paths), "distinct_paths": int(distinct), "commits": int(commits),
+        "prs": int(prs), "distinct_prs": int(distinct_prs),
         "through_event_id": through, "max_event_id": int(upto),
         # Ordinary lag, not a fault: with a live watcher the cursor trails the log
         # between maintenance passes, and every read path tops the fold up before
@@ -743,6 +786,98 @@ def blame_commit(
     }
 
 
+# ── Pull requests ────────────────────────────────────────────────────────────
+
+
+def blame_pr(
+    ref: str,
+    *,
+    repo: Optional[str] = None,
+    limit: int = 20,
+    session: Optional[Session] = None,
+) -> dict:
+    """The conversations that worked on a pull request.
+
+    The cheapest of the three code-axis lookups and the most certain, because the
+    harness recorded the association itself: no authorship window, no file overlap,
+    no reachable repository needed. A session that says it is on ``owner/name#4``
+    *is* on it.
+
+    ``ref`` is whatever the caller has to hand — ``4``, ``#4``,
+    ``owner/name#4``, or the URL off the address bar.
+
+    ``resolution`` says what the answer is built from:
+
+    - **sessions** — the PR is in the archive and these are the sessions that
+      declared it. When a bare number matched more than one repository, every match
+      is returned and ``repos`` names them: silently picking one would answer a
+      different question than the one asked.
+    - **unknown** — no session in this archive declared this PR. That is not the
+      same as the PR having no work behind it; only harnesses that record the link
+      contribute here, and only for sessions imported since they began to.
+    - **invalid** — not a pull-request reference at all.
+    """
+    parsed = parse_pr_ref(ref or "")
+    if not parsed:
+        return {"ref": (ref or "").strip(), "resolution": "invalid", "threads": [],
+                "total_threads": 0,
+                "note": "a pull request is a number (4), a repo-qualified ref "
+                        "(owner/name#4), or its URL"}
+    ref_repo, number = parsed
+    # An explicit repo= argument is the caller narrowing; a repo inside the ref is
+    # the caller being specific. Either way it is a suffix match, so `thread_archive`
+    # finds `ellamental/thread_archive` without demanding the owner.
+    scope = (repo or ref_repo or "").strip() or None
+    limit = max(1, min(int(limit), 100))
+
+    params: dict = {"num": number}
+    clause = "p.number = :num"
+    if scope:
+        # Escaped, not interpolated: `thread_archive` is an ordinary repository name
+        # and `_` is a LIKE wildcard, so an unescaped suffix silently also matches
+        # `thread-archive` — a different repository with a different PR #4.
+        params["repo"] = scope
+        params["suffix"] = "%/" + _like_escape(scope)
+        clause += " AND (p.repo = :repo OR p.repo LIKE :suffix ESCAPE '\\')"
+
+    with use_session(session) as s:
+        rows = s.execute(sa_text(
+            "SELECT p.thread_id, t.title, t.source, p.repo, p.url, "
+            "       min(p.occurred_at) AS first_at, max(p.occurred_at) AS last_at, "
+            "       max(p.event_id) AS last_event "
+            "FROM event_prs p JOIN threads t ON t.id = p.thread_id "
+            "WHERE " + clause + " GROUP BY p.thread_id, p.repo, p.url "
+            "ORDER BY last_at DESC"
+        ), params).all()
+
+    if not rows:
+        return {
+            "ref": (f"{scope}#{number}" if scope else f"#{number}"),
+            "number": number, "repo": scope, "resolution": "unknown", "threads": [],
+            "total_threads": 0,
+            "note": "no session in this archive recorded working on this pull request",
+        }
+
+    threads = [
+        {"thread_id": tid, "title": title, "source": source, "repo": row_repo,
+         "url": url, "first": first_at, "last": last_at, "event_id": last_event}
+        for tid, title, source, row_repo, url, first_at, last_at, last_event in rows
+    ]
+    repos = sorted({t["repo"] for t in threads if t["repo"]})
+    note = "sessions that recorded working on this pull request"
+    if len(repos) > 1:
+        note += (f"; a bare number matched {len(repos)} repositories "
+                 f"({', '.join(repos)}) — pass repo= to narrow")
+    return {
+        "ref": (f"{repos[0]}#{number}" if len(repos) == 1 else f"#{number}"),
+        "number": number, "repo": repos[0] if len(repos) == 1 else scope,
+        "repos": repos,
+        "url": next((t["url"] for t in threads if t["url"]), None),
+        "resolution": "sessions", "total_threads": len(threads),
+        "threads": threads[:limit], "note": note,
+    }
+
+
 def path_scope_sql(pattern: str, params: dict, *, column: str = "thread_id") -> str:
     """A ``<column> IN (...)`` scope for the search layer: the threads that touched
     ``pattern``. Thread-granular on purpose — the useful composition is "search X
@@ -762,6 +897,7 @@ __all__ = [
     "code_index_status",
     "blame_path",
     "blame_commit",
+    "blame_pr",
     "thread_files",
     "path_predicate",
     "op_predicate",

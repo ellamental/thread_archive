@@ -67,7 +67,9 @@ def _calls(log: Path) -> list[list[str]]:
 
 
 def test_watcher_unit_shape() -> None:
-    units = systemd.watcher_units(ENTRY, LOG_DIR)
+    # has_viewer pinned: the viewer is dev-only, so the default would make this
+    # unit's ExecStart depend on checkout-vs-wheel.
+    units = systemd.watcher_units(ENTRY, LOG_DIR, has_viewer=True)
     assert set(units) == {"thread-archive-watcher.service"}
     text = units["thread-archive-watcher.service"]
     assert "Type=simple" in text
@@ -87,16 +89,16 @@ def test_watcher_unit_shape() -> None:
 
 
 def test_watcher_unit_home_and_web_options() -> None:
-    text = systemd.watcher_units(ENTRY, LOG_DIR, home="/data/arc", web=False)[
+    text = systemd.watcher_units(ENTRY, LOG_DIR, home="/data/arc", web=False, has_viewer=True)[
         "thread-archive-watcher.service"
     ]
     assert "Environment=THREAD_ARCHIVE_HOME=/data/arc" in text
     assert "--web" not in text
 
-    default = systemd.watcher_units(ENTRY, LOG_DIR)["thread-archive-watcher.service"]
+    default = systemd.watcher_units(ENTRY, LOG_DIR, has_viewer=True)["thread-archive-watcher.service"]
     assert "THREAD_ARCHIVE_HOME" not in default  # no explicit home → unset
 
-    custom_port = systemd.watcher_units(ENTRY, LOG_DIR, web_port=9000)[
+    custom_port = systemd.watcher_units(ENTRY, LOG_DIR, web_port=9000, has_viewer=True)[
         "thread-archive-watcher.service"
     ]
     assert "--web-port 9000" in custom_port

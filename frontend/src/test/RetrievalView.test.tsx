@@ -22,17 +22,33 @@ function report(over: Partial<RetrievalReport> = {}): RetrievalReport {
         { at: '2026-07-26', n: 20, warm: { n: 16, p50: 210, p90: 800 }, cold: { n: 4, p50: 9100, p90: 13000 } },
       ],
       warm: { n: 34, p50: 228, p90: 860, p99: 2415 },
-      // The pooled warm median sits between the two workloads on purpose: the
-      // headline must come from the interactive band, never the pool.
+      // The pooled bands sit between the doors on purpose: they are the window's
+      // total, and no door actually felt them.
       warm_interactive: { n: 28, p50: 205, p90: 640, p99: 1900 },
       warm_bulk: { n: 6, p50: 4100, p90: 9800, p99: 11200 },
       cold: { n: 6, p50: 8600, p90: 12500, p99: 13100 },
-      // Both shapes of door, because the page's job is to keep them apart: a
-      // warmed server whose cold share is small, and a one-shot surface whose
-      // cold share is everything.
+      // Every shape of door, because the page's job is to keep them apart: a
+      // warmed server whose cold share is small, the viewer beside it, and a
+      // one-shot surface whose cold share is everything.
       by_surface: [
-        { surface: 'mcp-http', n: 36, n_cold: 2, p50: 240, p90: 900 },
-        { surface: 'cli', n: 4, n_cold: 4, p50: 8600, p90: 12500 },
+        {
+          surface: 'mcp-http', n: 36, n_cold: 2, p50: 240, p90: 900,
+          warm_interactive: { n: 30, p50: 190, p90: 600, p99: 1500 },
+          warm_bulk: { n: 4, p50: 3900, p90: 9000 },
+          cold: { n: 2, p50: 8200, p90: 9000 },
+        },
+        {
+          surface: 'web', n: 20, n_cold: 1, p50: 500, p90: 1400,
+          warm_interactive: { n: 18, p50: 470, p90: 1300, p99: 2100 },
+          warm_bulk: { n: 1, p50: 2600, p90: 2600 },
+          cold: { n: 1, p50: 6100, p90: 6100 },
+        },
+        {
+          surface: 'cli', n: 4, n_cold: 4, p50: 8600, p90: 12500,
+          warm_interactive: { n: 0, p50: 0, p90: 0, p99: 0 },
+          warm_bulk: { n: 0, p50: 0, p90: 0 },
+          cold: { n: 4, p50: 8600, p90: 12500 },
+        },
       ],
     },
     stages: {
@@ -44,8 +60,14 @@ function report(over: Partial<RetrievalReport> = {}): RetrievalReport {
       ],
     },
     restarts: {
-      n: 39, bucket: 'day', buckets: [{ at: '2026-07-26', n: 39 }],
-      by_surface: [{ surface: 'mcp-http', n: 21 }, { surface: 'web', n: 18 }],
+      n: 42, bucket: 'day', buckets: [{ at: '2026-07-26', n: 42 }],
+      by_surface: [
+        { surface: 'mcp-http', n: 21, p50_ms: 23400 },
+        { surface: 'web', n: 18, p50_ms: 15300 },
+        // A door that warmed and served nothing: three processes paying the load
+        // for traffic that never came.
+        { surface: 'mcp-stdio', n: 3, p50_ms: 31000 },
+      ],
       p50_ms: 22300, total_s: 1836,
     },
     bench: {
@@ -63,30 +85,48 @@ function view() {
   )
 }
 
-it('leads with the number an agent actually feels, not an average', async () => {
+/** One door's row of the headline table, as `[door, ...numbers]`. */
+function doorRow(container: HTMLElement, surface: string): string[] {
+  const rows = [...container.querySelectorAll('.rv-doors tbody tr')]
+  const row = rows.find((r) => r.querySelector('.rv-door')!.textContent!.startsWith(surface))!
+  return [...row.querySelectorAll('.rv-cell .n')].map((n) => n.textContent!)
+}
+
+it('leads with what each door costs, never a number pooled across them', async () => {
   mswJson('/api/retrieval', report())
-  view()
-  // The headline is the warm *interactive* median — a first-page question. The
-  // pooled warm median (228ms here) carries the bulk sweeps and describes the
-  // window's workload mix, so it must not be the tile.
-  expect(await screen.findByText('205ms')).toBeInTheDocument()
-  expect(screen.getByText('typical search')).toBeInTheDocument()
-  // Bulk work is real traffic and gets its own tile rather than a share of the
-  // headline.
-  expect(screen.getByText('bulk & paged')).toBeInTheDocument()
-  expect(screen.getByText('4.10s')).toBeInTheDocument()
+  const { container } = view()
+  await screen.findByText('typical search')
+  // The same question costs 190ms at the shared server and 470ms in the viewer,
+  // and the pooled 205ms is neither. Each door's own warm *interactive* median —
+  // a first-page ask — is what a caller there actually waits.
+  expect(doorRow(container, 'mcp-http')[1]).toBe('190ms')
+  expect(doorRow(container, 'web')[1]).toBe('470ms')
+  // Bulk work is real traffic and keeps its own column rather than a share of it.
+  expect(doorRow(container, 'mcp-http')[3]).toBe('3.90s')
+})
+
+it('names the pooled row as a mixture and keeps it last', async () => {
+  mswJson('/api/retrieval', report())
+  const { container } = view()
+  await screen.findByText('typical search')
+  // The total is worth having; leading with it is what this page exists not to
+  // do, so it is labelled and sits under the doors it averages.
+  const rows = [...container.querySelectorAll('.rv-doors tbody tr')]
+  expect(rows[rows.length - 1].textContent).toContain('all doors')
+  expect(doorRow(container, 'all doors')[1]).toBe('205ms')
 })
 
 it('reports the cold regime beside the warm one rather than blended into it', async () => {
   mswJson('/api/retrieval', report())
   const { container } = view()
-  // Scoped to the tiles: the cold median is also the CLI row's median in the
-  // surface table below, and realistically so — that surface is the cold traffic.
   await screen.findByText('first search after a restart')
-  expect(container.querySelector('.stat-tiles')!.textContent).toContain('8.60s')
-  // …and names the restart count, which is what decides how often anyone pays it.
-  expect(screen.getByText('process starts')).toBeInTheDocument()
-  expect(screen.getAllByText('39').length).toBeGreaterThan(0)
+  // Per door, because that is where the answer differs: 8.20s at the warmed
+  // server it rarely happens to, 8.60s at a terminal where it always does.
+  expect(doorRow(container, 'mcp-http')[4]).toBe('8.20s')
+  expect(doorRow(container, 'cli')[4]).toBe('8.60s')
+  // …and how often each door pays it, which is what decides whether it matters.
+  expect(screen.getByText('2 of 36 cold')).toBeInTheDocument()
+  expect(screen.getByText('4 of 4 cold')).toBeInTheDocument()
 })
 
 it('says how much of the window cannot be sorted into a regime', async () => {
@@ -101,21 +141,40 @@ it('says how much of the window cannot be sorted into a regime', async () => {
 
 it('keeps the never-warmed surfaces off the shared server’s account', async () => {
   mswJson('/api/retrieval', report())
-  view()
-  // The whole misreading this section prevents: a one-shot surface is cold on
-  // every call it will ever serve, so pooled it reads as a warming failure in a
-  // server that is warming correctly. Both rows, with their own cold shares.
-  expect(await screen.findByText('mcp-http')).toBeInTheDocument()
-  expect(screen.getByText('cli')).toBeInTheDocument()
-  expect(screen.getByText('(6%)')).toBeInTheDocument()
-  expect(screen.getByText('(100%)')).toBeInTheDocument()
+  const { container } = view()
+  await screen.findByText('typical search')
+  // The whole misreading this table prevents: a one-shot surface is cold on every
+  // call it will ever serve, so pooled it reads as a warming failure in a server
+  // that is warming correctly. A door with no warm first-page search says so
+  // rather than borrowing a number from the pool.
+  expect(doorRow(container, 'cli')[1]).toBe('—')
+  expect(screen.getByText('nothing warm and first-page')).toBeInTheDocument()
+  // …and it warms no process, so it has no start to show.
+  expect(doorRow(container, 'cli')[5]).toBe('—')
+  expect(screen.getByText('never warms')).toBeInTheDocument()
 })
 
-it('attributes restarts to the daemon that paid them', async () => {
+it('gives a door that warmed and served nothing a row of its own', async () => {
   mswJson('/api/retrieval', report())
-  view()
-  // 39 starts across two services is not 39 bounces of the one being read.
-  expect(await screen.findByText(/mcp-http 21 · web 18/)).toBeInTheDocument()
+  const { container } = view()
+  await screen.findByText('typical search')
+  // Three processes paid tens of seconds of model load for traffic that never
+  // came. It appears in no latency number on this page, so without a row it is
+  // simply invisible.
+  expect(doorRow(container, 'mcp-stdio')[0]).toBe('0')
+  expect(screen.getByText('warmed, served none')).toBeInTheDocument()
+  expect(doorRow(container, 'mcp-stdio')[5]).toBe('3')
+})
+
+it('attributes restarts to the daemon that paid them, and says what one cost it', async () => {
+  mswJson('/api/retrieval', report())
+  const { container } = view()
+  await screen.findByText('typical search')
+  // 42 starts across three services is not 42 bounces of the one being read, and
+  // a start does not cost every door the same.
+  expect(doorRow(container, 'mcp-http')[5]).toBe('21')
+  expect(screen.getByText('23.4s each')).toBeInTheDocument()
+  expect(screen.getByText('15.3s each')).toBeInTheDocument()
 })
 
 it('renders the stage table with the slowest stage first', async () => {
@@ -177,7 +236,12 @@ it('draws an hourly window on the operator’s clock, not the ledger’s UTC', a
       warm_interactive: { n: 3, p50: 200, p90: 240, p99: 240 },
       warm_bulk: { n: 0, p50: 0, p90: 0, p99: 0 },
       cold: { n: 0, p50: 0, p90: 0, p99: 0 },
-      by_surface: [{ surface: 'mcp-http', n: 3, n_cold: 0, p50: 200, p90: 240 }],
+      by_surface: [{
+        surface: 'mcp-http', n: 3, n_cold: 0, p50: 200, p90: 240,
+        warm_interactive: { n: 3, p50: 200, p90: 240, p99: 240 },
+        warm_bulk: { n: 0, p50: 0, p90: 0 },
+        cold: { n: 0, p50: 0, p90: 0 },
+      }],
     },
   })
   mswJson('/api/retrieval', hourly)

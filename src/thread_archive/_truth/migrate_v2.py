@@ -39,7 +39,7 @@ from pathlib import Path
 
 from .._config import ENV_HOME
 from .._store.ulid import mint_ulid, normalize_ulid
-from .._truth.layout import (
+from .layout import (
     THREADS_SUBDIR,
     TRUTH_FORMAT_VERSION,
     ULID_MAPPING_FILE,
@@ -48,7 +48,7 @@ from .._truth.layout import (
     _thread_relpath,
     update_manifest,
 )
-from .._truth.locks import _hold_reindex_lock, _truth_write_lock
+from .locks import _hold_reindex_lock, _truth_write_lock
 
 # Overlay files whose records carry thread-id fields, with the fields to map.
 _OVERLAYS: dict[str, tuple[str, ...]] = {

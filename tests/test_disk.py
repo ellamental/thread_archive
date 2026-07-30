@@ -80,6 +80,68 @@ def test_top_bounds_the_names_not_the_totals(populated):
     assert d["total_bytes"] == 22800
 
 
+def test_the_default_measures_rather_than_reusing(populated):
+    """An operator who just reclaimed space and asked what it saved must be told
+    the new number. Reuse is a polling concession, so it is never the default."""
+    assert disk_usage()["total_bytes"] == 22800
+    write(populated / "truth" / "threads" / "b.jsonl", 1000)
+    assert disk_usage()["total_bytes"] == 23800
+
+
+def test_a_stated_budget_reuses_the_last_measurement(populated):
+    """What the served endpoint asks for: a poll has no use for a number more
+    precise than its own interval, and this is what stops a room full of viewers
+    from walking the disk once each."""
+    assert disk_usage(max_age_s=60)["total_bytes"] == 22800
+    write(populated / "truth" / "threads" / "b.jsonl", 1000)
+    assert disk_usage(max_age_s=60)["total_bytes"] == 22800, "walked again anyway"
+    # The budget bounds staleness; it does not pin the number forever.
+    assert disk_usage()["total_bytes"] == 23800
+
+
+def test_top_is_sliced_off_a_shared_measurement(populated):
+    """``top`` is presentation. Two callers wanting different amounts of detail
+    are one walk, and neither may see the other's slice."""
+    wide = disk_usage(max_age_s=60)
+    narrow = disk_usage(top=2, max_age_s=60)
+    assert len(narrow["entries"]) == 2
+    assert len(wide["entries"]) > 2, "the shared measurement was truncated in place"
+    assert narrow["total_bytes"] == wide["total_bytes"]
+
+
+def test_concurrent_callers_share_one_walk(populated):
+    """A walk that contends with another walk is many times slower than either
+    alone, which is how a polled endpoint turns a 0.3s measurement into tens of
+    seconds. Overlapping callers wait for the walk in flight instead.
+
+    Timing-free: whether these four threads actually overlap is the scheduler's
+    business, so this pins only what must hold either way — nobody sees a wrong
+    number, and four callers never cost four walks. The sharing mechanism itself
+    is driven deterministically in ``test_shared_work.py``."""
+    import threading
+
+    from thread_archive._ops.disk import measure_stats
+
+    before = measure_stats()["computed"]
+    out: list[dict] = []
+    lock = threading.Lock()
+
+    def ask() -> None:
+        d = disk_usage()
+        with lock:
+            out.append(d)
+
+    threads = [threading.Thread(target=ask) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10.0)
+
+    assert len(out) == 4
+    assert {d["total_bytes"] for d in out} == {22800}
+    assert measure_stats()["computed"] - before <= 4
+
+
 def test_absent_home_reports_zeros_without_creating_it(tmp_path, monkeypatch):
     """Asking an archive its size must never be what brings it into existence —
     a status read on a machine that has not been set up creates nothing."""

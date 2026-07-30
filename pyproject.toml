@@ -120,16 +120,25 @@ path = "src/thread_archive/__init__.py"
 # zero-dependency clean island, kept private (no public top-level package)
 # until its API is deliberately exposed.
 packages = ["src/thread_archive"]
-# The dev-only viewer surfaces (the /retrieval report page) read the search lab,
-# which is a source-tree directory and not part of an install. Excluding them
-# keeps that dependency out of the wheel entirely: the shipped server imports
-# _dev fail-softly and answers 404 for the pages it backs.
-exclude = ["src/thread_archive/_dev"]
-# The web viewer ships pre-built: frontend/ (node, dev-only) builds into
-# _web/static/, which is committed and packaged so `pip install` needs no node.
-# Under the package dir and tracked, so hatchling includes it by default; declared
-# explicitly so the bundle ships even if static/ is ever gitignored as build output.
-artifacts = ["src/thread_archive/_web/static/**/*"]
+# The viewer is dev-only and does not ship. `_web` is the stdlib server plus the
+# built React bundle — 23% of the download and 28% of the unpacked install, a
+# browser UI every `pip install` paid for whether or not it ever opened one.
+# What an install is for is preservation, retrieval, and the MCP server; the
+# viewer is a thing a checkout has. `_dev` (the /retrieval and /lab pages) goes
+# for the older version of the same reason: it reads search_lab/, a source-tree
+# directory.
+#
+# Both are absence-tolerant rather than load-bearing — `thread_archive._viewer`
+# probes for the viewer and the CLI registers `web` / `watch --web` only when it
+# is there, so an install advertises no verb it cannot run.
+#
+# NOTE: there is deliberately no `artifacts` key. It re-includes paths that
+# `exclude` drops (its purpose is packaging gitignored build output), so listing
+# _web/static there would silently undo this.
+exclude = [
+    "src/thread_archive/_dev",
+    "src/thread_archive/_web",
+]
 
 [tool.hatch.build.targets.sdist]
 # Ship the package sources, tests, docs, and the frontend sources that build
@@ -198,6 +207,7 @@ markers = [
     "package: builds the wheel/sdist and installs into a throwaway venv; slow, selected explicitly with -m package",
     "beir: runs the BEIR retrieval-calibration harness (network download + torch + a full ingest); tens of minutes, selected explicitly with -m beir",
     "quality_models: the synthetic search-quality corpus under the real embedding model (fused pipeline); minutes of model loads, selected explicitly with -m quality_models",
+    "viewer: needs the web viewer, which is dev-only and ships in no wheel — runs from a checkout, skipped where thread_archive._web is absent (the Docker install lane runs this suite against the installed wheel). Applied automatically by tests/conftest.py.",
 ]
 filterwarnings = [
     "error::ResourceWarning",

@@ -77,6 +77,7 @@ def seeded(archive_home, tmp_path):
     return archive_home
 
 
+@pytest.mark.viewer
 def test_web_opens_the_viewer_url_in_a_browser(tmp_path) -> None:
     """`web` hands the viewer's URL to the browser and does nothing else. Proved
     end to end — a real subprocess, the real stdlib webbrowser, and a real

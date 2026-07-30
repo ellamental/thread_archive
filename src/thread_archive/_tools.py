@@ -9,9 +9,17 @@ scope, the same ref resolution, the same degradation notice, the same rendered
 text, and one usage-ledger record per call.
 
 These signatures *are* the MCP tool schema — FastMCP builds it from the
-annotations and the docstrings — so a parameter added here reaches both
-surfaces, and the CLI's flags mirror it one for one (:func:`..cli.cmd_search`,
-:func:`..cli.cmd_read`).
+annotations — so a parameter added here reaches both surfaces, and the CLI's
+flags mirror it one for one (:func:`..cli.cmd_search`, :func:`..cli.cmd_read`).
+
+What an agent *reads* is tiered, because a tool description is paid for out of
+every session's context whether or not the tool is ever called. The compact
+contract each tool ships over the wire is its ``*_DESCRIPTION`` constant below:
+enough to call it correctly, naming every parameter it takes. The long form is
+the function's own docstring, which :func:`thread_help` serves on demand — the
+manual stays beside the code that answers it and costs nothing until an agent
+asks for it. A parameter documented in neither is one no caller can find, and
+``tests/test_mcp.py`` holds that line.
 
 What is *not* shared is anything a front door owns: the MCP server's cohosted
 catch-up ingest is kicked by the server's own tool wrappers (a one-shot CLI
@@ -20,6 +28,7 @@ process would be killed mid-pass), and exit codes are the CLI's.
 
 from __future__ import annotations
 
+import inspect
 import sys
 import time
 from collections.abc import Iterator
@@ -203,6 +212,27 @@ def _commit_note(scope: dict) -> str:
     return note
 
 
+def _pr_note(scope: dict) -> str:
+    """What a ``pr=`` scope resolved to, as the note printed above the results.
+
+    Shorter than its commit sibling because the answer is: the sessions declared
+    the association, so there is no share-of-the-work to apportion and no evidence
+    to caveat. What the rows still cannot say is *which* pull request a bare number
+    landed on when several repositories have one.
+    """
+    if scope["resolution"] == "invalid":
+        return f"note: '{scope['ref']}' is not a pull request — {scope['note']}\n"
+    if scope["resolution"] == "unknown":
+        return (f"note: pull request {scope['ref']} — no match. {scope['note']}.\n"
+                f"      Only sessions whose harness records the link contribute here.\n")
+    url = scope.get("url")
+    note = (f"note: pull request {scope['ref']} — {scope['total_threads']} session(s). "
+            f"{scope['note']}.\n")
+    if url:
+        note += f"      {url}\n"
+    return note
+
+
 # ── degradation notice ────────────────────────────────────────────────────────
 # Coverage's per-source degradation verdicts (health.json → coverage_last.degraded)
 # surfaced where the user actually is: prepended to search results, naming the
@@ -241,20 +271,64 @@ def _degradation_notices() -> str:
         age = datetime.now(timezone.utc) - at
         if age.total_seconds() > _NOTICE_MAX_AGE_DAYS * 86400:
             return ""
+        from ._ops.coverage import remedy_for
+
         lines = []
         for source in sorted(degraded):
             verdict = degraded[source] or {}
-            phrase = _DEGRADED_PHRASES.get(str(verdict.get("reason") or ""), "import degraded")
+            reason = str(verdict.get("reason") or "")
+            phrase = _DEGRADED_PHRASES.get(reason, "import degraded")
             since = str(verdict.get("since") or "")[:10]
             lines.append(
                 f"note: {source} import is degraded ({phrase}"
                 + (f" since {since}" if since else "")
                 + f") — recent {source} content may be missing from results. "
-                f"remedy: thread-archive source fix {source}"
+                f"remedy: {remedy_for(reason, source)}"
             )
         return "\n".join(lines) + "\n"
     except Exception:  # noqa: BLE001 — advisory; retrieval must not care
         return ""
+
+
+# ── the wire descriptions ─────────────────────────────────────────────────────
+# What an agent is handed when it lists the tools, as opposed to the manual it can
+# ask for (see this module's docstring, and :func:`thread_help`). Every parameter
+# is named here even when its grammar is not — a caller that knows a filter exists
+# can ask what it takes, but one that has never heard of it cannot.
+
+SEARCH_DESCRIPTION = """\
+Search the local conversation archive — every AI chat this machine has had, across \
+providers, full transcripts.
+
+`query` is natural language, "quoted phrases", boolean AND/OR/NOT, pipe-OR (a|b), or \
+code identifiers (get_session, a.b.c). An **empty query browses** instead: one row \
+per thread, newest activity first, honoring the filters — query='', since='1d' is \
+"what happened yesterday".
+
+**Every matching message is a row.** A thread matching eight times returns eight \
+rows, `limit` counts messages rather than threads, `page=N` walks them, and the \
+header says `12 of 340 · page 1/29`. Read the header's \
+`quality=strong|partial|weak|semantic` and each hit's `K/N` term count before \
+trusting a result: weak / 0-of-N means these are nearest-neighbour guesses and the \
+archive may simply not hold it, so rephrase the concept rather than piling on \
+synonyms. Open a hit with `thread_read(thread_id, around_event=<event_id>)`.
+
+Filters: `thread_id` (a ULID, a legacy integer id, or a provider session id), \
+`content_type` (user/text/thinking/tool/title; default: everything indexed), \
+`source` ('claude-code,cursor'), `since`/`until` ('7d' or an ISO timestamp), \
+`tool_name`, `types`, `agents` ('include'/'only' — agent-run subagent threads are \
+excluded by default), `sort='oldest'`, `match='substring'` (uncapped infix scan: \
+finds p4 inside mp4), `output` ('count'/'linkable'), `exclude_content_type`, \
+`startswith`, `context_lines`/`context_events`, and **the code axis** — `path` + \
+`path_ops` for which sessions touched a file (bare name, partial path, directory \
+subtree, or glob), `commit` + `repo` for the sessions a commit is made of, and `pr` \
+for the sessions that worked a pull request.
+
+What a tool handed *back* is not indexed — it replays in `thread_read` — and neither \
+are stored thread summaries.
+
+`thread_help('search')` is the full manual: the code axis and commit blame, complete \
+enumeration and paging, browse recipes, every filter's grammar."""
 
 
 def thread_search(
@@ -273,6 +347,7 @@ def thread_search(
     path: Optional[str] = None,
     path_ops: Optional[str] = None,
     commit: Optional[str] = None,
+    pr: Optional[str] = None,
     repo: Optional[str] = None,
     sort: Optional[str] = None,
     output: Optional[str] = None,
@@ -333,11 +408,12 @@ def thread_search(
     for more with ``limit``, or walk with ``page``; the header names how many
     matched in total and says ``truncated`` when the walk stops short of them.
 
-    **The code axis.** Search finds where something was *discussed*; ``path`` and
-    ``commit`` find where it was *done*. Every path the archive's tools named — each
-    ``Edit``, ``Read``, ``Write``, ``apply_patch`` header, and path-shaped shell
-    argument, in every provider's spelling — is indexed structurally, so these are
-    lookups rather than text searches that happen to match a path.
+    **The code axis.** Search finds where something was *discussed*; ``path``,
+    ``commit`` and ``pr`` find where it was *done*. Every path the archive's tools
+    named — each ``Edit``, ``Read``, ``Write``, ``apply_patch`` header, and
+    path-shaped shell argument, in every provider's spelling — is indexed
+    structurally, so these are lookups rather than text searches that happen to
+    match a path.
 
     ``path`` takes a **bare name** (``rank.py``), a **partial path**
     (``_retrieval/rank.py``), an **absolute path** — a file, or a directory whose
@@ -368,6 +444,21 @@ def thread_search(
     ``repo='/path'`` points at the repository when it isn't one the archive has seen
     sessions run in; without a reachable repo only a recorded committer can be named.
     Empty query lists those sessions; a query searches inside them.
+
+    ``pr`` is the loop back from a pull request, and it is not a commit lookup by
+    another name: a PR is a unit of *intent* and a commit is a unit of *change*, so
+    the two scopes disagree on purpose. A commit's contributors are inferred from
+    file overlap inside its authorship window; a PR's are stated — the harness
+    recorded which one the session was on — so ``pr`` needs no window, no
+    corroboration, and no reachable repository, and it reaches the sessions that
+    left no commit in the branch at all (the review round, the approach that was
+    abandoned, the one that only wrote the description). Takes a bare number
+    (``pr='4'``), a repo-qualified ref (``pr='ellamental/thread_archive#4'``), or the
+    URL off the address bar. A bare number matching several repositories returns all
+    of them and says so — narrow with ``repo='thread_archive'`` (a suffix match, so
+    the owner is optional). Empty query lists those sessions; a query searches inside
+    them. Only harnesses that record the link contribute, so a PR worked on before
+    that existed reads as unknown rather than as unworked.
 
     ``startswith`` does a structural prefix scan (content LIKE 'prefix%'; query text
     unused). ``sort='oldest'`` returns matches chronologically (find when something
@@ -440,19 +531,31 @@ def thread_search(
     type_list = [t.strip() for t in types.split(",") if t.strip()] if types else None
     op_list = [o.strip() for o in path_ops.split(",") if o.strip()] if path_ops else None
 
-    # An ordinary thread scope — but resolved here rather than in the
+    # Ordinary thread scopes — but resolved here rather than in the
     # engine, because the miss has to explain itself: a sha in no session and no
     # known repo scopes to nothing, and bare zero rows would read as "no session
-    # touched this commit" when the truth is "that sha was never found". This is the
-    # layer that renders notes (the widen retry sits here for the same reason).
-    commit_note = ""
-    commit_threads: Optional[list[str]] = None
+    # touched this commit" when the truth is "that sha was never found". A pull
+    # request nobody recorded reads the same way. This is the layer that renders
+    # notes (the widen retry sits here for the same reason).
+    scope_note = ""
+    scoped_threads: Optional[list[str]] = None
     if commit:
         verdict = api.blame(commit=commit, repo=repo, limit=max(limit, 10))
-        commit_note = _commit_note(verdict)
-        commit_threads = [t["thread_id"] for t in verdict["threads"]]
-        if not commit_threads:
-            return _degradation_notices() + commit_note
+        scope_note = _commit_note(verdict)
+        scoped_threads = [t["thread_id"] for t in verdict["threads"]]
+        if not scoped_threads:
+            return _degradation_notices() + scope_note
+    if pr:
+        verdict = api.blame(pr=pr, repo=repo, limit=max(limit, 10))
+        scope_note += _pr_note(verdict)
+        pr_threads = [t["thread_id"] for t in verdict["threads"]]
+        # Both scopes given is an intersection, not a replacement: "the sessions in
+        # this commit that were also on that PR" is the only reading under which
+        # both arguments still mean what they mean alone.
+        scoped_threads = (pr_threads if scoped_threads is None
+                          else [t for t in scoped_threads if t in set(pr_threads)])
+        if not scoped_threads:
+            return _degradation_notices() + scope_note
 
     def _run(cts):
         return api.search(
@@ -470,7 +573,7 @@ def thread_search(
             startswith=startswith,
             path=path,
             path_ops=op_list,
-            thread_ids=commit_threads,
+            thread_ids=scoped_threads,
             sort=sort,
             output=output,
             context_lines=context_lines,
@@ -510,7 +613,7 @@ def thread_search(
         _t_render = time.monotonic()
         rendered = format_results(hits, query, output=output)
         render_ms = (time.monotonic() - _t_render) * 1000.0
-        return _degradation_notices() + commit_note + rendered
+        return _degradation_notices() + scope_note + rendered
     finally:
         # Usage ledger (fail-soft, ids + timings only — see _retrieval.usage): the
         # observed ground truth future retrieval evals are built from, carrying a
@@ -527,7 +630,7 @@ def thread_search(
                 "exclude_content_type": exclude_content_type, "since": since,
                 "until": until, "tool_name": tool_name, "source": source,
                 "types": types, "agents": agents, "path": path,
-                "path_ops": path_ops, "commit": commit,
+                "path_ops": path_ops, "commit": commit, "pr": pr,
                 "startswith": startswith, "sort": sort,
                 "output": output, "match": match, "page": page,
                 "surface": _served_by(),
@@ -547,6 +650,34 @@ def thread_search(
         # enclosing surface subtracts this from its clock to name its overhead, and
         # a telemetry append it does not perform must not land in that difference.
         _publish_call_ms((time.monotonic() - started) * 1000.0)
+
+
+READ_DESCRIPTION = """\
+Read a thread from the archive, reconstructed from the event log. `thread_id` takes \
+any of three ref shapes and resolves it for you: the archive's own ULID (what search \
+results carry), a legacy integer id, or a provider session uuid.
+
+`mode` picks the view. 'chat' = the readable conversation, user turns plus the \
+assistant's text and reasoning with tool calls stripped — what was decided or \
+concluded. 'user' (default) = only the user messages, the cheapest read of what a \
+thread was about and what was wanted. 'last' = only the thread's final assistant \
+text, how the session ended. 'ends' = the first and last `context_turns` turns. \
+'full' = the whole transcript including every tool call (bulky; `tool_results=true` \
+folds each tool's output under its call).
+
+To open a search hit, pass its event id as `around_event`: you get that event's whole \
+turn plus `context_turns` turns either side, with the step marked `match:<event_id>`. \
+Reads are size-budgeted (~48k chars — lower it with `max_chars` for a cheap skim, and \
+`limit` caps turns per chunk), so a long thread ends in a CHUNKED footer naming the \
+exact next `offset`. That is pagination, not lost data: page with `offset` (negative \
+counts from the end), or resume from a known event with `after_event`. `summary=` \
+replaces the transcript: 'toc', 'short', 'indexed', or 'files' (the files this \
+session touched).
+
+Images and documents render as `[image image/png 48 KB — /path/to/blob]`; the path is \
+a real local file, Read it to view.
+
+`thread_help('read')` is the full manual."""
 
 
 def thread_read(
@@ -614,29 +745,11 @@ def thread_read(
     ``user_only`` is a back-compat alias for ``mode`` (true→user, false→full);
     prefer ``mode``, which wins if both are set.
 
-    Args:
-        thread_id: ULID thread id, legacy integer alias, or a provider session
-            uuid (source_id) — all resolved to the thread automatically.
-        limit: Max turns per chunk (safety cap; the char budget usually bites first).
-            Default: 200.
-        offset: Skip first N turns. Use the offset from a CHUNKED footer to read the
-            next chunk. Negative counts from end: -20 = last 20 turns. Default: 0.
-        summary: Summary view instead of full content — true/'toc' for a compact
-            TOC with previews, 'short' or 'indexed' for the stored thread summary,
-            'files' for the files this session touched.
-        mode: View — 'user' (default), 'chat', 'full', 'last' (final assistant
-            text only), or 'ends' (first + last turns). Default: user.
-        user_only: Back-compat alias for mode (true→user, false→full). Prefer mode.
-        tool_results: Include tool output under each call (default off; needs 'full').
-        max_chars: Per-chunk character budget; the read stops at a clean turn
-            boundary once hit and the footer points at the next offset. Default: ~48k.
-            Lower it (e.g. 8000) for a cheap skim of a long thread.
-        after_event: Resume reading from the turn AFTER this event id (overrides
-            offset). Robust way to continue from where a previous read stopped.
-        around_event: Open this search-result event in its containing turn with
-            surrounding conversation. Overrides offset and after_event.
-        context_turns: Turns to include before and after around_event, or per end
-            for mode='ends'. Default: 1.
+    The sizing arguments: ``limit`` caps turns per chunk (default 200 — a safety
+    cap, since the char budget usually bites first), ``max_chars`` is that budget
+    (default ~48k; lower it, say 8000, for a cheap skim of a long thread — the read
+    stops at a clean turn boundary once it is hit), and a negative ``offset``
+    counts from the end, so ``-20`` is the last 20 turns.
     """
     # Log in a finally so a raising read still leaves its usage record —
     # a failed read is usage evidence too — with the latency it burned.
@@ -679,3 +792,36 @@ def thread_read(
         # Last, for the same reason as in thread_search: the tool owns the cost of
         # recording itself.
         _publish_call_ms((time.monotonic() - started) * 1000.0)
+
+
+HELP_DESCRIPTION = """\
+The full manual for a retrieval tool, on demand: every filter and view with its \
+grammar, the code axis, and worked recipes — the detail thread_search and \
+thread_read's own descriptions leave out. `topic` is 'search' or 'read'."""
+
+#: The manual for each topic is the tool's own docstring — one long form, living
+#: beside the code that answers it rather than copied into a document that drifts.
+_HELP_TOPICS = {"search": thread_search, "read": thread_read}
+
+
+def thread_help(topic: str) -> str:
+    """The long-form manual for ``thread_search`` or ``thread_read``.
+
+    The tools ship a compact contract (:data:`SEARCH_DESCRIPTION`,
+    :data:`READ_DESCRIPTION`) because a description is charged to every session
+    that lists the tools, most of which never call them. The detail an agent needs
+    once it is actually working — a filter's grammar, the code axis, what a browse
+    can do — is real, so it lives here instead of being cut: one call, paid by the
+    caller that wants it.
+
+    An unknown topic is answered rather than raised, like the tools' other
+    out-of-contract arguments: the caller is a model, and an exception is a failed
+    tool call it has to guess its way out of.
+    """
+    # 'search' and 'thread_search' are the same ask — an agent reading the tool
+    # list has the qualified name in front of it.
+    fn = _HELP_TOPICS.get((topic or "").strip().lower().removeprefix("thread_"))
+    if fn is None:
+        return (f"no manual for {topic!r} — topic is 'search' (thread_search) or "
+                f"'read' (thread_read)")
+    return inspect.cleandoc(fn.__doc__ or "")

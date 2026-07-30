@@ -47,6 +47,15 @@ cost scales with the match list rather than with the pool, so a search whose
 latency moved into this bucket moved there for a different reason than any of the
 three above.
 
+That stage is memoized, and a duration alone cannot see the memo working: the same
+``set_ms`` is a cheap answer on a small corpus and a broken memo on a large one.
+:data:`SET_OUTCOMES` counts what the stage actually did — a full scan, a bounded
+delta over rows appended since the memoized answer, or a hand-back of that answer
+unchanged — three costs that differ by orders of magnitude and are otherwise
+indistinguishable in a total. Counters rather than one state because a search can
+run the stage twice (the thread tally and the saturated-pool count) and they need
+not agree.
+
 Everything above measures how the pool was *found*. :data:`SHAPE_SUBSTAGES`
 measures what happens to it afterwards — ranking, the coherence pass, the
 same-anchor collapse, the exact-set count, and the per-hit enrichments — and it is
@@ -94,6 +103,15 @@ FTS_SUBSTAGES = ("match_ms", "scan_ms", "rescan_ms", "build_ms")
 #: sum — to whatever a search spent after its pool was fused.
 SHAPE_SUBSTAGES = ("rank_ms", "coherence_ms", "group_ms", "extend_ms", "enrich_ms")
 
+#: What the memoized exact-set stage did, tallied per set query. ``set_scans`` is a
+#: full resolve of the match set; ``set_deltas`` a scan bounded to the rows appended
+#: since a memoized answer, folded into it; ``set_hits`` an answer handed back
+#: because the index had not moved. The three differ by orders of magnitude on a
+#: real corpus — measured here, ~850 ms against ~19 ms against ~1 ms — so the split
+#: is what says whether a slow ``set_ms`` is a large corpus or a memo that ingest is
+#: defeating.
+SET_OUTCOMES = ("set_scans", "set_deltas", "set_hits")
+
 
 class SearchProbe:
     """The mutable stage-timing accumulator one search fills.
@@ -106,13 +124,14 @@ class SearchProbe:
 
     ``embed_cold`` is sampled at entry — the vector arm runs on every
     non-structural query, so an unloaded embedder there means this search pays the
-    load.
+    load. ``embed_cached`` is its opposite end: the query vector came back from the
+    embedder's cache, which is why ``embed_ms`` can be ~0 on an arm that ran.
     """
 
     __slots__ = (
         "fts_ms", "semantic_ms", "set_ms", "pool_size",
-        "embed_cold", "matrix_built", "fts_passes",
-        *SEMANTIC_SUBSTAGES, *FTS_SUBSTAGES, *SHAPE_SUBSTAGES,
+        "embed_cold", "embed_cached", "matrix_built", "fts_passes",
+        *SEMANTIC_SUBSTAGES, *FTS_SUBSTAGES, *SHAPE_SUBSTAGES, *SET_OUTCOMES,
     )
 
     def __init__(self) -> None:
@@ -121,10 +140,13 @@ class SearchProbe:
         self.set_ms = 0.0
         self.pool_size = 0
         self.embed_cold = False
+        self.embed_cached = False
         self.matrix_built = False
         self.fts_passes = 0
         for name in (*SEMANTIC_SUBSTAGES, *FTS_SUBSTAGES, *SHAPE_SUBSTAGES):
             setattr(self, name, 0.0)
+        for name in SET_OUTCOMES:
+            setattr(self, name, 0)
 
     @property
     def ran(self) -> bool:
@@ -167,8 +189,16 @@ class SearchProbe:
         if self.semantic_ms:
             for name in SEMANTIC_SUBSTAGES:
                 rec[name] = round(getattr(self, name), 1)
+            # Only meaningful on an arm that ran, and only as a presence: it is what
+            # separates an ``embed_ms`` of ~0 that reused a vector from one that
+            # never embedded at all.
+            if self.embed_cached:
+                rec["embed_cached"] = True
         if self.set_ms:
             rec["set_ms"] = round(self.set_ms, 1)
+        for name in SET_OUTCOMES:
+            if getattr(self, name):
+                rec[name] = getattr(self, name)
         for name in SHAPE_SUBSTAGES:
             if getattr(self, name):
                 rec[name] = round(getattr(self, name), 1)

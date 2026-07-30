@@ -4,8 +4,7 @@ The mechanism's contract: an amended event keeps its id, dedup_key, and history
 (the pre-amendment line stays in the truth file), the index and truth agree
 after every amend, a reindex converges to the amended value (last-wins), and
 the content-hash gates stay green because amendments cannot touch content
-fields. The usage/cost backfill script rides the same mechanism and must be
-idempotent."""
+fields."""
 
 from __future__ import annotations
 
@@ -16,7 +15,6 @@ from sqlalchemy import select, update
 
 from thread_archive._importers import import_session_incremental
 from thread_archive._ops.amend import amend_event_payloads, load_amendments
-from thread_archive._scripts.backfill_usage_cost import run as backfill_run
 from thread_archive._store import Event, get_session, init_db
 from thread_archive._truth.jsonl_log import _iter_jsonl, _shard_depth, _thread_file, log_dir
 from thread_archive._truth.rebuild import _store_rows_failing_key_hash, reindex
@@ -138,29 +136,3 @@ def test_token_amendment_invalidates_stats_rollup(archive_home) -> None:
     assert ta.stats()["overview"]["input_tokens"] == 5
 
 
-def test_backfill_usage_cost_restores_dropped_fields(archive_home) -> None:
-    f, tid = _import(archive_home)
-    eid, payload, _key = _completed_event(tid)
-    stripped = {k: v for k, v in payload.items()
-                if k not in ("cost", "cache_read_tokens", "cache_write_tokens")}
-    with get_session() as s:
-        s.execute(update(Event).where(Event.id == eid).values(payload=stripped))
-        s.commit()
-
-    pairs = [("claude-code", f, "s1")]
-    dry = backfill_run(apply=False, pairs=pairs)
-    assert dry["patches"] == 1
-    assert dry["field:cost"] == 1 and dry["field:cache_read_tokens"] == 1
-    with get_session() as s:  # dry-run wrote nothing
-        assert "cost" not in s.get(Event, eid).payload
-
-    applied = backfill_run(apply=True, pairs=pairs)
-    assert applied["events_amended"] == 1
-    with get_session() as s:
-        p = s.get(Event, eid).payload
-        assert p["cost"] == 0.0421
-        assert p["cache_read_tokens"] == 1200 and p["cache_write_tokens"] == 300
-
-    # Idempotent: a re-run finds nothing missing.
-    again = backfill_run(apply=True, pairs=pairs)
-    assert again.get("patches", 0) == 0 and again.get("already_complete") == 1

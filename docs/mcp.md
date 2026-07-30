@@ -1,8 +1,10 @@
 # MCP
 
 One server, two explicit process modes. **`thread-archive`** (`archive-mcp`)
-serves the read-only `thread_search` / `thread_read` tools. The process is also
-read-only by default. Setting `THREAD_ARCHIVE_MCP_INGEST=1` opts it into local
+serves the read-only `thread_search` / `thread_read` tools, plus `thread_help`,
+which serves their long-form manual on demand — the two tools ship a compact
+description because a description is charged to every session that lists them,
+called or not. The process is also read-only by default. Setting `THREAD_ARCHIVE_MCP_INGEST=1` opts it into local
 lazy catch-up ingest, throttled and cross-process-safe via the ingest-owner
 lock. This server exposes no write surface. Client
 config with catch-up enabled:

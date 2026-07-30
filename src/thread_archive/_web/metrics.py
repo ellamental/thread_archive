@@ -99,6 +99,7 @@ def record_request(
     method: str = "GET",
     size: Optional[int] = None,
     probe: Optional["SearchProbe"] = None,
+    workload: Optional[dict[str, Any]] = None,
     context: Optional[dict[str, Any]] = None,
 ) -> None:
     """Append one served request. Never raises.
@@ -107,6 +108,13 @@ def record_request(
     one analysis reads both — and only when it says a search ran. ``context`` is a
     :func:`thread_archive._retrieval._contention.sample`, itself already empty on a
     quiet machine, so a request with nothing competing writes no context at all.
+
+    ``workload`` is the *shape* of the ask — ``limit`` and ``page`` — folded in flat
+    on the same field names for the same reason. It is not the query-string
+    exception it looks like: how many rows were asked for and how far into the set
+    is the single largest thing separating one search's cost from another's, and a
+    reader that cannot see it must either treat a 40-row page-9 walk as a question
+    or treat every question as a walk. The query *text* stays out.
 
     ``method`` is recorded only when it isn't a read: an upload's cost is the
     uploader's connection, not this archive's, and a row that looked like a GET of
@@ -126,6 +134,8 @@ def record_request(
         record["size"] = size
     if probe is not None and probe.ran:
         record.update(probe.as_record())
+    if workload:
+        record.update(workload)
     if _concurrent > 1:
         record["concurrent"] = _concurrent
     if context:

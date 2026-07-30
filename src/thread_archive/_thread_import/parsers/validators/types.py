@@ -29,6 +29,7 @@ KNOWN_BLOCK_TYPES: Set[str] = {
     "progress",
     "attachment",
     "model_change",
+    "pr_link",
     "unknown_line",
     "flag",  # claude.ai safety marker blocks, preserved raw
 }

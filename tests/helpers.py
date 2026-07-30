@@ -10,7 +10,6 @@ the same home into one thread.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from sqlalchemy import text
 
@@ -146,89 +145,3 @@ def install_cc_shaped_plugin(archive_home, monkeypatch, *, stores, watcherless=(
     found = {p.name for p in _providers.sources_using_parser("claude-code")}
     missing = set(declared) - found
     assert not missing, f"declared plugins were not discovered: {sorted(missing)}"
-
-
-def install_codex_store(root, sessions, monkeypatch):
-    """Lay a real codex session store out under ``root`` and point ``$HOME`` at it.
-
-    Codex keeps one rollout per session under ``~/.codex/sessions``, dated
-    subdirectories deep; the file stem is the source id the watcher reports and the
-    import recorded. ``sessions`` maps source id → the rollout's lines (a raw string
-    is written verbatim, for a rollout that is torn rather than well-formed).
-    Returns ``{source_id: path}`` — what a walk of that store must find.
-    """
-    d = Path(root) / ".codex" / "sessions" / "2026" / "01"
-    d.mkdir(parents=True)
-    out = {}
-    for source_id, lines in sessions.items():
-        path = d / f"{source_id}.jsonl"
-        if isinstance(lines, str):
-            path.write_text(lines, encoding="utf-8")
-        else:
-            write_jsonl(path, lines)
-        out[source_id] = path
-    monkeypatch.setenv("HOME", str(root))
-    return out
-
-
-#: A rollout line that is valid JSON but not an object — what a torn or truncated
-#: rollout leaves behind, which no reader of codex lines can interpret.
-TORN_ROLLOUT = "[1, 2, 3]\n"
-
-
-def age_codex_thread_to_placeholder(thread_id) -> None:
-    """Rewrite a codex thread — store *and* truth — into the shape the pre-fix
-    import left: every model-bearing event stamped with the bare ``codex``
-    placeholder.
-
-    The importer read only ``session_meta.model``, which Codex no longer writes, so
-    a session naming its model per turn landed with every turn attributed to
-    ``"codex"``. Today's importer cannot produce that state, so it is reproduced
-    here — the payload, and the dedup_key that import computed over it (the
-    builder's own function, over the anchor that import recorded), so the archive's
-    key-hash invariant holds going in and both records are equally wrong, exactly
-    as the live archive's are.
-    """
-    from sqlalchemy import select
-
-    from thread_archive._scripts.backfill_codex_model import MODEL_EVENTS, PLACEHOLDER
-    from thread_archive._store import Event
-    from thread_archive._thread_import.event_builder import compute_dedup_key
-    from thread_archive._truth.jsonl_log import (
-        _shard_depth,
-        _thread_file,
-        log_dir,
-        reset_handles,
-    )
-
-    aged: dict = {}
-    with get_session() as s:
-        rows = s.execute(select(Event).where(
-            Event.thread_id == thread_id,
-            Event.event_type.in_(MODEL_EVENTS))).scalars().all()
-        for ev in rows:
-            payload = {**ev.payload, "model": PLACEHOLDER}
-            ev.payload = payload
-            if ev.dedup_key:
-                anchor = ev.dedup_key.rsplit(":", 3)[0]
-                pmid = "" if anchor.startswith("c=") else anchor
-                ev.dedup_key = compute_dedup_key(pmid, ev.event_type, payload)
-            aged[ev.id] = (payload, ev.dedup_key)
-        s.commit()
-
-    reset_handles()
-    path = _thread_file(log_dir(), thread_id, _shard_depth(log_dir()))
-    out = []
-    for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
-        try:
-            rec = json.loads(line)
-        except ValueError:
-            out.append(line)   # blank or torn — content too, copied through
-            continue
-        if isinstance(rec, dict) and rec.get("type") == "event" and rec.get("id") in aged:
-            rec["payload"], rec["dedup_key"] = aged[rec["id"]]
-            out.append(json.dumps(rec, ensure_ascii=False) + "\n")
-        else:
-            out.append(line)
-    path.write_text("".join(out), encoding="utf-8")
-    reset_handles()

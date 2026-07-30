@@ -166,6 +166,21 @@ function BlockView({ block }: { block: Block }) {
           </span>
         </div>
       )
+    case 'pr_link':
+      // Provenance, not chatter — the harness said which PR this session was on.
+      // Linked out when a url came with it, plain text when it didn't.
+      return (
+        <div className="pr-link">
+          <span className="pr-link-tag">pull request</span>
+          {block.url ? (
+            <a href={block.url} target="_blank" rel="noreferrer noopener">
+              {block.ref}
+            </a>
+          ) : (
+            <span>{block.ref}</span>
+          )}
+        </div>
+      )
     case 'safeguard_notice':
       // The reason for the switch — shown open (not folded), since it explains the jump.
       return (

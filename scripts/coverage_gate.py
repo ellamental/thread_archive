@@ -41,7 +41,6 @@ FLOORS = {
     "_providers": 90.0,
     "_repair": 90.0,
     "_retrieval": 94.0,
-    "_scripts": 97.0,
     "_service": 88.0,  # the daemon service backends (launchd + systemd) behind one registry
     "_setup": 94.0,
     "_store": 95.0,
@@ -49,7 +48,11 @@ FLOORS = {
     "_tools": 97.0,  # thread_search / thread_read themselves — driven from both doors (MCP + CLI)
     "_truth": 93.0,
     "_update": 80.0,
+    "_viewer": 100.0,  # one probe; both answers and both error arms are driven
     "_watcher": 94.0,
+    # The viewer itself is dev-only too (excluded from the wheel alongside
+    # `_dev`), and stays floored because a checkout is where it runs — this
+    # machine's watcher cohosts it.
     "_web": 92.0,
     "cli": 98.0,  # full verb→api dispatch coverage; heavy verbs stubbed at the api seam
     "provider": 76.0,  # public plugin API + the pytest harness (dogfooded by the golden suite)

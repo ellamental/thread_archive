@@ -26,8 +26,9 @@ on a release:
   The web viewer binds to `127.0.0.1` and assumes whoever reaches it owns
   everything in the archive.
 - **Live capture of web chats.** claude.ai, ChatGPT, and xAI arrive from account
-  exports you download by hand — drop the ZIP on the viewer's `/upload` page (or
-  into `<home>/dumps/`, or run `thread-archive source import-account`). The self-feeding
+  exports you download by hand — drop the ZIP into `<home>/dumps/`, or run
+  `thread-archive source import-account` (from a clone, the viewer's `/upload`
+  page is the same drop folder with a browser in front of it). The self-feeding
   path is the local agent harnesses.
 - **Driving a conversation.** The archive preserves and retrieves. It never
   writes back to a harness store and never sends a message.

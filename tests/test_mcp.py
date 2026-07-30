@@ -57,10 +57,10 @@ def _ledger(archive_home) -> list[dict]:
     return [r for r in rows if r.get("kind") in ("search", "read")]
 
 
-def test_mcp_registers_two_tools() -> None:
+def test_mcp_registers_its_tools() -> None:
     tools = asyncio.run(mcp.list_tools())
     names = {t.name for t in tools}
-    assert names == {"thread_search", "thread_read"}
+    assert names == {"thread_search", "thread_read", "thread_help"}
     # the schema is derived from the typed signature
     by_name = {t.name: t for t in tools}
     search_props = by_name["thread_search"].inputSchema["properties"]
@@ -74,8 +74,71 @@ def test_mcp_registers_two_tools() -> None:
     # summary is bool | str: true/'toc' = TOC, 'short'/'indexed' = stored summaries
     summary_types = {v["type"] for v in read_props["summary"]["anyOf"]}
     assert summary_types == {"boolean", "string"}
-    # both tools carry a description (docstring)
+    # every tool carries a description
     assert all(t.description for t in tools)
+
+
+# ── what the tools cost just to be listed ────────────────────────────────────
+# A tool description is charged to the context of every session that lists the
+# tools, whether or not one is ever called. So the wire descriptions are compact
+# and the long form is thread_help's to serve on demand. Two properties keep that
+# split honest: the compact form still names every parameter, and it stays small.
+
+#: Parameters the wire description deliberately does not name, findable only
+#: through the manual. A back-compat alias for an argument the description already
+#: describes is not a capability a caller can fail to discover.
+HELP_ONLY_PARAMS = {"thread_read": {"user_only"}}
+
+#: What all the descriptions together may cost, in characters — roughly a quarter
+#: of that in tokens, paid by every agent in every session. Set close to what they
+#: currently cost, because the point is that a new paragraph here is a recurring
+#: bill: adding one should be a deliberate act rather than something a docstring
+#: habit does by accident.
+DESCRIPTION_BUDGET = 4200
+
+
+def test_wire_descriptions_name_every_parameter() -> None:
+    """A filter nobody can discover may as well not exist. The compact description
+    may leave out a parameter's *grammar* — that is what thread_help is for — but
+    not its name. This is the assertion that makes trimming safe, and the one that
+    reds when a new parameter lands with only the manual updated."""
+    for tool in asyncio.run(mcp.list_tools()):
+        described = tool.description or ""
+        allowed = HELP_ONLY_PARAMS.get(tool.name, set())
+        missing = {p for p in tool.inputSchema["properties"] if p not in described}
+        assert not (missing - allowed), (
+            f"{tool.name}: parameter(s) {sorted(missing - allowed)} appear in no "
+            f"description, so no caller can find them")
+        assert not (allowed - missing), (
+            f"{tool.name}: stale HELP_ONLY_PARAMS entry — the description names "
+            f"{sorted(allowed - missing)} after all")
+
+
+def test_wire_descriptions_stay_within_budget() -> None:
+    """The standing tax, ratcheted."""
+    tools = asyncio.run(mcp.list_tools())
+    total = sum(len(t.description or "") for t in tools)
+    assert total <= DESCRIPTION_BUDGET, (
+        f"listing the tools costs {total} chars (~{total // 4} tokens) in every "
+        f"session, called or not; the budget is {DESCRIPTION_BUDGET}. Long-form "
+        f"detail belongs in the tool's docstring, which thread_help serves on "
+        f"demand and only to the caller that asks.")
+
+
+def test_thread_help_serves_the_long_form() -> None:
+    """The manual is the tool's own docstring, so it cannot drift from the code it
+    documents, and it carries what the wire description dropped."""
+    manual = _tools.thread_help("search")
+    # an agent reads the qualified name in its tool list; both spellings work
+    assert manual == _tools.thread_help("thread_search")
+    assert len(manual) > len(_tools.SEARCH_DESCRIPTION)
+    assert "code axis" in manual and "startswith" in manual
+    # user_only is help-only (see HELP_ONLY_PARAMS) — this is where it is findable
+    assert "user_only" in _tools.thread_help("read")
+    # an unusable topic is answered rather than raised: the caller is a model, and
+    # an exception is a failed tool call it has to guess its way out of
+    assert "no manual for 'nope'" in _tools.thread_help("nope")
+    assert "no manual for ''" in _tools.thread_help("")
 
 
 def test_mcp_tools_query_the_archive(archive_home) -> None:
@@ -275,7 +338,7 @@ def test_mcp_search_prepends_degradation_notice(archive_home) -> None:
     out = thread_search("hello")
     assert out.startswith("note: claude-code import is degraded")
     assert "since 2026-07-12" in out
-    assert "thread-archive source fix claude-code" in out
+    assert "thread-archive source recheck claude-code" in out
     assert "hello mcp" in out  # the notice prepends; results still render
 
     # a healthy verdict clears it
@@ -443,7 +506,8 @@ def test_stdio_server_answers_a_real_client_over_the_module_entry(archive_home) 
             proc.stderr.close()
     replies = {d["id"]: d for d in (json.loads(ln) for ln in lines if ln.strip())}
     assert replies[1]["result"]["serverInfo"]["name"] == "thread-archive"
-    assert {t["name"] for t in replies[2]["result"]["tools"]} == {"thread_search", "thread_read"}
+    assert {t["name"] for t in replies[2]["result"]["tools"]} == {
+        "thread_search", "thread_read", "thread_help"}
     assert "hello mcp" in json.dumps(replies[3]["result"])
 
 
@@ -487,7 +551,8 @@ def test_http_server_serves_the_shared_streamable_transport(archive_home) -> Non
 
         # Stateless: each request stands alone, no session handshake to carry.
         listed = _call({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-        assert {t["name"] for t in listed["result"]["tools"]} == {"thread_search", "thread_read"}
+        assert {t["name"] for t in listed["result"]["tools"]} == {
+            "thread_search", "thread_read", "thread_help"}
         called = _call({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                         "params": {"name": "thread_read",
                                    "arguments": {"thread_id": ta.search("hello")[0]["thread_id"]}}})

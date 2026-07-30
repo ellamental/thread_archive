@@ -2,6 +2,196 @@
 
 ## Unreleased
 
+- **A repaired drift stops asking to be repaired — `thread-archive source recheck`.**
+  Degradation verdicts were derived from a 7-day rolling window over an append-only
+  ledger, and nothing in the system could ever say a record had been *dealt with*.
+  So a successful repair changed nothing the operator could see: every search kept
+  prepending `note: <source> import is degraded`, naming a remedy that had already
+  run, for the rest of the window. The ledgers now take a third record kind — a
+  **resolution** — and closed observations drop out of the counts coverage degrades
+  on while staying in the file, in `total`, and in `recent` (a repair must not be
+  able to erase the drift it repaired; that trail is what a later regression is read
+  against). Closed by evidence and not by assertion: the only writer is the
+  ledger-driven re-import, the only thing it closes is a file it actually re-read
+  through the current parser, and its stamp is taken *before* the re-read — so
+  findings the re-parse itself records land after it, stay open, and keep the source
+  degraded. A repair that didn't work closes nothing. `source recheck <provider>`
+  runs that re-read on its own, which the recovery path previously had no way to do
+  without a patch — a parse fix arrives by core release at least as often as by
+  local patch, and the operator who upgraded into one had no way to retire a verdict
+  their upgrade had already fixed. It reports what it could not reach (a file the
+  provider pruned with no quarantine copy is unfalsifiable, and saying so beats
+  silence), refreshes the cached verdict every surface reads, and exits non-zero
+  naming `source fix` when the drift is live. The verdict's remedy now comes from
+  the verdict: three of the four reasons point at `recheck`, and `went_dark` — a
+  store that is simply gone, with nothing to re-read — no longer advises a patch
+  scaffold that cannot help it.
+
+- **The web viewer is dev-only now — it runs from a clone and ships in no wheel.**
+  `_web` (the stdlib server plus the committed React bundle) was 23% of the
+  download and 28% of the unpacked install, a browser UI every `pip install` paid
+  for whether or not it ever opened one. What an install is for is preservation,
+  retrieval, and the MCP server; reading through a browser is a thing a checkout
+  does. `_web` now sits in the wheel `exclude` beside `_dev`, and the
+  `artifacts` key that force-included `_web/static/` is gone — it re-includes
+  what `exclude` drops, so leaving it would have silently undone this.
+  Same-shaped as `_dev` and for the same reason, one tier up: the surface is
+  absent from an install rather than present and broken.
+
+  The part that is not just packaging is that nothing offers what it cannot
+  serve. `thread_archive._viewer.viewer_available()` is the single probe, and
+  every offer of the viewer goes through it: `build_parser` registers the `web`
+  verb, `watch --web`, and `service install --no-web` only where the viewer
+  exists (so an install's `--help` lists neither the verb nor the flags, and the
+  epilog loses the line pointing at them), `setup` offers a browser and a
+  `/upload` URL only there, and `watcher_spec` writes no unit carrying `--web`
+  without one. That last is the sharp edge: a unit with a flag its own argparse
+  rejects is exit 2 on every start, which launchd and systemd read as a service
+  to restart forever. `tests/test_viewer_probe.py` drives both answers, and the
+  package lane asserts the wheel carries no `_web`, that importing it fails, and
+  that `web` is absent from an installed `--help` — the same rule the measurement
+  verbs already answer to: an install advertises no verb it cannot run.
+
+  The viewer stays in the sdist: it ships `tests/`, and `test_web.py` imports
+  `_web`, so dropping it there would ship a red suite — the invariant
+  `test_sdist_keeps_the_search_lab` already holds for `search_lab/`. Nothing
+  changes for this machine, whose watcher runs from an editable checkout and
+  cohosts the viewer exactly as before; the viewer's URLs stay steady for the
+  editor buttons and sibling navbars that link them, now as a promise to the
+  family rather than a public interface — `docs/stability.md`'s public API is
+  four things.
+
+- **The retrieval tools cost ~3,150 tokens of every agent's context before anyone
+  searched anything; now they cost ~930.** An MCP tool description is charged to
+  every session that lists the tools, called or not, and `thread_search`'s was 7.6
+  KB of good pedagogy — the code axis and commit blame in full, enumeration
+  semantics, browse recipes — for a corpus of features the usage ledger shows in
+  ~2.5% of searches. The wire description is now each tool's compact contract
+  (`SEARCH_DESCRIPTION` / `READ_DESCRIPTION`), passed explicitly to FastMCP rather
+  than lifted off the docstring; the long form stays where it was, beside the code
+  that answers it, and a third tool `thread_help('search'|'read')` serves it on
+  demand to the caller that wants it. What the compact form gives up is grammar,
+  never a name: every parameter is still named where an agent can see it, and
+  `tests/test_mcp.py` reds if one isn't. The advice that used to be preamble now
+  arrives as output — a search that finds nothing, or only nearest-neighbour
+  guesses, offers the retries that would plausibly change *that* result
+  (`match='substring'` for a bare token, `path=` for a filename-shaped query). Also
+  removed: `thread_read`'s `Args:` block, ~390 tokens restating prose from the same
+  docstring, which this MCP SDK never turned into schema descriptions anyway.
+
+- **The code axis has a third strand: `thread_search(pr=…)` finds the sessions that
+  worked on a pull request.** Claude Code emits a `pr-link` line naming the PR a
+  session is on; the parser had never modeled it, so it went down the verbatim
+  preservation path and — one marker per turn, 22 of them in one session — drove
+  claude-code to a `validation_drift` degradation verdict off a single afternoon.
+  It is now a modeled `pr_link` event folded into an `event_prs` projection beside
+  `event_paths` and `event_commits`. Not a commit lookup by another name: a PR is a
+  unit of *intent* where a commit is a unit of *change*, so the scopes disagree on
+  purpose. A commit's contributors are inferred from file overlap inside its
+  authorship window; a PR's are stated by the harness — no window, no corroboration,
+  no reachable repository, and it reaches the sessions that left no commit in the
+  branch at all. Takes a bare number, `owner/name#4`, or the URL off the address
+  bar; a bare number matching several repositories returns all of them and says so
+  rather than silently picking one. `CodeCursor.projection_version` is bumped, so
+  existing archives refold all three strands on the next pass.
+- **The ledger-driven re-import did nothing, and said it worked.** `source fix
+  --activate`'s recovery half is what makes "however late the fix, nothing that
+  reached a ledger is lost" true, and two separate mechanisms were each enough to
+  neutralize it. It deleted the import watermark to force a re-read, but an absent
+  watermark on a thread that already has events is precisely the signal for the
+  importer's adoption guard, which re-stamps it at EOF and imports nothing — so the
+  stronger-looking move did strictly less than nothing. And it recovered by polling
+  the source, while a watcher skips an unchanged file on its `(mtime, size)`
+  fingerprint *before* any watermark is read; the fingerprint cache belongs to the
+  running daemon, which flushes its own copy back over anything a repair clears. The
+  watermark is now rewound to line 0 rather than deleted, and the ledgered files are
+  read directly rather than polled for. Nothing was asserting the end-to-end
+  property — that content the old parser skipped is in the archive afterwards — so
+  the tests now do.
+
+- **`/retrieval` reports latency per front door, and the viewer is one of them.** The
+  page led with one median across every surface — and the surfaces differ by more than
+  any change it was built to catch: over 14 days a question costs 849ms through the
+  MCP tools, 501ms in the viewer, and a terminal search is cold on 15 of its 18 calls
+  at 7.5s. The pooled 682ms is nobody's experience. Every headline number — typical
+  search, slow 1 in 10, bulk & paged, first search after a restart, process starts — is
+  now a column per door, with the pooled row kept last and named as the mixture it is.
+  The viewer's searches come from `web-requests.jsonl`, which stays a separate ledger
+  so evals mined from observed traffic never learn from a human clicking around; a
+  latency page is not that question, and the two record the same fields on purpose.
+  Those rows now also carry the shape of the ask (`limit`/`page`, never the query
+  text): the viewer paints a fixed 40-row page, so without it every browse of a result
+  set read as a question that took a second. The interactive/bulk boundary is a door's
+  own first screen for the same reason — 40 rows is a sweep from an agent that defaults
+  to 10 and is one question from a viewer that cannot show fewer. A door that warms and
+  serves nothing gets a row too: three processes paying 31s of model load for traffic
+  that never came is invisible in every other number on the page.
+- **The two new caches say what they did, instead of leaving it to be inferred from a
+  zero.** The probe's rule is that an absent field means *did not happen* and an
+  explicit zero means *measured and instant*, and both caches broke it: a query vector
+  served from the embedder's cache reports `embed_ms: 0.0` on a vector arm that ran,
+  which is byte-identical to an arm that never embedded, and a `set_ms` of 20ms is a
+  working memo on this corpus and a defeated one on a larger. Neither is answerable
+  from a duration. `embed_cached` now rides the record when a vector was reused, and
+  `SET_OUTCOMES` (`set_scans` / `set_deltas` / `set_hits`) tallies what the exact-set
+  stage actually did — counters rather than one state, because a search resolves the
+  set twice (the thread tally and the saturated-pool count) and the two need not agree.
+  Measured live end to end: 1223.8ms `set_scans` → 0.5ms `set_hits` → 55.8ms
+  `set_deltas` after five rows landed. The memo regression this release fixes was
+  invisible in every field the ledger had; it is now one column.
+- **Ingest no longer throws away the exact-set memo mid-walk: 852ms → 19ms per page.**
+  The memo keyed on the FTS append watermark, which moves on every indexed event — and
+  with the watcher writing every few seconds (`wal_age_s` p50 7.1s), a browse walk of
+  any length spanned several ingests and re-resolved the whole match set per page. The
+  usage ledger caught both sides of it: one 38-page walk hit 0% and spent 246.6s in set
+  scans, the 46-page walk beside it hit 46% and spent 41s — same query, decided by
+  whether ingest happened to be running. The watermark now rides in the memo *value*
+  rather than the key, so an entry stays findable after the index moves, and
+  `matched_threads` scans only the rows above the stored watermark and folds them in.
+  The merge is exact rather than approximate because the two scans partition the rows
+  they aggregate — which is also why the base scan is now bounded at the watermark it
+  is stored under (`rowid <= :set_ceiling`); ingest runs while a scan does, and without
+  the ceiling a row appended mid-scan landed in the base *and* in the next delta, which
+  double-counted it into the tally. A set truncated by `SET_SCAN_CAP` is rescanned
+  rather than extended: it holds the newest `set_cap` matched rows and nothing else, so
+  folding a delta in makes a tally that grows past its own cap with every page instead
+  of the fixed floor the cap defines. Measured over this corpus, verified equal to a
+  single full scan across five query shapes under live ingest.
+- **A repeated query embeds once. 326ms → 0ms.** `embed_query` ran a forward pass every
+  call, and the same text embeds to the same vector for as long as one model is loaded
+  — so paging re-embedded one identical string per page, and a caller comparing filters
+  re-embedded per variant. Over the usage ledger, 43.9s of 177s of embed time was text
+  already embedded earlier in the same file (`auth flow` 5× for 31.7s, `archive mcp
+  server` 14× for 24.4s). Now memoized per embedder, keyed by `(space, capped text)` so
+  a process whose configured model changes cannot be served a vector from the space it
+  left. Only successful embeds are cached — `None` is the degrade path and every way of
+  reaching it is a condition that resolves.
+- **Concurrent callers share one disk walk instead of racing for the same disk.** The
+  walk is ~0.3s at rest and tens of seconds when two overlap, and a polled endpoint is
+  a machine for producing that overlap — the web ledger caught the two worst walks
+  (142.9s and 42.1s) starting in the same second. `disk_usage` now takes a staleness
+  budget the caller states: the default measures, so an operator who just reclaimed
+  space is never told the old number, and only `/api/disk` opts in. Overlapping callers
+  wait for the walk in flight regardless of budget, which costs no freshness because a
+  result that lands while a caller is queued is still newer than the moment it asked.
+  The sharing itself is `_ops/shared_work.SharedWork`, so the concurrency contract is
+  driven directly rather than through the caller that needs it.
+- **The wheel stops shipping one archive's damage history.** `_scripts/` held eleven
+  one-shot repairs — ~3.5k LOC of module plus ~4.7k LOC of test — each written to undo a
+  specific bug this repo's own importers once had on the maintainer's store: NULL and
+  thread-id-prefixed dedup keys, the `codex` model placeholder, grok tool names lost to a
+  chunk boundary, six backfills of fields older importers dropped. Every one of them
+  shipped to every installer, was type-checked, coverage-floored at 97%, and maintained
+  against a moving codebase — for damage a fresh install does not have and cannot acquire,
+  behind private module paths no user could discover or run. They rot in place, too:
+  `denamespace_dedup_keys` matched its targets against `Event.thread_id`, so the ULID
+  migration silently turned it into a no-op that finds nothing while 393k prefixed keys sit
+  in the store it was written for. A repair whose subject is one machine's past belongs in
+  git history, which keeps it exactly as well and ships it to nobody. The v1→v2 ULID truth
+  migration is the one that isn't damage — it is the documented upgrade path for any
+  archive written before format v2 (`thread-archive index migrate`), so it moves to
+  `_truth/migrate_v2.py` and lives beside the format it migrates, as product surface rather
+  than a script.
 - **One warm pass at a time per machine, and the queue is recorded.** Warming loads a
   torch model, reads the vector pack end to end and pulls the graph off disk, and none
   of it is shareable — the model has to end up resident in the process doing the

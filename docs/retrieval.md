@@ -9,7 +9,10 @@ verbs for a terminal (see [cli.md](cli.md)), and read through the
 - Full-text and semantic search, fused and re-ranked, filterable by time,
   source, tool, and content type; an empty query browses recent activity.
 - Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP
-  client) can search and read your entire history mid-conversation.
+  client) can search and read your entire history mid-conversation. Their MCP
+  descriptions are compact on purpose — an agent pays for them in every session
+  whether or not it searches — and `thread_help('search'|'read')` serves the
+  full manual to the caller that wants it.
 - The same two tools are CLI verbs — `thread-archive search "auth flow" --since
   30d`, `thread-archive read <id>` — one implementation behind both, so what
   you get at a prompt is what your agent gets.

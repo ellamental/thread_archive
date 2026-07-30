@@ -77,10 +77,22 @@ def test_wheel_carries_the_whole_runtime(dist) -> None:
     assert "thread_archive/cli.py" in names
     # the vendored parser island ships inside the package
     assert "thread_archive/_thread_import/__init__.py" in names
-    # the pre-built web viewer ships so `pip install` needs no node
-    assert "thread_archive/_web/static/index.html" in names
-    assert any(n.startswith("thread_archive/_web/static/assets/") and n.endswith(".js")
-               for n in names)
+    # retrieval and the MCP server are the runtime an install is for
+    assert "thread_archive/_mcp/server.py" in names
+    assert any(n.startswith("thread_archive/_retrieval/") for n in names)
+
+
+def test_wheel_carries_no_viewer(dist) -> None:
+    # The viewer is dev-only: a stdlib server plus a built React bundle that was
+    # a quarter of the download on its own. An install gets preservation,
+    # retrieval, and the MCP server — reading through a browser is a thing a
+    # checkout does.
+    wheel, _ = dist
+    names = zipfile.ZipFile(wheel).namelist()
+    leaked = [n for n in names
+              if n.startswith("thread_archive/_web/")
+              or n.endswith((".js", ".css", ".html"))]
+    assert not leaked, f"viewer surface leaked into the wheel: {leaked}"
 
 
 def test_wheel_carries_no_measurement_surface(dist) -> None:
@@ -309,8 +321,11 @@ def test_installed_cli_advertises_only_verbs_an_install_can_run(installed, tmp_p
     assert h.returncode == 0, h.stderr
     listed = set(re.findall(r"^\s{4}([a-z][a-z-]+)\b", h.stdout, re.M))
     assert listed, h.stdout
-    for gone in ("mine", "eval", "snapshot", "archives"):
+    # `web` joins the measurement verbs: the viewer it opens ships in no wheel,
+    # so an install neither lists it nor mentions it in the epilog.
+    for gone in ("mine", "eval", "snapshot", "archives", "web"):
         assert gone not in listed, f"{gone} is advertised but no longer exists"
+    assert "watch --web" not in h.stdout, h.stdout
 
     for verb in sorted(listed):
         r = _run(installed, ["thread_archive", verb, "--help"], tmp_path)
@@ -342,10 +357,17 @@ def test_installed_package_is_private_and_asset_complete(installed, tmp_path) ->
         "from pathlib import Path\n"
         "import thread_archive\n"
         "assert 'site-packages' in thread_archive.__file__, thread_archive.__file__\n"
-        "from thread_archive._web import server\n"
-        "assets = Path(server.STATIC_DIR) / 'assets'\n"
-        "assert (Path(server.STATIC_DIR) / 'index.html').is_file(), 'viewer shell missing'\n"
-        "assert any(p.suffix == '.js' for p in assets.iterdir()), 'built JS missing'\n"
+        # The viewer is absent by construction, and the probe every offer of it
+        # goes through must agree — a probe that said yes here would register a
+        # `web` verb with nothing behind it.
+        "from thread_archive._viewer import viewer_available\n"
+        "assert viewer_available() is False, 'viewer probe says yes in an install'\n"
+        "try:\n"
+        "    import thread_archive._web\n"
+        "except ModuleNotFoundError:\n"
+        "    pass\n"
+        "else:\n"
+        "    sys.exit('the dev-only viewer shipped in the wheel')\n"
         "from thread_archive._thread_import import get_parser\n"
         "for prov in ('chatgpt', 'claude', 'claude-code'):\n"
         "    assert get_parser(prov) is not None, prov\n"

@@ -83,14 +83,43 @@ MIN_HISTORY_FOR_DARK = 5
 # cadence, with no escalation path. Reviewers: a long-stale export is the
 # operator's chosen tempo, not a broken loop for the product to close.
 EXPORT_STALE_DAYS = 45.0
-# Sustained-drift thresholds for the per-source degradation verdict (the one
-# that names ``thread-archive source fix`` as the remedy, reaches agents in-session
-# via the MCP search notice, and triggers a preservation snapshot). Stricter
+# Sustained-drift thresholds for the per-source degradation verdict (the one that
+# names a remedy, reaches agents in-session via the MCP search notice, and
+# triggers a preservation snapshot). Stricter
 # than the coverage *warning*, which fires on a single ledger record: one
 # benign record deserves an operator glance, not a repair prompt in every
 # search result.
 DEGRADED_DRIFT_MIN = 3
 DEGRADED_SKIPS_MIN = 3
+
+# What a degraded source's operator is told to type. Owned here because the
+# verdict is: every surface that shows one (the CLI report, the MCP search notice)
+# reads its remedy off :func:`remedy_for` rather than deciding for itself, so they
+# cannot drift apart.
+#
+# ``recheck`` is the first move for every drift-shaped verdict, including the two
+# that name a repair. It re-reads exactly the files the ledgers named through the
+# parser as it stands now, which either recovers the content and closes the records
+# — a fix arrives by core release at least as often as by patch, and the operator
+# who upgrades has no other way to retire a verdict their upgrade already fixed —
+# or confirms the drift is live and points at ``source fix``. Advising the patch
+# scaffold first inverts that: it is the expensive move, and it is the wrong one
+# whenever the parser is already right.
+_REMEDIES = {
+    "validation_drift": "thread-archive source recheck {source}",
+    "capture_skips": "thread-archive source recheck {source}",
+    "stale_ingest": "thread-archive source recheck {source}",
+    # Nothing to re-read — the store itself is missing. The only actionable line is
+    # the coverage report's own (fix the path, or disable the source in config).
+    "went_dark": "thread-archive source coverage",
+}
+
+
+def remedy_for(reason: str, source: str) -> str:
+    """The command a source degraded for ``reason`` should be repaired with."""
+    return _REMEDIES.get(reason, "thread-archive source recheck {source}").format(
+        source=source
+    )
 
 
 def export_fed_sources() -> dict[str, str]:
@@ -238,7 +267,7 @@ def check_coverage(
     """Reconcile every enabled source's store against the archive (see module
     docstring for the checks). Returns the full report; records a compact
     ``coverage_last`` in health.json — including the per-source ``degraded``
-    verdicts the MCP search notice and ``thread-archive source fix`` key on. A
+    verdicts the MCP search notice and ``thread-archive source recheck`` key on. A
     degraded source's raw store is snapshotted into the drift quarantine
     (:mod:`.._watcher.drift_snapshot`) unless ``snapshot`` is false.
     ``watchers`` overrides the enabled set (tests inject stubs);
@@ -405,9 +434,13 @@ def check_coverage(
     # that, sustained *substantive* ledger volume for one source is (thresholds
     # above) — the routine records both ledgers take constantly (a version
     # sighting, an empty session) are trail, not evidence, and a source must
-    # never degrade on them. One reason per source, strongest first — the
-    # verdict names the remedy, and the remedy
-    # (`thread-archive source fix <source>`) is the same either way.
+    # never degrade on them. One reason per source, strongest first; the surfaces
+    # that show a verdict get its remedy from :func:`remedy_for`.
+    #
+    # Ledger volume here is *open* volume — records a repair has closed
+    # (:func:`.._importers._validation_ledger.record_resolution`) stay in the file
+    # and out of this count. Without that a verdict outlives its own repair by the
+    # rest of the rolling window, still naming a remedy that has already run.
     # ``since`` is the best available drift-onset timestamp for that reason.
     degraded: dict[str, dict] = {}
     for name, entry in sources.items():

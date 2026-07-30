@@ -152,6 +152,42 @@ def clear(home=None) -> None:
     _last_saved.clear()
 
 
+def forget(source: str, home=None) -> bool:
+    """Drop one source's persisted fingerprints; the next poll re-reads its files.
+
+    What a repair needs and a reset watermark alone cannot do. The watchers skip on
+    the fingerprint *before* the watermark is ever consulted, so a drifted file that
+    has since stopped changing is skipped by a poll no matter how thoroughly its
+    watermark was cleared — and the ledger-driven re-import
+    (:func:`thread_archive._repair.reimport_source`) would report a clean run having
+    re-read nothing. Whole-source rather than per-file: the cost is one re-verify
+    pass of that source, which is the pass a restart used to force anyway, and it
+    needs no reconstruction of provider-specific paths from source ids.
+
+    Returns whether anything was written. The other sources' entries are preserved.
+    """
+    try:
+        doc = _read(home)
+        raw = doc.get("sources")
+        sources: dict[str, Any] = raw if isinstance(raw, dict) else {}
+        if source not in sources:
+            return False
+        sources.pop(source)
+        path = _path(home)
+        # The stamp is left as it was: this drops what one source knows, and
+        # re-dating the document would silently extend every other source's cache.
+        payload = {"verified_at": doc.get("verified_at"), "sources": sources}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, path)
+        _last_saved.pop(source, None)
+        return True
+    except Exception:  # noqa: BLE001 — advisory; a repair must not break on it
+        logger.debug("watch: could not forget fingerprints for %s", source, exc_info=True)
+        return False
+
+
 def stamp_age_s(home=None) -> Optional[float]:
     """Seconds since the last full observation, or ``None`` when never stamped —
     the operator-visible answer to "when was the corpus last verified"."""

@@ -403,3 +403,56 @@ def extract_commits(event_type: str, payload: dict) -> list[tuple[str, str]]:
         seen.add(sha)
         out.append((sha, match.group("subject").strip()[:500]))
     return out
+
+
+#: A ``owner/name`` repository, as a forge spells it. Deliberately not a path:
+#: ``src/rank.py`` is two segments too, so the shape alone can't tell them apart
+#: and only the fields a ``pr_link`` event carries are read as one.
+_REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
+
+#: The PR references a caller might type: ``4``, ``#4``, ``owner/name#4``, or the
+#: forge URL straight off the address bar (GitHub ``/pull/4``, GitLab ``/-/merge_requests/4``).
+_PR_REF_RE = re.compile(
+    r"^(?:"
+    r"(?:(?P<repo1>[\w.-]+/[\w.-]+))?#?(?P<num1>\d+)"
+    r"|"
+    r"https?://[^/]+/(?P<repo2>[\w.-]+/[\w.-]+)(?:/-)?/(?:pull|pulls|merge_requests)/(?P<num2>\d+)"
+    r")/?$"
+)
+
+
+def extract_pr(payload: dict) -> Optional[tuple[str, Optional[str], Optional[str]]]:
+    """``(number, repo, url)`` for a ``pr_link`` event, or None.
+
+    The inverse of :func:`extract_commits`'s job and much the smaller one: a commit
+    has to be *recognized* in prose a tool printed, while a pull request arrives
+    already structured because the harness states it outright. What is left is
+    normalization — the number as text so a lookup never turns on int-vs-str, and a
+    repo only when it is spelled the way a forge spells one.
+    """
+    if not payload:
+        return None
+    raw = payload.get("number")
+    number = str(raw).strip() if raw is not None else ""
+    if not number.isdigit():
+        return None
+    repo = payload.get("repo")
+    repo = repo.strip() if isinstance(repo, str) and _REPO_RE.match(repo.strip()) else None
+    url = payload.get("url")
+    url = url.strip()[:500] if isinstance(url, str) and url.strip() else None
+    return number, repo, url
+
+
+def parse_pr_ref(ref: str) -> Optional[tuple[Optional[str], str]]:
+    """A typed PR reference → ``(repo | None, number)``, or None if it isn't one.
+
+    Accepts what someone actually has to hand: the bare number they read off a
+    checklist, the ``owner/name#4`` they would write in a message, and the URL they
+    copied out of the browser.
+    """
+    match = _PR_REF_RE.match((ref or "").strip())
+    if not match:
+        return None
+    number = match.group("num1") or match.group("num2")
+    repo = match.group("repo1") or match.group("repo2")
+    return (repo or None, number)

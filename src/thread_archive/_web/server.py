@@ -886,6 +886,22 @@ def resolve_archive_link(link_id: str, source: Optional[str] = None) -> Optional
         return resolve_thread_ref(s, link_id)
 
 
+#: What ``/api/search`` serves when the client names no ``limit``. The viewer
+#: always names one (it paints a fixed page), so this is the bare-URL case.
+SEARCH_LIMIT = 30
+
+
+def _search_shape(params: dict) -> tuple[int, int]:
+    """The ``(limit, page)`` a search asked for.
+
+    One reader for the route that serves the search and the dispatcher that
+    records it, so the recorded shape is the shape that ran — a second copy of the
+    default here would file a bare-URL search under whatever number this one
+    drifted to.
+    """
+    return _int(params, "limit", SEARCH_LIMIT), _int(params, "page", 1, hi=1_000_000)
+
+
 # ---------------------------------------------------------------------------
 # the router (socket-free, the testable core)
 # ---------------------------------------------------------------------------
@@ -953,7 +969,12 @@ def route(
         # What the home costs, by kind. Its own endpoint rather than a field on
         # /api/status because it walks the directory tree: the health page polls
         # status every 30s and has no reason to re-walk 40k files that often.
-        return _ok(api.disk_usage())
+        # This one is polled too, and several viewers poll it at once, so it takes
+        # the staleness budget that keeps those onto one walk — a served number
+        # that is seconds old is indistinguishable from a fresh one at this scale.
+        from .._ops.disk import POLL_MAX_AGE_S
+
+        return _ok(api.disk_usage(max_age_s=POLL_MAX_AGE_S))
 
     if path == "/api/drops":
         # The drop zone as the upload page reads it. Directory listings only —
@@ -1042,8 +1063,7 @@ def route(
         # Both shapes page. `page` is 1-based and every page is a slice of ONE
         # ordering (see _retrieval.search) — the viewer walks a result set rather
         # than being handed a cut and told to narrow the query.
-        limit = _int(params, "limit", 30)
-        page = _int(params, "page", 1, hi=1_000_000)
+        limit, page = _search_shape(params)
         if not q:
             # Empty query = browse, the same contract as MCP thread_search: one
             # row per thread by last activity, honoring the structural filters.
@@ -1230,6 +1250,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method: str, body: Optional[RequestBody]) -> None:
         parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
         # Timed around the router, not inside it: `route` is the socket-free core
         # the tests drive directly, and it should stay a pure function of its
         # arguments. This is also the boundary where a failed request is still a
@@ -1243,9 +1264,7 @@ class _Handler(BaseHTTPRequestHandler):
         span = None
         try:
             with _metrics.serving(), _contention.in_flight() as span, _probe.install() as probe:
-                status, ctype, out, headers = route(
-                    method, parsed.path, parse_qs(parsed.query), body
-                )
+                status, ctype, out, headers = route(method, parsed.path, params, body)
         except Exception:  # noqa: BLE001 — isolate per request; never kill the loop
             # Detail stays server-side: exception text can carry paths/SQL/query
             # internals, and the body goes to whoever reached the port.
@@ -1265,6 +1284,13 @@ class _Handler(BaseHTTPRequestHandler):
             duration_ms=(time.monotonic() - _started) * 1000.0,
             size=len(out),
             probe=probe,
+            # What the search asked for, read the same way the route read it. A
+            # viewer page is 40 rows deep by default, so without this every
+            # browse of the result set looks like a question that took a second.
+            workload=(
+                dict(zip(("limit", "page"), _search_shape(params)))
+                if parsed.path == "/api/search" else None
+            ),
             # Sampled after the work, at the surface that served it — the same
             # place the MCP tools sample theirs. The viewer shares a process with
             # the watcher, so a background matrix or graph refresh here is

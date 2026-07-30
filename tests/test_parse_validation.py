@@ -219,7 +219,7 @@ def test_clean_import_writes_no_drift_record(archive_home):
     assert _drift_records(archive_home) == []
     assert summarize_drift() == {"total": 0, "recent": 0, "recent_substantive": 0,
                                  "recent_substantive_findings": 0, "recent_findings": 0,
-                                 "days": 7.0, "by_provider": {}}
+                                 "recent_resolved": 0, "days": 7.0, "by_provider": {}}
 
 
 def test_record_drift_empty_findings_is_a_noop(archive_home):
@@ -241,9 +241,11 @@ def test_drift_surfaces_in_the_coverage_check(archive_home):
     drift = r["drift"]
     assert drift["by_provider"]["claude-code"].pop("since")  # volatile timestamp
     assert drift == {"total": 1, "recent": 1, "recent_substantive": 1,
-                     "recent_substantive_findings": 1, "recent_findings": 1, "days": 7.0,
+                     "recent_substantive_findings": 1, "recent_findings": 1,
+                     "recent_resolved": 0, "days": 7.0,
                      "by_provider": {"claude-code": {"recent": 1, "recent_substantive": 1,
-                                                     "recent_findings": 1}}}
+                                                     "recent_findings": 1,
+                                                     "recent_resolved": 0}}}
     assert read_health()["coverage_last"]["drift_recent"] == 1
 
 

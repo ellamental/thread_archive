@@ -27,10 +27,14 @@ rid of* — by sorting every top-level entry into four kinds:
     :func:`disk_usage` names the largest of them rather than reporting one
     anonymous remainder.
 
-One ``scandir`` walk of the home costs well under a second on a 40k-file, 30 GB
-archive, so callers pay for it directly rather than caching a number that would
-be wrong exactly when someone is watching it move. It is nonetheless kept out of
-:func:`thread_archive._api.status`, whose result the viewer polls on a timer.
+A walk of the home is cheap at rest and not at all cheap under load: measured over
+a 40k-file, 30 GB archive it is ~0.3 s typically, seconds while ingest is writing,
+and tens of seconds when two walks overlap and contend for the same disk. That
+last case is the one worth designing against, because a polled endpoint is exactly
+what produces it — so concurrent callers share one walk rather than racing, and a
+caller that says it will accept a slightly old number (only the poll does) is
+served the last one. :func:`thread_archive._api.status` stays free of the walk
+regardless, because a timer polls that too.
 
 Symlinks are never followed and never sized. A home reached through the
 compatibility symlink still measures its real contents; a symlink *into* the home
@@ -45,10 +49,31 @@ from pathlib import Path
 from typing import Optional
 
 from .._config import resolve_paths
+from .shared_work import SharedWork
 
 # The kinds, in report order — least disposable first, so a reader meets the
 # irreplaceable bytes before the ones they might reclaim.
 KINDS = ("truth", "index", "sources", "other")
+
+
+#: How stale a measurement a *polling* caller accepts. Only the served endpoint
+#: passes it: a poll on a timer has no use for a number more precise than its own
+#: interval, and this is what keeps a burst of pollers from walking the disk once
+#: each. Every other caller takes the default and measures.
+POLL_MAX_AGE_S = 15.0
+
+#: Homes whose last measurement is retained. One process serves one archive in
+#: practice; the bound exists so a test suite (or a tool sweeping several homes)
+#: cannot grow this without limit.
+_MEASURE_MAX = 8
+
+_measurements = SharedWork(max_entries=_MEASURE_MAX)
+
+
+def measure_stats() -> dict:
+    """How the shared measurement is doing: ``{entries, computed, shared}``, where
+    ``computed`` counts walks that actually ran."""
+    return _measurements.stats()
 
 
 def _tree_bytes(path: Path) -> tuple[int, int]:
@@ -107,13 +132,30 @@ def _classify(entry: Path, paths) -> str:
     return "other"
 
 
-def disk_usage(*, home: Optional[str] = None, top: int = 12) -> dict:
+def disk_usage(
+    *, home: Optional[str] = None, top: int = 12, max_age_s: float = 0.0,
+) -> dict:
     """Measure the archive home: a total, a per-kind split, and the largest
     entries by name.
 
     ``top`` bounds the named entries only. It is a display bound on an otherwise
     complete accounting — every byte under the home lands in exactly one kind's
-    total whether or not its entry is named.
+    total whether or not its entry is named. It is applied to the shared
+    measurement on the way out, so asking for a different ``top`` reads the same
+    walk rather than paying for a new one.
+
+    ``max_age_s`` is how old a measurement the caller will take. The default
+    measures: an operator who just deleted something and asked what it saved must
+    not be told the number from before. A *poll* is the one caller with no use for
+    that precision, and it is the caller that makes overlapping walks happen at
+    all, so the served endpoint passes :data:`POLL_MAX_AGE_S` and everything else
+    leaves it alone.
+
+    Concurrent callers never walk the same home twice regardless: one walks and the
+    rest wait for it. Waiting is strictly better than racing here — a walk that
+    contends with another walk is many times slower than either alone — and it
+    costs no freshness, because a result that lands while a caller is queued is
+    still newer than the moment that caller asked.
 
     Truth and index live under the home by default but need not (both have
     environment overrides). One that resolves outside is measured where it
@@ -124,6 +166,17 @@ def disk_usage(*, home: Optional[str] = None, top: int = 12) -> dict:
     zeros rather than scaffolding one as a side effect of being asked its size.
     """
     paths = resolve_paths(home)
+    measured = _measurements.get(
+        str(paths.home), lambda: _measure(paths), max_age_s=max_age_s)
+    # Copied out: one measurement is shared by every caller reading it, and the
+    # entries list is sliced per caller.
+    return {**measured, "entries": measured["entries"][:top]}
+
+
+def _measure(paths) -> dict:
+    """Walk the home and total it. The whole cost of :func:`disk_usage`, and the
+    part that is worth sharing between callers — every field here is independent
+    of who asked or what ``top`` they wanted."""
     kinds: dict[str, int] = dict.fromkeys(KINDS, 0)
     entries: list[dict] = []
     external: list[str] = []
@@ -166,7 +219,7 @@ def disk_usage(*, home: Optional[str] = None, top: int = 12) -> dict:
         "kinds": kinds,
         # Rebuildable from truth, and the number a reclamation decision turns on.
         "rebuildable_bytes": kinds["index"],
-        "entries": entries[:top],
+        "entries": entries,
         "external": external,
     }
 

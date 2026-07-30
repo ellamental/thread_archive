@@ -171,9 +171,10 @@ def _units(spec: AgentSpec) -> dict[str, str]:
 
 def watcher_units(
     entry: Path, log_dir: Path, *, home: Optional[str] = None, web: bool = True,
-    web_port: int = 8787,
+    web_port: int = 8787, has_viewer: Optional[bool] = None,
 ) -> dict[str, str]:
-    return _units(watcher_spec(entry, log_dir, home=home, web=web, web_port=web_port))
+    return _units(watcher_spec(entry, log_dir, home=home, web=web, web_port=web_port,
+                               has_viewer=has_viewer))
 
 
 def mcp_units(

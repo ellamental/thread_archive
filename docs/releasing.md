@@ -129,7 +129,9 @@ All in the worktree:
 - If `frontend/` changed since the last release, the committed
   `_web/static/` bundle must be current: `cd frontend && npm run build`,
   and the regenerated static assets committed with the change that caused
-  them — a clone install ships whatever bundle is in the tree.
+  them — a clone runs whatever bundle is in the tree. This gates the clone
+  only; the viewer is dev-only and no wheel carries it, so a stale bundle
+  cannot reach an installed user.
 
 ## 3. Compress the changelog, bump the version
 

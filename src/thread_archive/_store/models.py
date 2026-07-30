@@ -330,14 +330,50 @@ class EventCommit(Base):
     )
 
 
+class EventPr(Base):
+    """A pull request a session declared it was working on — the third strand of the
+    code axis, beside :class:`EventPath` and :class:`EventCommit`.
+
+    A projection folded by the same pass, from the ``pr_link`` events the harness's
+    own marker produces (see
+    :func:`thread_archive._retrieval._paths.extract_pr`). Unlike a commit, this is
+    a *stated* association rather than one inferred from output, so it needs no
+    authorship window: the session said which PR it was on.
+
+    ``number`` is stored as text so a lookup never turns on int-vs-str, and ``repo``
+    is the harness's ``owner/name`` spelling — the thread's working directory is a
+    path on this machine and says nothing about which remote the PR lives on.
+    """
+
+    __tablename__ = "event_prs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    thread_id: Mapped[str] = mapped_column(Text)
+    number: Mapped[str] = mapped_column(Text)
+    repo: Mapped[str | None] = mapped_column(Text, default=None)
+    url: Mapped[str | None] = mapped_column(Text, default=None)
+    occurred_at: Mapped[str | None] = mapped_column(Text, default=None)
+
+    __table_args__ = (
+        # The bare number is what a caller types and cuts the table hardest; the
+        # composite serves the repo-qualified lookup without a scan.
+        Index("idx_event_prs_number", "number"),
+        Index("idx_event_prs_repo", "repo", "number"),
+        Index("idx_event_prs_thread", "thread_id"),
+        Index("idx_event_prs_event", "event_id"),
+    )
+
+
 class CodeCursor(Base):
     """The code-index watermark: the highest ``events.id`` already folded into
-    :class:`EventPath` / :class:`EventCommit`. A single row (``id = 1``).
+    :class:`EventPath` / :class:`EventCommit` / :class:`EventPr`. A single row
+    (``id = 1``).
 
     Same contract as :class:`MetricsCursor`, for the same reason — the fold is
     append-only over monotonic ids, so folding only ``id > through_event_id`` is
     exact. ``projection_version`` is what makes the extraction rules revisable: a
-    fold that finds a trailing version discards both projections and rebuilds,
+    fold that finds a trailing version discards every projection and rebuilds,
     because rows written under older rules cannot be added to by newer ones. A log
     that shrank below the cursor (a reindex rebuilt it) triggers the same rebuild.
     """

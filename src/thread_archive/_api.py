@@ -184,6 +184,7 @@ def blame(
     *,
     path: Optional[str] = None,
     commit: Optional[str] = None,
+    pr: Optional[str] = None,
     thread_id: Optional[int | str] = None,
     home: Optional[str] = None,
     ops: Optional[list[str]] = None,
@@ -195,16 +196,19 @@ def blame(
     repo: Optional[str] = None,
     refresh: bool = True,
 ) -> dict:
-    """The code axis: which conversations touched a file, or produced a commit.
+    """The code axis: which conversations touched a file, produced a commit, or
+    worked on a pull request.
 
-    Exactly one of ``path`` / ``commit`` / ``thread_id`` selects the direction —
-    file → conversations, commit → the session behind it, conversation → its files.
-    ``refresh`` tops up the projection first (bounded; the cursor makes the rest of
-    a backfill the next call's work) so a just-finished session is answerable.
+    Exactly one of ``path`` / ``commit`` / ``pr`` / ``thread_id`` selects the
+    direction — file → conversations, commit → the sessions behind it, pull request
+    → the sessions that declared it, conversation → its files. ``refresh`` tops up
+    the projection first (bounded; the cursor makes the rest of a backfill the next
+    call's work) so a just-finished session is answerable.
     """
-    given = [n for n, v in (("path", path), ("commit", commit), ("thread_id", thread_id)) if v]
+    given = [n for n, v in (("path", path), ("commit", commit), ("pr", pr),
+                            ("thread_id", thread_id)) if v]
     if len(given) != 1:
-        raise ValueError("blame takes exactly one of path=, commit=, thread_id= "
+        raise ValueError("blame takes exactly one of path=, commit=, pr=, thread_id= "
                          f"(got {given or 'none'})")
     open_archive(home)
     from ._retrieval import code as _code
@@ -216,6 +220,8 @@ def blame(
         _code.refresh_code_index(max_batches=8)
     if commit:
         return _code.blame_commit(commit, repo=repo, limit=limit)
+    if pr:
+        return _code.blame_pr(pr, repo=repo, limit=limit)
     if path:
         return _code.blame_path(path, ops=ops, limit=limit, since=since, until=until,
                                 sources=source, agents=agents)
@@ -354,7 +360,7 @@ def reindex(*, home: Optional[str] = None, vectors: bool = False, salvage: bool 
 def migrate(*, home: Optional[str] = None, dry_run: bool = False) -> dict:
     """Migrate older truth to the current format, then rebuild and verify it."""
     from ._config import resolve_paths
-    from ._scripts.migrate_thread_ulids import migrate as _migrate
+    from ._truth.migrate_v2 import migrate as _migrate
 
     result = _migrate(resolve_paths(home).home, dry_run=dry_run)
     if result.get("changed") and not dry_run:
@@ -545,6 +551,7 @@ def status(*, home: Optional[str] = None) -> dict:
         "code_paths_indexed": code["paths"],
         "code_files": code["distinct_paths"],
         "code_commits": code["commits"],
+        "code_prs": code["distinct_prs"],
         # False while the fold is still walking the log — the one state where an
         # empty blame answer means "not indexed yet", not "nobody touched it".
         # ``code_pending`` distinguishes ordinary between-passes lag from a real
@@ -727,18 +734,23 @@ def load_status(*, home: Optional[str] = None, limit: int = 20) -> dict:
             "recent": read_runs(limit, paths.home)}
 
 
-def disk_usage(*, home: Optional[str] = None, top: int = 12) -> dict:
+def disk_usage(
+    *, home: Optional[str] = None, top: int = 12, max_age_s: float = 0.0,
+) -> dict:
     """What this archive costs on disk, split into truth (irreplaceable), index
     (rebuildable), retained raw sources, and everything else — plus the largest
     entries by name, which is what turns a total into an action.
 
     Deliberately not part of :func:`status`: it walks the home, and the viewer
     polls status on a timer. Callers that want the number ask for it.
+
+    ``max_age_s`` is the caller's staleness budget; the default measures. Only a
+    poll should raise it — see :func:`thread_archive._ops.disk.disk_usage`.
     """
     from ._ops.disk import disk_usage as _disk_usage
 
     # No open_archive: measuring a home must never be what creates one.
-    return _disk_usage(home=home, top=top)
+    return _disk_usage(home=home, top=top, max_age_s=max_age_s)
 
 
 def stats(*, home: Optional[str] = None, model_limit: Optional[int] = None) -> dict:

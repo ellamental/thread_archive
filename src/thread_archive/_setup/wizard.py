@@ -37,6 +37,7 @@ from typing import Optional
 
 from .. import __version__
 from .._config import load_config, resolve_paths, save_config, source_enabled
+from .._viewer import viewer_available
 from .machine import Machine
 
 
@@ -305,8 +306,14 @@ def run_setup(
     # 7. The viewer — offered only when the watcher is serving it. Last question,
     # before the summary rather than after it: the browser comes up while the
     # terminal's closing words stay the reference to come back to.
+    #
+    # Two conditions, not one: a watcher to serve it, and a viewer for that
+    # watcher to serve. The viewer is dev-only and ships in no wheel, so an
+    # install has the first and not the second — and must not offer a URL that
+    # will never answer.
     watching = cfg["setup"]["watcher"] in ("launchd", "systemd", "scheduled", "already-running")
-    if watching:
+    serving_viewer = watching and viewer_available()
+    if serving_viewer:
         cfg["setup"]["viewer"] = _offer_viewer(interactive, machine, ask=ask)
         _say()
 
@@ -316,13 +323,13 @@ def run_setup(
     _say("Done. Ask your agent: \"what have we discussed about …?\"")
     _say("  or ask it here:   thread-archive search \"…\"  ·  thread-archive read <id>")
     _say("  status anytime:   thread-archive status")
-    if watching:
+    if serving_viewer:
         _say("  web viewer:       http://127.0.0.1:8787")
     # With the viewer up, the drag-and-drop page is the shorter road to the same
     # drop folder — so name it first and keep the folder as the fallback.
     _say(
         "  account exports:  drop ZIPs at http://127.0.0.1:8787/upload"
-        if watching
+        if serving_viewer
         else f"  account exports:  drop ZIPs into {paths.dumps_dir}"
     )
     if not machine.embeddings_installed():
@@ -414,7 +421,10 @@ def _offer_watcher(
         _say("Keep it fresh: the always-on watcher is already installed and running.")
         return "already-running"
     _say("Keep it fresh? A background watcher tails these stores so new")
-    _say("conversations land within seconds, and serves the web viewer at http://127.0.0.1:8787.")
+    if viewer_available():
+        _say("conversations land within seconds, and serves the web viewer at http://127.0.0.1:8787.")
+    else:
+        _say("conversations land within seconds.")
     _say("It never updates the install — releases are yours to take:")
     _say("`thread-archive self-update --check` reports one, `self-update` applies it.")
     answer = ask(
@@ -430,7 +440,8 @@ def _offer_watcher(
         _say(f"  Could not install the watcher: {e}")
         _say("  Opted-in MCP catch-up still covers freshness; `thread-archive service install` to retry.")
         return "failed"
-    _say("  Installed — always-on, restarts on failure, web viewer at http://127.0.0.1:8787.")
+    _say("  Installed — always-on, restarts on failure."
+         + (" Web viewer at http://127.0.0.1:8787." if viewer_available() else ""))
     return machine.service_kind or "scheduled"
 
 
@@ -651,7 +662,9 @@ def print_status(args: argparse.Namespace, *, machine: Optional[Machine] = None)
             _say("  schedule: no nightly backup — `thread-archive setup` offers it "
                  "(or `thread-archive service install --backup --dest <path>`)")
     _say()
-    _say("  search/read: the archive-mcp tools · web viewer: http://127.0.0.1:8787 (with the watcher)")
+    _say("  search/read: the archive-mcp tools"
+         + (" · web viewer: http://127.0.0.1:8787 (with the watcher)"
+            if viewer_available() else ""))
     _say("  re-run setup: thread-archive setup · operator CLI: thread-archive --help")
     return 0
 

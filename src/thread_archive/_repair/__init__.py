@@ -15,6 +15,14 @@ Nothing here runs an agent. Archive lays out the work and holds the gate;
 whoever does the fix is the user's choice, and no claim about the fix enables a
 patch — only the scaffold's tests passing in a fresh subprocess does.
 
+The re-import stands on its own as ``thread-archive source recheck`` and is the
+first move for any degradation verdict, patch or no patch. A parse fix reaches a
+machine by core release at least as often as by local patch, and the operator who
+upgrades into one otherwise has no way to retire a verdict their upgrade already
+fixed — the ledger records keep it standing for the rest of the rolling window,
+naming a repair that is already done. Re-reading is also the only honest test of
+a fix: the records close if the findings don't come back, and not otherwise.
+
 Patches are temporary by default (retired by the next self-update —
 :mod:`.retire`) and pinnable for "I always want mine". Every lifecycle
 transition lands in ``patch-log.jsonl`` (:mod:`.ledger`).

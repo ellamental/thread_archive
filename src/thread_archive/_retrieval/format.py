@@ -10,6 +10,7 @@ switches to ``count`` (a per-thread tally over the whole match pool) or ``linkab
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from datetime import datetime
 
@@ -92,6 +93,37 @@ def _search_quality(top_hit_count: int, n_terms: int):
 def query_terms(query: str) -> list[str]:
     """Ranking terms minus the pipe-OR token (which isn't a content term)."""
     return [t for t in _rank.search_terms(query) if t and t != "|"]
+
+
+def _looks_like_a_file(query: str) -> bool:
+    """A query shaped like a filename — anything with a path separator, or a bare
+    name carrying an extension."""
+    return "/" in query or bool(re.fullmatch(r"[\w.-]+\.[A-Za-z]\w{0,4}", query))
+
+
+def _next_moves(query: str) -> list[str]:
+    """Rendered lines offering concrete retries for a search that found nothing —
+    or found only nearest-neighbour guesses.
+
+    The tools ship a compact description and keep their manual behind
+    ``thread_help`` (see :mod:`thread_archive._tools`), which means the alternatives
+    an agent might need are not sitting in its context by default. They arrive here
+    instead: at the one moment they are demonstrably relevant, charged only to the
+    caller that hit the wall. Each line is a move that would plausibly change this
+    result, not a summary of the tool.
+    """
+    q = (query or "").strip()
+    moves = []
+    if q and " " not in q:
+        moves.append("match='substring' — matches inside longer words (p4 finds mp4); "
+                     "the default matches whole words only")
+    if _looks_like_a_file(q):
+        moves.append(f"path='{q}' — the sessions that *touched* that file; search "
+                     f"finds where something was discussed, path where it was done")
+    moves.append("a shorter query, or query='' with since='7d' to browse what is there")
+    return [f"  try: {m}" for m in moves] + [
+        "  thread_help('search') — every filter and its grammar"
+    ]
 
 
 def _format_count(hits: list[EventHit], query: str) -> str:
@@ -207,7 +239,7 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
             return ("No threads matched the browse filters. Widen the window or drop a "
                     "filter (browse lists threads by last activity; topics/system threads "
                     "need an explicit types=…).")
-        return f'No results for "{query}".'
+        return "\n".join([f'No results for "{query}".', *_next_moves(query)])
 
     terms = query_terms(query)
     n_terms = len(terms)
@@ -234,6 +266,10 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
     lines = [prelude[0]]
     if verdict and verdict[1]:
         lines.append(f"  note: {verdict[1]}")
+    # Guesses came back where an answer was asked for: the same moment a no-result
+    # gets its alternatives, and the same reason.
+    if verdict and verdict[0] == "weak":
+        lines.extend(_next_moves(query))
     if subj_line:
         lines.append(subj_line)
     lines.append("  open a hit: thread_read(thread_id, around_event=event_id)")

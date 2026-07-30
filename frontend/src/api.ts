@@ -261,17 +261,27 @@ export interface ServedBucket {
   unknown?: LatencyBand
 }
 
-/** One front door's traffic. `mcp-http` is the shared always-on server, which
- *  warms at startup; `mcp-stdio` and `cli` are one process per call and pay that
- *  load inside their first (and only) search, so they are near-entirely cold by
- *  construction. `mcp` is unattributed — rows written before the surfaces
- *  declared themselves, not a fourth door. */
+/** One front door's traffic, carrying every headline number the page quotes.
+ *
+ *  `mcp-http` is the shared always-on server, which warms at startup; `mcp-stdio`
+ *  and `cli` are one process per call and pay that load inside their first (and
+ *  only) search, so they are near-entirely cold by construction; `web` is this
+ *  viewer, long-lived and warmed, whose searches are recorded in its own request
+ *  ledger and read back alongside the tools'. `mcp` is unattributed — rows written
+ *  before the surfaces declared themselves, not a door of its own.
+ *
+ *  `p50`/`p90` are the door's whole distribution, every regime and workload in it;
+ *  the bands beside them are the cuts worth quoting. */
 export interface SurfaceRow {
   surface: string
   n: number
   n_cold: number
   p50: number
   p90: number
+  /** What asking this door a question costs: warm, first page, ordinary width. */
+  warm_interactive: LatencyBand
+  warm_bulk: LatencyBand
+  cold: LatencyBand
 }
 
 export interface Served {
@@ -283,7 +293,9 @@ export interface Served {
   warm: LatencyBand
   /** Warm first-page searches with an ordinary limit — what asking a question
    *  costs. Kept apart from `warm_bulk` (pagination sweeps, wide exports) so the
-   *  headline median measures the question, not the window's workload mix. */
+   *  median measures the question, not the window's workload mix. These pool every
+   *  door together, so they are a total rather than anyone's experience — quote
+   *  them as `all doors`, never as the headline. */
   warm_interactive: LatencyBand
   warm_bulk: LatencyBand
   cold: LatencyBand
@@ -310,9 +322,10 @@ export interface Restarts {
   n: number
   bucket: Bucket
   buckets: { at: string; n: number }[]
-  /** Which daemon restarted. Several warm independently, so the total says how
-   *  much warming the box did and only this says how often one service bounced. */
-  by_surface: { surface: string; n: number }[]
+  /** Which daemon restarted, and what a start cost it. Several warm independently,
+   *  so the total says how much warming the box did and only this says how often
+   *  one service bounced. A door missing here never warms on purpose. */
+  by_surface: { surface: string; n: number; p50_ms: number }[]
   p50_ms: number
   total_s: number
 }
@@ -812,6 +825,9 @@ export type Block =
   // `safeguard_notice` is the human-readable reason paired with a fallback.
   | { type: 'model_switch'; kind: 'user' | 'fallback'; from_model: string | null; to_model: string | null }
   | { type: 'safeguard_notice'; text: string }
+  // The pull request this session was working on, as its harness recorded it. One
+  // per PR however often the harness re-announced it; `url` links out to the forge.
+  | { type: 'pr_link'; ref: string; repo: string | null; number: string; url: string | null }
   | { type: 'unknown'; event_type: string; text: string }
 
 // Per-message metadata for the info drawer. Every message carries `ts`; assistant

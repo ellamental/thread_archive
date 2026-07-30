@@ -106,6 +106,36 @@ describe('block rendering', () => {
     expect(screen.getByText('opus')).toBeInTheDocument()
   })
 
+  it('links a pr_link block out to the forge', () => {
+    render(
+      <Message
+        message={msg([
+          {
+            type: 'pr_link',
+            ref: 'ellamental/thread_archive#4',
+            repo: 'ellamental/thread_archive',
+            number: '4',
+            url: 'https://github.com/ellamental/thread_archive/pull/4',
+          },
+        ])}
+      />,
+    )
+    const link = screen.getByRole('link', { name: 'ellamental/thread_archive#4' })
+    expect(link).toHaveAttribute('href', 'https://github.com/ellamental/thread_archive/pull/4')
+  })
+
+  it('renders a pr_link with no url as plain text rather than a dead link', () => {
+    render(
+      <Message
+        message={msg([
+          { type: 'pr_link', ref: '#4', repo: null, number: '4', url: null },
+        ])}
+      />,
+    )
+    expect(screen.getByText('#4')).toBeInTheDocument()
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
   it('never swallows an unrecognized block type', () => {
     const unknown = { type: 'holo_frame', text: 'future content' } as unknown as Block
     render(<Message message={msg([unknown])} />)

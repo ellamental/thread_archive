@@ -151,3 +151,27 @@ def archive_home(tmp_path, monkeypatch):
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv(config.ENV_HOME, str(home))
     return home
+
+
+def pytest_collection_modifyitems(config, items):
+    """Stand the ``viewer`` marker down where there is no viewer.
+
+    The viewer is dev-only: ``thread_archive._web`` and its built bundle are
+    excluded from the wheel (docs/web-viewer.md), so `web`, `watch --web`, and
+    the setup wizard's browser step exist in a checkout and not in an install.
+    This suite runs both ways — from the source tree, and against the installed
+    wheel in the Docker install lane — and the marked tests describe behaviour
+    only the first one has.
+
+    Skipping is the honest outcome rather than a gap: what an install does
+    instead (no verb, no flag, no offer) is asserted directly by
+    tests/test_viewer_probe.py and the package lane's installed-CLI checks.
+    """
+    from thread_archive._viewer import viewer_available
+
+    if viewer_available():
+        return
+    skip = pytest.mark.skip(reason="the viewer is dev-only (no wheel carries it)")
+    for item in items:
+        if "viewer" in item.keywords:
+            item.add_marker(skip)

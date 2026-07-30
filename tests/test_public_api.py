@@ -1,15 +1,18 @@
 """Ratchet the public API boundary.
 
-The public API is exactly five things: the retrieval tools
+The public API is exactly four things: the retrieval tools
 (``thread_search`` / ``thread_read`` — served to agents by ``archive-mcp`` and
 to a person by the ``thread-archive search`` / ``thread-archive read`` verbs),
 the ``thread-archive`` CLI (docs/cli.md), the on-disk truth format
-(docs/format.md), the provider plugin API (``thread_archive.provider``,
-docs/providers.md), and the web viewer's URLs (docs/web-viewer.md). Everything
-else — the ``_api`` coordination layer, every underscore-prefixed
-module — is private support machinery. These tests make
+(docs/format.md), and the provider plugin API (``thread_archive.provider``,
+docs/providers.md). Everything else — the ``_api`` coordination layer, every
+underscore-prefixed module — is private support machinery. These tests make
 widening the surface a deliberate act (edit the pinned sets here) instead of
 a naming accident.
+
+The viewer's URLs are pinned here too, but as a promise to this machine's own
+family rather than a public one: the viewer is dev-only and ships in no wheel,
+so that test stands down where it isn't (docs/web-viewer.md).
 """
 
 from __future__ import annotations
@@ -18,9 +21,11 @@ import argparse
 import inspect
 from pathlib import Path
 
+import pytest
+
 import thread_archive
 from thread_archive import _tools, cli
-from thread_archive._web import route
+from thread_archive._viewer import viewer_available
 from thread_archive.cli import (
     _LEGACY_VERBS,
     _SECTIONS,
@@ -61,7 +66,7 @@ CLI_TREE = {
     "web": set(),
     "watch": set(),
     "source": {"list", "import", "import-account", "mirror", "coverage", "loads",
-               "ingest", "fix"},
+               "ingest", "fix", "recheck"},
     "index": {"rebuild", "migrate", "embed", "verify", "repair"},
     "backup": {"run", "nightly", "drill", "restore"},
     "status": set(),
@@ -105,11 +110,16 @@ def _root() -> argparse._SubParsersAction:
 
 def test_cli_tree_is_exactly_the_pinned_shape() -> None:
     sub = _root()
+    # `web` is the one conditional verb: the viewer is dev-only and ships in no
+    # wheel, so an install's tree is this one minus that verb. Subtracted rather
+    # than dropped from CLI_TREE, so the pin still documents the whole surface
+    # and still reds if `web` goes missing from a checkout.
+    expected = set(CLI_TREE) - (set() if viewer_available() else {"web"})
     # Iterating the root map yields only the listed commands — the legacy
     # spellings resolve but are deliberately not part of the surface.
-    assert set(sub.choices) == set(CLI_TREE)
-    for name, actions in CLI_TREE.items():
-        assert set(_subcommands_of(sub.choices[name])) == actions, name
+    assert set(sub.choices) == expected
+    for name in expected:
+        assert set(_subcommands_of(sub.choices[name])) == CLI_TREE[name], name
 
 
 def test_every_command_appears_in_exactly_one_help_section() -> None:
@@ -144,6 +154,7 @@ def test_pre_group_spellings_still_resolve() -> None:
     assert parser.parse_args(_normalize(["backup", "nightly", "/d"])).func is cli.cmd_nightly
 
 
+@pytest.mark.viewer
 def test_committed_web_endpoints_are_served(archive_home) -> None:
     """Each committed endpoint resolves to a handler of its own.
 
@@ -152,6 +163,8 @@ def test_committed_web_endpoints_are_served(archive_home) -> None:
     break it, here) is the deliberate act. The responses themselves are
     behaviour, tested in test_web.py; this only pins that the URLs exist.
     """
+    from thread_archive._web import route
+
     assert route("GET", "/api/not-a-real-endpoint", {})[0] == 404  # the fallthrough
     for path in PUBLIC_WEB_ENDPOINTS:
         assert route("GET", path, {})[0] != 404, path
@@ -171,6 +184,10 @@ def test_retrieval_tools_expose_no_extension_region_surface() -> None:
         params = inspect.signature(tool).parameters
         assert "topic_id" not in params, tool.__name__
         assert "topic" not in (tool.__doc__ or "").lower(), tool.__name__
+    # The docstring is the manual thread_help serves; the wire descriptions are
+    # what every session is handed. Both ship, so both are held to it.
+    for description in (_tools.SEARCH_DESCRIPTION, _tools.READ_DESCRIPTION):
+        assert "topic" not in description.lower()
 
     verbs = next(
         a for a in build_parser()._actions if isinstance(a, argparse._SubParsersAction)

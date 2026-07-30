@@ -1,7 +1,8 @@
 """Library-native MCP server.
 
-Exposes ``thread_search`` + ``thread_read`` as MCP tools. The tools themselves —
-signatures, docstrings (which are the tool schema and description), and every
+Exposes ``thread_search`` + ``thread_read`` as MCP tools, alongside
+``thread_help``, which serves their long-form manual on demand. The tools
+themselves — signatures (which are the tool schema), wire descriptions, and every
 line of retrieval behaviour — live in :mod:`thread_archive._tools`, shared with
 the ``thread-archive search`` / ``thread-archive read`` CLI verbs so the two
 front doors cannot drift. This module is the MCP half: the transport, the bind
@@ -138,10 +139,9 @@ def _served(fn: Callable[..., str], throttle: Optional["IngestThrottle"] = None
 
     The kick is the server's own — a one-shot CLI process would be killed with
     its background pass half-run, so the shared implementation stays free of it.
-    ``functools.wraps`` carries the implementation's signature, annotations, and
-    docstring across, and those are exactly what FastMCP builds the tool's schema
-    and description from: the contract an agent reads is the one written beside
-    the code that answers it.
+    ``functools.wraps`` carries the implementation's signature and annotations
+    across, and those are exactly what FastMCP builds the tool's schema from: the
+    parameters an agent can pass are the ones the code beside them accepts.
 
     The wrapper times itself. Every latency number this product records is taken
     *inside* the tool, so the whole serving layer — this wrapper, the ingest kick
@@ -229,8 +229,18 @@ def _record_serve(tool_name: str, *, served_ms: float, kick_ms: float,
         logger.debug("could not record serving overhead", exc_info=True)
 
 
-thread_search = mcp.tool()(_served(_tools.thread_search))
-thread_read = mcp.tool()(_served(_tools.thread_read))
+# The schema still comes from the wrapped signature, but the description is passed
+# explicitly: what ships on the wire is the tool's compact contract, and the long
+# form is served by thread_help on demand (see :mod:`thread_archive._tools`). A
+# description is charged to every session that lists the tools, and most of them
+# never call one.
+thread_search = mcp.tool(description=_tools.SEARCH_DESCRIPTION)(
+    _served(_tools.thread_search))
+thread_read = mcp.tool(description=_tools.READ_DESCRIPTION)(
+    _served(_tools.thread_read))
+# No serving wrapper: help returns a constant string, so there is no retrieval to
+# catch up for, no latency worth a ledger row, and nothing an ingest kick helps.
+thread_help = mcp.tool(description=_tools.HELP_DESCRIPTION)(_tools.thread_help)
 
 
 LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")

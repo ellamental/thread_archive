@@ -16,7 +16,7 @@ thread-archive search [query]   # the thread_search tool: filters by time, sourc
 thread-archive read <id>        # the thread_read tool: replay a thread (--mode user|chat|full|last|ends,
                                 #   --summary files, --around-event <id> to open a search hit);
                                 #   takes a ULID, a legacy integer id, or a provider session uuid
-thread-archive web              # open the cohosted viewer (the watcher serves it)
+thread-archive web              # open the cohosted viewer (clone only; the watcher serves it)
 
 # ingest
 thread-archive watch            # watch local AI-tool stores and import incrementally
@@ -29,6 +29,8 @@ thread-archive source coverage  # capture-coverage check: source stores reconcil
 thread-archive source loads     # load progress: the in-flight load and recent runs, by phase
 thread-archive source ingest    # what ingest cost over a window (--hours, default 24): per
                                 #   source, and where the time went by stage
+thread-archive source recheck <provider>  # re-read what a drifted import consumed; close the
+                                #   ledger records the current parser handles
 thread-archive source fix <provider>  # scaffold an override patch for a drifted import
 
 # the index — everything rebuildable from the JSONL truth
@@ -79,5 +81,10 @@ is not, except where a flag names a machine-readable shape
 
 `search` and `read` carry a second promise on top: they are the same
 implementation `archive-mcp` serves, so a query typed here and the same query
-asked mid-conversation return the same answer. The third door onto the same
-archive is the web viewer, cohosted by `thread-archive watch --web`.
+asked mid-conversation return the same answer.
+
+The web viewer is a third door onto the same archive, cohosted by
+`thread-archive watch --web` — but it is dev-only and ships in no wheel, so
+`web` and `watch --web` are registered only in a clone. An install's `--help`
+does not list them, which is why the listing above may show fewer verbs than
+yours ([web-viewer.md](web-viewer.md)).
