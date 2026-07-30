@@ -1,6 +1,6 @@
 """A plugin's display policy and session-id shape reach the readers.
 
-The three things a provider knows about itself that generic code used to hardcode:
+The three things a provider knows about itself and generic code must not hardcode:
 how its user turns should be displayed, what its preserved blocks mean, and how a
 session id sits inside its ``source_id``. Built-ins declare all three through the
 public :class:`~thread_archive.provider.Provider` descriptor, so these tests drive

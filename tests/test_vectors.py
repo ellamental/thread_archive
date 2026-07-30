@@ -801,7 +801,7 @@ def test_the_scope_mask_fetches_only_ids_the_pack_holds(archive_home) -> None:
 
 
 def test_a_time_scoped_search_still_excludes_agent_threads(archive_home) -> None:
-    """The scope mask no longer carries the ``agents='exclude'`` filter — it costs a
+    """The scope mask does not carry the ``agents='exclude'`` filter — it costs a
     table probe per matched event, and an unscoped search never applied it there
     anyway. Hydration is what enforces it, for scoped and unscoped alike; this pins
     that a time-scoped search is not the hole that opens if it ever stops.

@@ -1,10 +1,10 @@
 {
- "accepted_at": "2026-07-28T17:47:48+00:00",
+ "accepted_at": "2026-07-30T21:29:34+00:00",
  "rows": {
   "beir:scifact[lexical]": {
-   "at": "2026-07-27T23:34:21+00:00",
-   "commit": "57846b2",
-   "code_id": "c26d4eddb4132587",
+   "at": "2026-07-30T20:16:27+00:00",
+   "commit": "2398030",
+   "code_id": "c9ba33973b1b3dc2",
    "n": 300,
    "measures": {
     "ndcg10": 0.5793,
@@ -14,9 +14,9 @@
    "corpus_id": "9b7bce6344de1ad8"
   },
   "beir:scifact[vectors]": {
-   "at": "2026-07-27T23:35:27+00:00",
-   "commit": "57846b2",
-   "code_id": "c26d4eddb4132587",
+   "at": "2026-07-30T20:17:48+00:00",
+   "commit": "db0668a",
+   "code_id": "c9ba33973b1b3dc2",
    "n": 300,
    "measures": {
     "ndcg10": 0.7093,
@@ -26,9 +26,9 @@
    "corpus_id": "9b7bce6344de1ad8"
   },
   "beir:nfcorpus[lexical]": {
-   "at": "2026-07-27T23:35:39+00:00",
-   "commit": "57846b2",
-   "code_id": "c26d4eddb4132587",
+   "at": "2026-07-30T20:18:07+00:00",
+   "commit": "db0668a",
+   "code_id": "c9ba33973b1b3dc2",
    "n": 323,
    "measures": {
     "ndcg10": 0.2911,
@@ -38,9 +38,9 @@
    "corpus_id": "7eaef10c4fed3432"
   },
   "beir:nfcorpus[vectors]": {
-   "at": "2026-07-27T23:37:58+00:00",
-   "commit": "57846b2",
-   "code_id": "c26d4eddb4132587",
+   "at": "2026-07-30T20:18:58+00:00",
+   "commit": "db0668a",
+   "code_id": "c9ba33973b1b3dc2",
    "n": 323,
    "measures": {
     "ndcg10": 0.3558,
@@ -50,9 +50,9 @@
    "corpus_id": "7eaef10c4fed3432"
   },
   "locomo[lexical]": {
-   "at": "2026-07-27T23:38:15+00:00",
-   "commit": "57846b2",
-   "code_id": "23a8376abb3b76e0",
+   "at": "2026-07-30T20:19:22+00:00",
+   "commit": "db0668a",
+   "code_id": "dbcbf930dc8629d2",
    "n": 1981,
    "measures": {
     "recall10": 0.6146,
@@ -61,20 +61,20 @@
    }
   },
   "locomo[vectors]": {
-   "at": "2026-07-27T23:39:18+00:00",
-   "commit": "57846b2",
-   "code_id": "23a8376abb3b76e0",
+   "at": "2026-07-30T20:20:59+00:00",
+   "commit": "db0668a",
+   "code_id": "dbcbf930dc8629d2",
    "n": 1981,
    "measures": {
-    "recall10": 0.6716,
+    "recall10": 0.6718,
     "recall_all10": 0.6219,
-    "ndcg10": 0.5213
+    "ndcg10": 0.5217
    }
   },
   "longmemeval[lexical]": {
-   "at": "2026-07-27T23:39:25+00:00",
-   "commit": "57846b2",
-   "code_id": "23a8376abb3b76e0",
+   "at": "2026-07-30T20:21:29+00:00",
+   "commit": "db0668a",
+   "code_id": "dbcbf930dc8629d2",
    "n": 470,
    "measures": {
     "recall10": 0.9406,
@@ -83,15 +83,62 @@
    }
   },
   "beam:100K[lexical]": {
-   "at": "2026-07-27T23:45:45+00:00",
-   "commit": "57846b2",
-   "code_id": "23a8376abb3b76e0",
-   "n": 354,
+   "at": "2026-07-30T20:22:08+00:00",
+   "commit": "db0668a",
+   "code_id": "dbcbf930dc8629d2",
+   "n": 279,
    "measures": {
-    "recall10": 0.5272,
-    "recall_all10": 0.435,
-    "ndcg10": 0.4555
+    "recall10": 0.6395,
+    "recall_all10": 0.552,
+    "ndcg10": 0.5545
    }
+  },
+  "beam:100K[vectors]": {
+   "at": "2026-07-30T20:22:41+00:00",
+   "commit": "db0668a",
+   "code_id": "dbcbf930dc8629d2",
+   "n": 279,
+   "measures": {
+    "recall10": 0.6609,
+    "recall_all10": 0.5556,
+    "ndcg10": 0.5723
+   }
+  },
+  "cdr[vectors]~500": {
+   "at": "2026-07-30T21:23:01+00:00",
+   "commit": "2398030",
+   "code_id": "5f789c6e3d3a2ac4",
+   "n": 500,
+   "measures": {
+    "ndcg10": 0.4813,
+    "mrr10": 0.737,
+    "recall10": 0.2702
+   },
+   "corpus_id": "e18f79d806af6ecc"
+  },
+  "perltqa[lexical]~1500": {
+   "at": "2026-07-30T21:25:35+00:00",
+   "commit": "2398030",
+   "code_id": "1bcdb4351afff466",
+   "n": 1500,
+   "measures": {
+    "ndcg10": 0.5759,
+    "mrr10": 0.5041,
+    "recall10": 0.8007
+   },
+   "corpus_id": "b1e89f13a4fea03c"
+  },
+  "perltqa[vectors]~1500": {
+   "at": "2026-07-30T21:29:10+00:00",
+   "commit": "2398030",
+   "code_id": "1bcdb4351afff466",
+   "n": 1500,
+   "measures": {
+    "ndcg10": 0.6809,
+    "mrr10": 0.6159,
+    "recall10": 0.8827
+   },
+   "corpus_id": "b1e89f13a4fea03c"
   },
   "cdr[vectors]": {
    "at": "2026-07-27T20:41:26+00:00",

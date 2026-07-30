@@ -5,11 +5,9 @@ holds: ``/retrieval`` (how search is performing, off the latency ledgers),
 ``/telemetry`` (the operational ledgers a maintainer reads together), and
 ``/lab`` (what the bench has to measure with, plus every recorded run).
 
-They used to be routes inside the archive's own viewer, mounted by a
-``dev_panels`` flag in config.json — which meant the shipped bundle carried
-them, and the watcher that serves the archive also served them. They are their
-own server now, on their own port, in a directory the wheel never sees. The
-viewer at :8787 is the archive; this at :8789 is the instruments.
+Their own server, on their own port, in a directory the wheel never sees — so
+neither the shipped bundle nor the watcher that serves the archive carries them.
+The viewer at :8787 is the archive; this at :8789 is the instruments.
 
 Nothing in ``src/thread_archive`` imports this. The dependency runs the other
 way and only inward: this reads the archive's ledgers and the search lab's

@@ -87,9 +87,9 @@ def test_snapshot_build_record_omits_the_verify_phase_when_not_verifying(seeded,
 
 
 def test_snapshot_is_frozen_against_source_growth(seeded, tmp_path):
-    """The isolation the ``until`` trick used to provide: a snapshot's corpus is
-    fixed, so a thread added to the source after the snapshot never appears in
-    it — search over the snapshot is deterministic regardless of live growth."""
+    """A snapshot's corpus is fixed, so a thread added to the source after the
+    snapshot never appears in it — search over the snapshot is deterministic
+    regardless of live growth."""
     dest = tmp_path / "snap"
     res = snap.snapshot(str(dest), home=str(seeded))
     snap_events = res["manifest"]["counts"]["events"]

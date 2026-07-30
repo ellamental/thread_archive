@@ -1,10 +1,10 @@
 # Web viewer
 
 **The viewer is dev-only — it runs from a clone and ships in no wheel.**
-`thread_archive._web` and its built bundle are excluded from the wheel (the same
-treatment as `_dev`), because a browser UI is not what an install is for:
-preservation, retrieval, and the MCP server are, and the bundle alone was a
-quarter of the download. `thread_archive._viewer.viewer_available()` is the
+`thread_archive._web` and its built bundle are excluded from the wheel, because a
+browser UI is not what an install is for: preservation, retrieval, and the MCP
+server are, and the bundle alone is a quarter of the download.
+`thread_archive._viewer.viewer_available()` is the
 probe, and everything that would offer the viewer asks it first — so
 `thread-archive web` and `watch --web` are registered only where the viewer
 exists, `setup` offers a browser only there, and the service layer writes no
@@ -37,6 +37,8 @@ public interface, since no install has them — see
 | `/stats` | token/cost analytics (`/stats/model/<model>` drills in) |
 | `/health` | the archive's own status page |
 | `/upload` | import an account export: drop the ZIP, and where to get one |
+| `/docs` | the manual: every page this installation carries |
+| `/docs/<slug>` | one manual page, rendered |
 | `/archive/<thread_id>` | one conversation, rendered |
 | `GET /api/health` | `{ok, home}` — cheap liveness for probes |
 | `GET /api/archive-link?id=<session-uuid>` | resolve a provider session id to its thread (below) |
@@ -46,11 +48,24 @@ navigation per route, asserting its landmark renders with no console errors and
 no unmocked fetch — and `route-coverage.spec.ts` keeps that a bijection, so a
 new route without a browser case reds the suite.
 
+**The manual reads here too.** `/docs` lists this directory and `/docs/<slug>`
+renders one page, served as markdown by `/api/docs` and rendered in the browser
+by the renderer transcripts already use — so the documentation is at the same
+address as the thing it documents. The pages come from
+`thread_archive._docs`, the same resolver behind `thread-archive docs`, which
+reads the packaged copy where there is one and this checkout's `docs/` where
+there isn't: editing a page here lands on the next request with nothing to
+rebuild. `docs/internal/` is not served — the maintainer's pages are one
+directory deeper, which is the whole public/internal split. Links between pages
+are routes; a link out of the manual (`internal/devweb.md`, `../SECURITY.md`)
+leaves for the repository, since this server serves the manual and not the tree
+around it.
+
 **The maintainer's instruments are not here.** `/retrieval` (how search is
 performing), `/telemetry` (the operational ledgers read together) and `/lab`
 (what the bench has to measure with) are a separate app on a separate server —
 `devweb/`, run with `python -m devweb`, on `127.0.0.1:8789`. See
-[devweb.md](devweb.md). This server routes none of them and serves none of their
+[internal/devweb.md](internal/devweb.md). This server routes none of them and serves none of their
 endpoints: `/api/retrieval`, `/api/telemetry` and `/api/search-lab*` answer `404`
 here, and their page addresses fall through to a shell whose app has no route for
 them.

@@ -1607,3 +1607,55 @@ def test_a_bad_blob_name_never_reaches_the_store(archive_home):
     ta.open_archive()
     for bad in ("../../../etc/passwd", "nothex" * 10, "", "a" * 63, "%2e%2e"):
         assert route("GET", f"/api/blob/{bad}", {})[0] == 404
+
+
+# ── the manual ───────────────────────────────────────────────────────────────
+# The same pages `thread-archive docs` prints, over the same resolver: the
+# viewer renders them, it does not carry a second copy.
+
+def test_docs_index_lists_the_manual(archive_home):
+    from thread_archive import _docs
+
+    status, _, payload = _get("/api/docs")
+    assert status == 200
+    assert [p["slug"] for p in payload["pages"]] == [p.slug for p in _docs.pages()]
+    install = next(p for p in payload["pages"] if p["slug"] == "install")
+    assert install["title"] == "Install" and install["summary"]
+
+
+def test_docs_page_serves_its_markdown_source(archive_home):
+    status, _, payload = _get("/api/docs/cli")
+    assert status == 200
+    assert payload["slug"] == "cli" and payload["title"] == "CLI"
+    # Source, not rendered HTML: the browser renders it with the renderer the
+    # transcripts already use.
+    assert payload["markdown"].startswith("# CLI")
+
+
+def test_docs_page_accepts_the_filename_its_own_cross_links_use(archive_home):
+    status, _, payload = _get("/api/docs/cli.md")
+    assert status == 200 and payload["slug"] == "cli"
+
+
+def test_the_internal_half_of_the_manual_is_not_served(archive_home):
+    # docs/internal/ is the maintainer's — release process, bench landscape, the
+    # dev panels. The viewer serves the manual, not the repo's own paperwork.
+    _, _, payload = _get("/api/docs")
+    assert "releasing" not in {p["slug"] for p in payload["pages"]}
+    for path in ("/api/docs/releasing", "/api/docs/internal/devweb"):
+        assert route("GET", path, {})[0] == 404, path
+
+
+def test_unknown_docs_page_is_404_not_the_shell(archive_home):
+    for path in ("/api/docs/nope", "/api/docs/", "/api/docs/../../pyproject.toml"):
+        status, ctype, _, _ = route("GET", path, {})
+        assert status == 404, path
+        assert ctype.startswith("text/plain"), path
+
+
+def test_docs_pages_render_the_app_shell(archive_home):
+    # Client routes, like every other page address: the server answers with the
+    # shell and the app resolves which page.
+    for path in ("/docs", "/docs/cli"):
+        status, ctype, body, _ = route("GET", path, {})
+        assert status == 200 and ctype.startswith("text/html"), path

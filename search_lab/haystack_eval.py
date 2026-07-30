@@ -91,6 +91,7 @@ sys.path.insert(0, str(_HERE.parent / "src"))
 # however this file was loaded: as a script, by path, or as search_lab.X.
 sys.path.insert(0, str(_HERE))
 
+import dataset_pins  # noqa: E402
 import eval_core  # noqa: E402
 import eval_home  # noqa: E402
 
@@ -445,6 +446,7 @@ def run(args) -> int:
         src = repo / "data" / "locomo10.json"
         if not src.exists():
             raise SystemExit(f"locomo data not found at {src}; clone snap-research/locomo there")
+        dataset_pins.verify("locomo")
         groups = list(locomo_groups(repo))
     elif args.dataset == "beam":
         path = Path(args.beam_file or (_CACHE / "beam" / f"{args.beam_tier}.parquet")).expanduser()
@@ -453,11 +455,13 @@ def run(args) -> int:
                 f"beam tier not found at {path}; fetch it from "
                 f"huggingface.co/datasets/Mohammadta/BEAM "
                 f"(data/{args.beam_tier}-00000-of-00001.parquet)")
+        dataset_pins.verify("beam")
         groups = list(beam_groups(path, args.beam_tier))
     else:
         path = Path(args.longmemeval_file).expanduser()
         if not path.exists():
             raise SystemExit(f"longmemeval file not found at {path}; download longmemeval_s_cleaned.json there")
+        dataset_pins.verify("longmemeval")
         groups = list(longmemeval_groups(path))
     # Sampling *corpora* rather than questions: this shape builds or opens one
     # home per group, so cutting groups cuts the fixed per-corpus cost too, where

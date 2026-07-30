@@ -77,6 +77,15 @@ export function Sidebar({
         >
           import
         </Link>
+        <Link
+          // Every page under /docs is the manual, so the rail stays lit while
+          // reading one — unlike the leaf routes above, which are single pages.
+          className={'rail-link' + (pathname.startsWith('/docs') ? ' active' : '')}
+          to="/docs"
+          onClick={onClose}
+        >
+          docs
+        </Link>
         {dev && (
           // A plain anchor, not a Link: the panels are a different origin, and
           // client-side routing to them would ask this app for a page it does

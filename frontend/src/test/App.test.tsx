@@ -65,9 +65,9 @@ it('opens and closes the responsive navigation drawer', async () => {
 })
 
 // The dev panels are a different app on a different server (devweb/, port
-// 8789). They are not in this bundle and there is no longer a switch that could
-// put them back — so every one of their addresses is simply a path this app
-// does not have, and nothing here ever calls their endpoints.
+// 8789). They are not in this bundle and no switch can put them back — so every
+// one of their addresses is simply a path this app does not have, and nothing
+// here ever calls their endpoints.
 it.each(['/retrieval', '/telemetry', '/lab', '/lab/run/abc'])(
   'does not route %s — the dev panels are their own app',
   async (path) => {

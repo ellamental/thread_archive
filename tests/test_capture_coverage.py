@@ -262,7 +262,7 @@ CODEX_ABANDONED = [
 
 def _codex_store_with_abandoned_session(tmp_path, *, extra_lines=()):
     """A codex store holding one real (imported) session and one abandoned
-    session whose store mtime is *now* — the shape that used to read as stale
+    session whose store mtime is *now* — the shape that would otherwise read as stale
     ingest. Returns ``(watcher, abandoned_path)``; the abandoned session is
     imported once per call to :func:`append_jsonl`-driven growth in ``extra_lines``,
     so a caller can script repeat consumption."""

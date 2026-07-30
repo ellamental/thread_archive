@@ -70,6 +70,7 @@ sys.path.insert(0, str(_HERE.parent / "src"))
 # however this file was loaded: as a script, by path, or as search_lab.X.
 sys.path.insert(0, str(_HERE))
 
+import dataset_pins  # noqa: E402
 import eval_core  # noqa: E402
 import eval_home  # noqa: E402
 
@@ -268,6 +269,7 @@ def run(args) -> int:
             f"MTRAG data not found at {root}. Fetch the passage-level corpora and "
             f"retrieval tasks from github.com/IBM/mt-rag-benchmark into "
             f"{root}/corpora/<domain>.jsonl and {root}/retrieval_tasks/<domain>/.")
+    dataset_pins.verify("mtrag")
 
     domains = list(DOMAINS) if args.domain == "all" else [args.domain]
     ks = (10, 100)

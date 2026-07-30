@@ -87,13 +87,14 @@ _SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("ingest", ("watch", "source")),
     ("upkeep", ("index", "backup", "status")),
     ("this machine", ("setup", "service", "self-update", "uninstall")),
+    ("the manual", ("docs",)),
 )
 
-# Pre-group spellings, mapped to where their verb lives now. These resolve but
+# Flat spellings, mapped to the grouped verb each resolves to. These resolve but
 # are listed nowhere: the point is that a machine already running them — the
 # launchd/systemd manifests, an operator's shell history, lab's cron script —
 # keeps running them, not that there are two documented ways to type a verb.
-# `backup` is the one that can't live here (it is a group name now); its old
+# `backup` is the one that can't live here, being a group name; its flat
 # `backup <dest>` form is handled in _normalize.
 _LEGACY_VERBS: dict[str, tuple[str, ...]] = {
     "providers": ("source", "list"),
@@ -119,7 +120,8 @@ _BACKUP_ACTIONS = frozenset({"run", "nightly", "drill", "restore", "-h", "--help
 
 _EPILOG_CORE = (
     "`search` and `read` are the archive-mcp tools at a terminal — same\n"
-    "implementation, same results.\n"
+    "implementation, same results. `docs` prints the manual this install\n"
+    "carries — `docs` alone lists the pages.\n"
 )
 # Only a checkout has the viewer, so only a checkout's help mentions it.
 _EPILOG_VIEWER = (
@@ -497,6 +499,47 @@ def cmd_import_export(args: argparse.Namespace) -> int:
         f"imported export {args.path}: processed={result.processed} "
         f"imported={result.imported} skipped={result.skipped} events={result.events_created}"
     )
+    return 0
+
+
+def cmd_docs(args: argparse.Namespace) -> int:
+    """Print the manual this installation carries: the index, or one page.
+
+    The pages are package data (:mod:`thread_archive._docs`), so this answers
+    offline from an install exactly as it does from a clone — which is the point
+    of shipping them. Markdown to stdout, verbatim: it reads fine in a terminal,
+    and a reader who wants it rendered can pipe it somewhere that renders. The
+    viewer's ``/docs`` pages are the same text through the same resolver.
+    """
+    import textwrap
+
+    from ._docs import docs_dir, find, pages
+
+    if args.page:
+        page = find(args.page)
+        if page is None:
+            known = ", ".join(p.slug for p in pages()) or "none"
+            print(f"no manual page named {args.page!r}\navailable: {known}", file=sys.stderr)
+            return 1
+        print(page.path if args.path else page.read().rstrip("\n"))
+        return 0
+
+    listing = pages()
+    if not listing:
+        print(
+            "this installation carries no manual — read it at\n"
+            "https://github.com/ellamental/thread_archive/tree/main/docs",
+            file=sys.stderr,
+        )
+        return 1
+    if args.path:
+        print(docs_dir())
+        return 0
+    print("the manual — `thread-archive docs <page>` prints one:\n")
+    pad = max(len(p.slug) for p in listing)
+    for p in listing:
+        blurb = f"{p.title} — {p.summary}" if p.summary else p.title
+        print(f"  {p.slug:<{pad}}  {textwrap.shorten(blurb, 96 - pad - 4)}")
     return 0
 
 
@@ -1835,9 +1878,9 @@ def build_parser(*, has_viewer: Optional[bool] = None) -> argparse.ArgumentParse
     dispatch = _Dispatch()
     sub._name_parser_map = sub.choices = dispatch
 
-    # The noun groups. Their verbs are registered against these below, beside
-    # the flat verbs they used to sit with — see the module docstring for the
-    # shape of the tree and where each pre-group spelling went.
+    # The noun groups. Their verbs are registered against these below, beside the
+    # flat spellings that resolve to the same handlers (``_LEGACY_VERBS``) — see
+    # the module docstring for the shape of the tree.
     g_source = _group(
         sub, "source",
         "the provider stores this machine has: what they are, importing them, "
@@ -2209,6 +2252,27 @@ def build_parser(*, has_viewer: Optional[bool] = None) -> argparse.ArgumentParse
     p_status = sub.add_parser("status", help="archive health / paths / counts")
     _add_home_arg(p_status)
     p_status.set_defaults(func=cmd_status)
+
+    # The manual, from the pages the wheel carries (thread_archive._docs).
+    # Unconditional, unlike `web`: the docs ship, so every install can run this.
+    p_docs = sub.add_parser(
+        "docs",
+        help="print the manual: no page lists them, a page prints it",
+        description="Print this installation's own documentation — the pages "
+                    "shipped inside the package, readable offline.",
+        epilog=(
+            "examples:\n"
+            "  thread-archive docs           # the index\n"
+            "  thread-archive docs install   # one page, as markdown\n"
+            "  thread-archive docs cli --path  # where that page is on disk\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_docs.add_argument("page", nargs="?", default=None,
+                        help="page to print (`cli` or `cli.md`); omitted, lists them")
+    p_docs.add_argument("--path", action="store_true",
+                        help="print where the page (or the manual) is on disk, not its text")
+    p_docs.set_defaults(func=cmd_docs)
 
     p_backup = g_backup.add_parser("run", help="mirror the JSONL truth dir to a backup destination")
     _add_home_arg(p_backup)

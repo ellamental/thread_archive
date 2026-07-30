@@ -1,18 +1,16 @@
 """Continuation / fork detection for the CC incremental import.
 
 Decides whether a fresh Claude Code JSONL is a *continuation* of an existing
-thread (merge into it) or a new/forked session (mint its own). Ported from
-canonical ``streaming/incremental_import/_continuation.py``; the Postgres
-``payload->>'content'`` becomes SQLite ``json_extract(payload, '$.content')``,
-and the candidate lookup validates each same-first-message thread by the
-prefix-consistency walk rather than disambiguating on a timestamp match.
+thread (merge into it) or a new/forked session (mint its own). The candidate
+lookup validates each same-first-message thread by the prefix-consistency walk
+rather than disambiguating on a timestamp match.
 
-Two detectors:
+Two detectors, one per compaction shape CC writes:
 
-- ``detect_continuation_parent`` — the modern ``compact_boundary`` case: CC opens
-  the post-compaction file with a boundary line + a user message pointing at the
+- ``detect_continuation_parent`` — the ``compact_boundary`` case: CC opens the
+  post-compaction file with a boundary line + a user message pointing at the
   parent session's ``.jsonl`` path. Pull the parent UUID, resolve its thread.
-- ``find_thread_by_first_message`` — older no-boundary compactions replay the whole
+- ``find_thread_by_first_message`` — no-boundary compactions replay the whole
   conversation with fresh UUIDs (a strict prefix-superset of the parent). A *fork*
   shares a prefix then diverges; the prefix-consistency walk tells them apart.
 """

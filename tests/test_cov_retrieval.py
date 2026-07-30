@@ -60,6 +60,7 @@ from thread_archive._retrieval.rank import (
 from thread_archive._retrieval.read import (
     _fmt_hm,
     _fmt_ts,
+    _pr_ref,
     _unknown_payload_text,
     read_thread,
     read_thread_structured,
@@ -144,6 +145,61 @@ def test_context_summary_and_model_change_render_in_full(archive_home) -> None:
         ("text_complete", {"text": "x"}, 3),
     ], tid=2)
     assert "model →" not in read_thread(tid2, mode="full")
+
+
+def test_pr_ref_names_the_repo_when_the_harness_recorded_one() -> None:
+    """The reference a reader can act on. A repo is not always recorded — a bare
+    ``#4`` is still worth printing — but a payload naming no number refers to no
+    pull request at all, and renders as nothing rather than as ``#None``."""
+    assert _pr_ref({"repo": "ellamental/thread_archive", "number": "4"}) == \
+        "ellamental/thread_archive#4"
+    assert _pr_ref({"number": 4}) == "#4"
+    assert _pr_ref({"repo": "o/n"}) == ""
+    assert _pr_ref({"repo": "o/n", "number": "  "}) == ""
+
+
+def test_a_pr_link_reads_as_one_line(archive_home) -> None:
+    """The harness announces the PR every turn and the import collapses those to a
+    single event, so a read says which pull request the session was on, once."""
+    tid = _seed([
+        ("user_message_sent", {"content": "q"}, 1),
+        ("pr_link", {"repo": "ellamental/thread_archive", "number": "4",
+                     "url": "https://github.com/ellamental/thread_archive/pull/4"}, 2),
+        ("text_complete", {"text": "done"}, 3),
+    ])
+    assert "[pull request ellamental/thread_archive#4]" in read_thread(tid, mode="full")
+
+    # A malformed event that reached the log names no PR, and is not surfaced as one.
+    tid2 = _seed([
+        ("user_message_sent", {"content": "q"}, 1),
+        ("pr_link", {"repo": "o/n", "number": None}, 2),
+        ("text_complete", {"text": "x"}, 3),
+    ], tid=2)
+    assert "pull request" not in read_thread(tid2, mode="full")
+
+
+def test_the_structured_pr_link_carries_the_url_the_string_path_drops(archive_home) -> None:
+    """Provenance the viewer links out to: the string transcript has no use for a
+    URL, and a page rendering the same event does."""
+    tid = _seed([
+        ("user_message_sent", {"content": "q"}, 1),
+        ("pr_link", {"repo": "ellamental/thread_archive", "number": "4",
+                     "url": "https://github.com/ellamental/thread_archive/pull/4"}, 2),
+    ])
+    blocks = [b for m in read_thread_structured(tid)["messages"] for b in m["blocks"]]
+    pr = [b for b in blocks if b["type"] == "pr_link"]
+    assert len(pr) == 1
+    assert pr[0]["ref"] == "ellamental/thread_archive#4"
+    assert pr[0]["url"] == "https://github.com/ellamental/thread_archive/pull/4"
+    assert pr[0]["number"] == "4"
+
+    # No number, no reference — the event is preserved but has nothing to link to.
+    tid3 = _seed([
+        ("user_message_sent", {"content": "q"}, 1),
+        ("pr_link", {"repo": "o/n", "number": ""}, 2),
+    ], tid=3)
+    blocks3 = [b for m in read_thread_structured(tid3)["messages"] for b in m["blocks"]]
+    assert not [b for b in blocks3 if b["type"] == "pr_link"]
 
 
 def test_tool_block_empty_input_and_long_value(archive_home) -> None:

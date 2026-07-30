@@ -43,4 +43,4 @@ resolves to. More surface gets exposed
 deliberately as it matures. `tests/test_public_api.py` ratchets the boundary.
 
 Releases (changelog compression, version bump, release commit, annotated tag)
-follow [releasing.md](releasing.md).
+follow [internal/releasing.md](internal/releasing.md).

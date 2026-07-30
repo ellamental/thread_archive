@@ -1,5 +1,4 @@
-"""Regression tests for the vendored thread_import ChatGPT timestamp +
-content-text fixes.
+"""ChatGPT timestamp + content-text handling in the vendored thread_import.
 
 ChatGPT exports carry epoch `create_time`/`update_time`; these must import as
 aware UTC (not naive-local, which silently skews all ChatGPT history by the

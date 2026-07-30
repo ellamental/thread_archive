@@ -1299,8 +1299,9 @@ def index_thread_meta(session: Optional[Session] = None, thread_ids: Optional[li
     """Sync thread titles into the FTS surface (shadow + FTS5) as thread-meta
     docs. Diff-based: an unchanged thread writes nothing, a changed title replaces
     its rows (and drops its stale vector so the embed cohost re-embeds it), a
-    vanished one is deleted — which is also how a summary doc left over from when
-    summaries were indexed gets collected. ``thread_ids=None`` syncs every
+    vanished one is deleted — as is any other thread-meta doc the desired set does
+    not name, so a stale doc of a kind this no longer writes is collected too.
+    ``thread_ids=None`` syncs every
     thread — cheap enough for the watcher's maintenance cadence. Returns the
     number of rows written."""
     ensure_fts(session)

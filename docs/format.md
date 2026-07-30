@@ -8,9 +8,9 @@ the truth dir) is a derived embedding cache — both are rebuildable, neither is
 truth. A `cp`/`rsync` of the truth directory *is* the backup; `thread-archive index rebuild`
 reconstructs everything else from it.
 
-The format is one of the package's public interfaces
+The format is one of the package's four public interfaces
 ([stability.md](stability.md)) — the others are the retrieval tools, the
-`thread-archive` CLI, the provider plugin API, and the web viewer's URLs. This
+`thread-archive` CLI, and the provider plugin API. This
 document is the durability promise: data written by one release must stay
 readable by the next. The CLI's durability verbs (`backup run`,
 `backup nightly`, `backup drill`, `backup restore`, `index verify`,

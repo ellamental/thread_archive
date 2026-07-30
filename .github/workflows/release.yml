@@ -29,6 +29,11 @@ jobs:
       - uses: actions/checkout@v4
 
       # Anchored to a plain X.Y.Z, and it fails rather than tags something else.
+      # Deliberately excludes pre-release strings: release candidates are
+      # tagged by hand from the release branch (docs/releasing.md, "Release
+      # candidates") and never reach main — an rc version string arriving
+      # here means the release commit forgot the final bump, and the loud
+      # failure is the guard.
       # Whatever this prints reaches a shell in the job below, which holds the
       # deploy key — so the read is the place to establish that the value cannot
       # carry a newline or a shell metacharacter, not a thing to check later.

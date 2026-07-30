@@ -106,12 +106,11 @@ def test_a_starved_pool_reports_the_real_total_not_its_own_reach(archive_home) -
 
 
 def test_a_starved_pool_still_pages_disjointly(archive_home) -> None:
-    """The ordering may not depend on which page was asked for. It did once: the
-    pool was sized from page*limit, so each page ranked a different prefix and the
-    recency tail landed at a shifting offset — a 721-thread walk served 122 rows
-    twice and skipped as many. Pinning the pool to (query, limit) is what fixes
-    it, and this is the shape that catches a regression: a match set several times
-    the pool, walked end to end."""
+    """The ordering may not depend on which page was asked for. Size the pool from
+    page*limit and each page ranks a different prefix, landing the recency tail at
+    a shifting offset — a 721-thread walk serves 122 rows twice and skips as many.
+    Pinning the pool to (query, limit) is what holds, and this is the shape that
+    catches its loss: a match set several times the pool, walked end to end."""
     from dataclasses import replace
 
     from thread_archive._retrieval.params import DEFAULT

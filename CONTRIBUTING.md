@@ -1,13 +1,12 @@
 # Contributing
 
-This project doesn't accept code contributions, and that's a deliberate
-policy, not a gap in the process. It's one maintainer's name on software that
-holds people's entire conversation history; every merged line is something we
-have to have read, understood, and become responsible for. In the era of
-capable LLMs, reviewing a chunk of code that presumably works costs more than
-writing it ourselves — so PRs, including agent-written ones, won't be merged.
-Sorry if that lands wrong; it's about keeping the trust surface small, not
-about your work.
+This project doesn't accept code contributions. That is a deliberate policy: it
+is one maintainer's name on software that holds people's entire conversation
+history, and every merged line is something that name has to have read,
+understood, and become responsible for. Reviewing a chunk of code that
+presumably works costs more than writing it, so PRs — including agent-written
+ones — won't be merged. The constraint is the trust surface, not the quality of
+the work offered.
 
 What does help:
 

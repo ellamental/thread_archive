@@ -2,6 +2,76 @@
 
 ## Unreleased
 
+- **Docstrings and comments describe the present.** A pass over the package, the
+  lab, devweb, the tests and the packaging config stripped change-records and
+  provenance from prose that agents read as fact: "used to", "the old X", "ported
+  from", "now that", the narration of which bug a regression test locks. Where the
+  rationale still binds it stays, stated timelessly — an inline pack rebuild *would*
+  charge a query seconds, rather than the old one did. The stale
+  `src/thread_archive/_dev` wheel exclusion went with the comment explaining it;
+  the directory it names has not existed since the dev panels became `devweb/`.
+
+- **Every benchmark corpus is pinned to a content hash.** None of the upstreams
+  offer an immutable handle — BEIR is a bare zip URL, LoCoMo/PerLTQA/CDR are a
+  `git clone` of a default branch, LongMemEval and BEAM are Hugging Face
+  `resolve/main` — so "the same benchmark" was a fact about nothing, and a
+  re-download could change what a number meant without changing the number's
+  shape. `search_lab/dataset_pins.py` names the files each harness reads and hashes
+  them; the accepted digests are checked in (`dataset-pins.json`,
+  `python -m search_lab pins`). Harnesses verify before they build, so a corpus
+  that moved fails the run rather than being scored. The same hash gives the
+  per-question haystacks (`locomo`, `longmemeval`, `beam`) a `corpus_id` — they
+  build one home per question, so they reported no corpus identity at all and were
+  guarded only by the scored query count, leaving a content change at a constant
+  count invisible to the gate. Verifying ~1 GB costs milliseconds: per-file digests
+  are memoized on `(size, mtime_ns)`.
+
+- **The bench has two depths and a release is gated on the quick one.** There were
+  effectively three — a "standard" set that scored everything whole *except*
+  PerLTQA, which carried a permanent 2,000-question sample, plus a `--quick` tier
+  that sampled a different three rows — and the release gate ran the middle one,
+  so no depth actually measured the whole corpus and the expensive depth was the
+  one blocking a release. Now `--quick` is the release bar (`gate --run --quick`,
+  under 20 minutes, no row past ~4) and the default tier scores every judged query
+  and samples nothing, at about an hour. Sampling is sized off measured
+  seconds-per-query and applied only where a row does not already fit: PerLTQA's
+  two arms at 1,500 of 8,588 and `cdr[vectors]` at 500 of 1,583; BEAM stops being
+  sampled (it runs whole in under a minute, and the `~8` series it had was never
+  measured, so it gated nothing). Both depths keep accepted numbers in the one
+  baseline file under their own row names, and `--update` at one depth no longer
+  wipes the other's — which used to read green, because an ungated row never fails.
+
+- **BEAM's accepted numbers re-baselined to the scored scope it actually has.**
+  Dropping `event_ordering` from the scored categories took the row from 354
+  questions to 279, and the baseline still held the 354-question numbers — a
+  `corpus-changed` failure standing in the release gate, and a +0.10 apparent lift
+  that is the removed category leaving rather than any ranking getting better.
+  Accepted at 279: `recall@10` 0.639 lexical / 0.661 vectors.
+
+- **The manual ships with the package, and reads in the viewer.** `docs/` was
+  repo-only: a `pip install` carried the code and pointed at GitHub for the
+  documentation, so an install could not answer what it was or how to drive it
+  without a network and a browser. The wheel now carries the pages as package
+  data under `thread_archive/_docs/`. `thread-archive docs` lists them,
+  `thread-archive docs <page>` prints one, `--path` names the file. The viewer
+  serves the same pages at `/docs` and `/docs/<slug>`, rendered by the renderer
+  the transcripts already use — links between pages are routes, links out of the
+  manual leave for the repository. One resolver behind both readers
+  (`thread_archive._docs`): the packaged copy where there is one, this checkout's
+  `docs/` where there isn't, so editing a page in a clone lands on the next
+  request with nothing to rebuild.
+
+  **`docs/internal/` is the other half, and it is nobody's manual but the
+  maintainer's.** The release process, the benchmark landscape and the dev
+  panels name branches, gates and instruments no install has, so they stay in the
+  repo: the wheel excludes the directory and the resolver's glob reads one
+  directory deep, which is the entire split — no allow-list, nothing to keep in
+  sync, and moving a file across the boundary moves both what installs get and
+  what the two readers show. (This is why the wheel takes `docs/` through an
+  ordinary include and a `sources` rename rather than `force-include`, which is
+  not subject to `exclude` and would carry the internal pages into every
+  install.)
+
 - **The shared server holds its own pages down between bursts.** Warming made the
   models resident; nothing kept them that way. A warmed search server is a large,
   quiet process — exactly what an OS evicts first under memory pressure — and the

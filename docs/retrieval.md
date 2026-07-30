@@ -19,16 +19,11 @@ verbs for a terminal (see [cli.md](cli.md)), and read through the
 - Search is the access layer over the archive, not the archive itself — an
   agent typically fires several searches, reformulates, and reads around a hit,
   and the archive underneath guarantees the conversation is *there* to find.
-  Quality is measured against public benchmarks somebody else labeled, read
-  beside the baseline their own leaderboard publishes — a deliberate run on a
-  ranking change, and a gate at release time that holds those numbers to a
-  checked-in bar, but not a CI row; what rides CI is a probe that the search
-  arms still load at all. No protocol that labels this archive's own corpus
-  certifies that search is good, and nothing gates on one. The numbers, the
-  protocol, and its limits live in [search-quality.md](search-quality.md). Your
-  install reports whether search is *degraded* (`thread-archive status`, the
-  viewer's health page) rather than a score — a metric with no baseline beside
-  it isn't something you can act on.
+  Quality is measured against public benchmarks somebody else labeled and gated
+  against those numbers at release; your install reports whether search is
+  *degraded* (`thread-archive status`, the viewer's health page) rather than a
+  score. [search-quality.md](search-quality.md) has the numbers and what they
+  license.
 
 ## Indexed by code, not just by words
 

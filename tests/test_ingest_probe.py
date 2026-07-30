@@ -1,7 +1,7 @@
 """The ingest probe: where one import's time actually went.
 
-Ingest's cost used to be one cumulative number per source. These cover the split
-that replaced it — that it is measured from the shared helpers (so every source,
+Ingest's cost is otherwise one cumulative number per source. These cover the
+per-stage split — that it is measured from the shared helpers (so every source,
 including a plugin's, is covered without knowing about it), that it is free when
 nobody is listening, and that it never breaks an import.
 """

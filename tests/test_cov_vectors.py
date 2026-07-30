@@ -950,7 +950,7 @@ def test_save_sidecar_defaults_to_the_process_embedding_space(archive_home, tmp_
 def test_save_sidecar_ignores_and_sweeps_stray_builds(archive_home, tmp_path) -> None:
     """Concurrent/dead savers' build files must not break a save: each saver
     builds under its own pid-unique name, a stale stray (a crashed build —
-    the shape that used to collide on CREATE TABLE) is swept by age, and a
+    the shape that would collide on CREATE TABLE) is swept by age, and a
     fresh stray (a live concurrent build) is left alone."""
     import sqlite3
     import time

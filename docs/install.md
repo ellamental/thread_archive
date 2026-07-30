@@ -29,6 +29,11 @@ scripts): `thread-archive setup --yes` accepts every default — without `--yes`
 a non-TTY run only prints guidance and never ingests, and neither shape opens a
 browser.
 
+**The manual comes with it.** These pages ship inside the package, so
+`thread-archive docs` lists them and `thread-archive docs <page>` prints one —
+offline, no clone, no network. The web viewer serves the same pages at `/docs`
+([web-viewer.md](web-viewer.md)).
+
 ## Semantic search (optional)
 
 Local semantic search is optional and heavy (pulls torch — sized for a dev

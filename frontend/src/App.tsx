@@ -9,6 +9,7 @@ import { StatsView } from './components/StatsView'
 import { ModelStatsView } from './components/ModelStatsView'
 import { HealthView } from './components/HealthView'
 import { UploadView } from './components/UploadView'
+import { DocsView, DocView } from './components/DocsView'
 import { Landing } from './components/Landing'
 
 export function App() {
@@ -84,6 +85,8 @@ export function App() {
             <Route path="/stats/model/:model" element={<ModelStatsView />} />
             <Route path="/health" element={<HealthView />} />
             <Route path="/upload" element={<UploadView />} />
+            <Route path="/docs" element={<DocsView />} />
+            <Route path="/docs/:slug" element={<DocView />} />
             <Route path="/archive/:id" element={<ThreadView />} />
           </Routes>
         </div>

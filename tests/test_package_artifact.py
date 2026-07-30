@@ -82,6 +82,33 @@ def test_wheel_carries_the_whole_runtime(dist) -> None:
     assert any(n.startswith("thread_archive/_retrieval/") for n in names)
 
 
+def test_wheel_carries_the_manual(dist) -> None:
+    # The public docs ship as package data under thread_archive/_docs, so an
+    # install can answer for itself: `thread-archive docs` reads these, offline,
+    # with no clone and no network.
+    wheel, _ = dist
+    names = set(zipfile.ZipFile(wheel).namelist())
+    shipped = {n for n in names if n.startswith("thread_archive/_docs/") and n.endswith(".md")}
+    on_disk = {f"thread_archive/_docs/{p.name}" for p in (REPO / "docs").glob("*.md")}
+    assert shipped == on_disk, f"the wheel's manual is not the repo's: {shipped ^ on_disk}"
+    # And the resolver that reads them, beside them.
+    assert "thread_archive/_docs/__init__.py" in names
+
+
+def test_wheel_carries_no_internal_docs(dist) -> None:
+    # docs/internal/ is the maintainer's half — the release process, the bench
+    # landscape, the dev panels. It names branches and instruments no install
+    # has, and an ordinary include (not force-include, which ignores `exclude`)
+    # is what keeps it out of the artifact.
+    wheel, _ = dist
+    names = zipfile.ZipFile(wheel).namelist()
+    leaked = [n for n in names if "internal" in n]
+    assert not leaked, f"internal docs leaked into the wheel: {leaked}"
+    internal = sorted(p.stem for p in (REPO / "docs" / "internal").glob("*.md"))
+    assert internal, "docs/internal/ is empty — this test proves nothing"
+    assert not [n for n in names if any(f"/{stem}.md" in n for stem in internal)]
+
+
 def test_wheel_carries_no_viewer(dist) -> None:
     # The viewer is dev-only: a stdlib server plus a built React bundle that was
     # a quarter of the download on its own. An install gets preservation,
@@ -337,6 +364,24 @@ def test_installed_cli_advertises_only_verbs_an_install_can_run(installed, tmp_p
     gone = _run(installed, ["thread_archive", "mine"], tmp_path)
     assert gone.returncode == 2
     assert "invalid choice" in gone.stderr and "Traceback" not in gone.stderr
+
+
+def test_installed_cli_reads_the_manual_it_shipped_with(installed, tmp_path) -> None:
+    # The point of shipping the docs: a wheel install, no clone anywhere near it,
+    # answers "how do I drive this" from its own package data.
+    r = _run(installed, ["thread_archive", "docs"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "install" in r.stdout and "providers" in r.stdout
+    assert "releasing" not in r.stdout, "an internal page reached an install's index"
+
+    r = _run(installed, ["thread_archive", "docs", "cli"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.startswith("# CLI")
+
+    # And the page it names is inside the installed package, not a checkout.
+    r = _run(installed, ["thread_archive", "docs", "cli", "--path"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "site-packages/thread_archive/_docs/cli.md" in r.stdout.strip()
 
 
 def test_installed_uninstall_points_at_the_package_it_came_from(installed, tmp_path) -> None:

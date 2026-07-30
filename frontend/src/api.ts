@@ -624,6 +624,18 @@ export interface ModelStats {
   top_sessions: ModelStatsSession[]
 }
 
+/** One manual page in the index: how it is addressed and what it is about. */
+export interface DocPage {
+  slug: string
+  title: string
+  summary: string
+}
+
+/** One manual page, as its markdown source — rendered here, not on the server. */
+export interface Doc extends DocPage {
+  markdown: string
+}
+
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url)
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
@@ -760,4 +772,9 @@ export const api = {
   // path tail, not a query param — the server decodes it back.
   modelStats: (model: string) =>
     getJSON<ModelStats>('/api/stats/model/' + encodeURIComponent(model)),
+  // The manual the package ships (`thread-archive docs` prints the same pages).
+  // Slugs are filenames without the extension, so they need no encoding beyond
+  // what any path segment gets.
+  docs: () => getJSON<{ pages: DocPage[] }>('/api/docs').then((d) => d.pages),
+  doc: (slug: string) => getJSON<Doc>('/api/docs/' + encodeURIComponent(slug)),
 }

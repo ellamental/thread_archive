@@ -34,6 +34,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from uuid import uuid4
 
 from .. import _api as api
+from .. import _docs
 from .._retrieval import _contention, _probe
 from . import metrics as _metrics
 
@@ -1064,7 +1065,7 @@ def route(
         if path.startswith("/api/thread/"):
             # structured render blocks (the viewer's reader)
             return _ok(api.read_thread_structured(tid, include_thinking=thinking, include_tools=tools))
-        # flat transcript string (CLI-shaped; kept for back-compat). 'full' shows
+        # flat transcript string (CLI-shaped). 'full' shows
         # tool calls (with thinking), 'chat' is the readable assistant text only.
         transcript = api.read_thread(tid, mode="full" if tools else "chat")
         return _ok({"thread_id": tid, "transcript": transcript})
@@ -1081,6 +1082,20 @@ def route(
 
     if path == "/api/thread-types":
         return _ok({"types": _list_thread_types()})
+
+    # ---- the manual: the same pages `thread-archive docs` prints ----
+    # Markdown source, rendered in the browser by the renderer the transcripts
+    # already use. Served from the resolver rather than the static bundle, so a
+    # clone's edit to docs/ is live on the next request with no rebuild.
+    if path == "/api/docs":
+        return _ok({"pages": [
+            {"slug": p.slug, "title": p.title, "summary": p.summary} for p in _docs.pages()
+        ]})
+    if path.startswith("/api/docs/"):
+        doc = _docs.find(unquote(path[len("/api/docs/"):]))
+        if doc is None:
+            return _text(404, "no such manual page")
+        return _ok({"slug": doc.slug, "title": doc.title, "markdown": doc.read()})
 
     # unmatched API path — don't fall through to the SPA shell
     if path.startswith("/api/"):

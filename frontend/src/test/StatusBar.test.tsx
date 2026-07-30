@@ -25,6 +25,11 @@ describe('app header', () => {
     expect(screen.getByText('Conversation')).toBeInTheDocument()
   })
 
+  it('names the manual, index and page alike', () => {
+    renderAt('/docs')
+    expect(screen.getByText('Manual')).toBeInTheDocument()
+  })
+
   it('labels the trust center as health', () => {
     renderAt('/health')
     expect(screen.getByText('Health')).toBeInTheDocument()

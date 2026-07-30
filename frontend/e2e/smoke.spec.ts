@@ -310,6 +310,29 @@ test('a silenced warning stays one click from being read and restored', async ({
   expect(errors).toEqual([])
 })
 
+test('the manual reads from the rail, page to page, in one app', async ({ page }) => {
+  const errors = monitorPage(page)
+  const unhandled = await mockApi(page)
+
+  await page.goto('/')
+  await page.getByRole('link', { name: 'docs', exact: true }).click()
+  await expect(page).toHaveURL(/\/docs$/)
+
+  await page.getByRole('link', { name: 'CLI' }).click()
+  await expect(page.getByRole('heading', { name: 'CLI', exact: true })).toBeVisible()
+  // A cross-link between manual pages is a route here, not a page load: the doc
+  // says `install.md`, and clicking it stays inside the app.
+  await page.getByRole('link', { name: 'install.md' }).click()
+  await expect(page).toHaveURL(/\/docs\/install$/)
+  await expect(page.getByRole('heading', { name: 'Install' })).toBeVisible()
+
+  await page.goBack()
+  await expect(page.getByRole('heading', { name: 'CLI', exact: true })).toBeVisible()
+
+  expect(unhandled).toEqual([])
+  expect(errors).toEqual([])
+})
+
 test('the rail links out to the dev panels when the operator asked for it', async ({ page }) => {
   // This build carries the stamp (playwright.config.ts), which is what a viewer
   // whose config says `"dev_panels": true` is served.

@@ -110,10 +110,10 @@ ANTIGRAVITY = [
      "created_at": "2026-01-01T10:00:05Z", "content": "On it — fixed the golden bug."},
 ]
 
-# ChatGPT account-export conversation with the two shapes prior imports lost: a
-# branch (a regenerated assistant reply off the active path — n1 has two children,
-# `current_node` reaches only a1) and an image-only user turn carrying an
-# `image_asset_pointer` (no text — the whole turn used to vanish on import). Locks:
+# ChatGPT account-export conversation with the two shapes an import most easily
+# loses: a branch (a regenerated assistant reply off the active path — n1 has two
+# children, `current_node` reaches only a1) and an image-only user turn carrying an
+# `image_asset_pointer` (no text, so a text-keyed import drops the turn whole). Locks:
 # every node's `branch.parent_id`, `branch.active_path: false` on the off-path reply,
 # and the preserved asset_pointer on the image turn's user_message_sent.
 CHATGPT_EXPORT = [{

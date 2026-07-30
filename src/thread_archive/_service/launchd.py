@@ -283,7 +283,7 @@ class LaunchdBackend:
 _BACKEND = LaunchdBackend()
 
 
-# ── module-level wrappers (the historical surface; back-compat for callers) ────
+# ── module-level wrappers over the backend ────────────────────────────────────
 
 
 def _log_dir(home: Optional[str]) -> Path:

@@ -64,6 +64,7 @@ sys.path.insert(0, str(_HERE.parent / "src"))
 # however this file was loaded: as a script, by path, or as search_lab.X.
 sys.path.insert(0, str(_HERE))
 
+import dataset_pins  # noqa: E402
 import eval_core  # noqa: E402
 import eval_home  # noqa: E402
 
@@ -158,6 +159,7 @@ def run(args) -> int:
             f"CDR data not found under {repo}. Clone it first:\n"
             f"  git clone https://github.com/l-yohai/CDR-Benchmark {repo}"
         )
+    dataset_pins.verify("cdr")
 
     cache_root = Path(args.data_dir).expanduser()
     if args.fresh:

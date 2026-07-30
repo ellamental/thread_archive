@@ -33,6 +33,18 @@ jobs:
           pip install build
           python -m build
 
+      # The tag names the release, but hatch reads `__version__` — the wheel
+      # carries whatever the tagged commit's source says. If they disagree,
+      # the upload publishes a version nobody tagged; worst case an rc tag on
+      # a commit still carrying the final version string burns that final
+      # number on PyPI (which never accepts a version twice). Fail here.
+      - name: Dist version must match the tag
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          ls dist/
+          test -f "dist/thread_archive-$v-py3-none-any.whl"
+          test -f "dist/thread_archive-$v.tar.gz"
+
       # The deep artifact checks (contents, clean-venv install, real entry
       # points) are the `package` lane in CI, which has already run on the
       # release commit by the time the tag lands (preflight requires it).
@@ -54,3 +66,43 @@ jobs:
           path: dist/
 
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Proves the *published* artifact, not the built one: install the version
+  # PyPI now serves into a fresh interpreter, the way an operator would, and
+  # run the real entry point. The deep behavioral checks are the package lane,
+  # which ran on this same commit — but none of that touched what PyPI serves,
+  # and this job is the only automated thing that does. It runs for rc and
+  # final tags alike; a green run on the rc is the license to proceed toward
+  # the final (docs/releasing.md). It cannot gate the upload — that already
+  # happened — so a failure here means yank and ship the next version.
+  verify:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The index can lag the upload by a minute or two; retry, and insist on
+      # the wheel (--only-binary) because that is what self-update installs.
+      - name: Install the published version from PyPI
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          for i in $(seq 1 20); do
+            pip install --no-cache-dir --only-binary thread-archive \
+              "thread-archive==$v" && exit 0
+            echo "attempt $i: $v not installable yet; retrying in 30s"
+            sleep 30
+          done
+          exit 1
+
+      - name: Smoke-test the installed package
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          thread-archive --help
+          archive-mcp --help
+          installed=$(python -c "import thread_archive; print(thread_archive.__version__)")
+          if [ "$installed" != "$v" ]; then
+            echo "installed version $installed does not match tag $v"
+            exit 1
+          fi

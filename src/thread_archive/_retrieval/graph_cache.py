@@ -17,7 +17,7 @@ of them answer *someone already did this*: :func:`newest_age_s` is the probe and
 Derived and disposable, like the vector pack it is built from: files are named by
 the store's validity token, published by ``os.replace``, and swept when
 superseded. Nothing here is authoritative — every failure path returns "no
-cache", which is precisely the state this module was written to improve on.
+cache", which is the degraded state this exists to make rare, never a wrong one.
 
 **A loaded graph is served stale on purpose.** Requiring a token match would make
 this useless under continuous ingest, where the token moves every few minutes and

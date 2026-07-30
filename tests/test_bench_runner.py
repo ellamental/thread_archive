@@ -84,15 +84,38 @@ def test_the_quick_tier_still_covers_every_dataset() -> None:
     assert full == quick
 
 
-def test_perltqa_uses_the_fixed_ten_minute_sample() -> None:
+def test_the_full_tier_scores_every_query() -> None:
+    # The two tiers are "every query" and "sampled to fit a preflight", and the
+    # full one has to actually be the former: a row that samples in both tiers is
+    # a third depth wearing the full tier's name, and nothing on the bench would
+    # then be measuring the whole corpus.
+    for row in benchmark.manifest():
+        assert "--sample" not in row.argv, row.name
+        assert "~" not in row.name, row.name
+
+
+def test_perltqa_is_scored_whole_and_sampled_only_in_the_quick_tier() -> None:
+    # The largest row on the bench at 8,588 questions per arm, and the reason the
+    # quick tier exists — but the full tier still owes the whole set.
     rows = [r for r in benchmark.manifest() if r.dataset_name() == "perltqa"]
 
-    assert {r.name for r in rows} == {
-        "perltqa[lexical]~2000",
-        "perltqa[vectors]~2000",
+    assert {r.name for r in rows} == {"perltqa[lexical]", "perltqa[vectors]"}
+    assert all(r.quick_sample for r in rows)
+    assert {r.quick().name for r in rows} == {
+        "perltqa[lexical]~1500",
+        "perltqa[vectors]~1500",
     }
-    assert all(r.argv[-2:] == ["--sample", "2000"] for r in rows)
-    assert all(r.quick() is r for r in rows)
+
+
+def test_a_sampled_rows_name_states_the_size_it_was_scored_at() -> None:
+    # The name is the only thing separating two measurements over different query
+    # sets, so a `~N` that disagrees with the sample would silently merge them.
+    for row in benchmark.manifest():
+        quick = row.quick()
+        if quick is row:
+            continue
+        assert quick.name == f"{row.name}~{row.quick_sample}"
+        assert quick.argv[-2:] == ["--sample", str(row.quick_sample)]
 
 
 def test_only_narrows_by_name_fragment() -> None:

@@ -9,10 +9,18 @@ reference by construction. A release needs the other thing: a fixed set of
 accepted numbers that a change has to clear, and that only moves when somebody
 decides it should.
 
-    python -m search_lab gate            # compare the ledger to the baseline
-    python -m search_lab gate --run      # run the bench first, then compare
-    python -m search_lab gate --quick    # the sampled tier's own baseline
-    python -m search_lab gate --update   # accept what is recorded as the new bar
+    python -m search_lab gate --run --quick     # the release gate: measure, then compare
+    python -m search_lab gate --quick           # compare the recorded quick tier
+    python -m search_lab gate --run             # the full tier — every query, hours
+    python -m search_lab gate --quick --update  # accept what is recorded as the new bar
+
+**A release is gated on the quick tier.** It is the depth that fits a preflight —
+sampled where a row is too large to score whole, every query everywhere else, the
+same seven datasets either way — and damage detection is what a gate is for. The
+full tier is what a *published* number would have to come from; it is not run
+routinely, and nothing here requires it to be. Both tiers keep accepted numbers in
+this one file, under their own row names, and an ``--update`` at one depth leaves
+the other's alone.
 
 **The baseline is checked in** (``search_lab/quality-baseline.json``), unlike
 every other artifact this lab writes. It has to be: the ledger is per-box, and a
@@ -253,14 +261,23 @@ def check(baseline: dict[str, Any], rows: list[benchmark.Row], *,
 
 
 def build_baseline(rows: list[benchmark.Row], *, home: Optional[Path] = None,
-                   previous: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+                   previous: Optional[dict[str, Any]] = None,
+                   known: Optional[set[str]] = None) -> dict[str, Any]:
     """The baseline the currently recorded runs would establish.
 
     Only successful runs, and only rows that have one — a row whose corpus is not
     built on this box contributes nothing rather than a hole that would read as
     an accepted zero. An existing entry's explicit ``tolerance`` is carried
     forward: it encodes a judgment about that row, not about the numbers it
-    happened to be holding."""
+    happened to be holding.
+
+    ``known`` is both tiers' row names, and it makes an update *tier-local*: an
+    accepted entry this tier does not produce is carried forward when the other
+    tier still runs it, and dropped when nothing does. Without it a
+    ``gate --quick --update`` would rewrite the file to the quick rows alone and
+    ungate the full tier — which reads as green, because an ungated row never
+    fails. Removing an accepted number should take the same deliberate act that
+    adding one does."""
     kept = ((previous or {}).get("rows") or {})
     out: dict[str, Any] = {}
     for row in rows:
@@ -284,6 +301,9 @@ def build_baseline(rows: list[benchmark.Row], *, home: Optional[Path] = None,
         if "tolerance" in kept.get(row.name, {}):
             entry["tolerance"] = kept[row.name]["tolerance"]
         out[row.name] = entry
+    for name, entry in kept.items():
+        if name not in out and known is not None and name in known:
+            out[name] = entry
     return {
         "accepted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "rows": out,
@@ -321,8 +341,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="run the bench before comparing (fresh rows cost "
                          "milliseconds; a ranking edit re-runs everything)")
     ap.add_argument("--quick", action="store_true",
-                    help="gate the sampled tier — its rows carry their own names "
-                         "and therefore their own accepted numbers")
+                    help="gate the quick tier, which is what a release is cut on "
+                         "— its sampled rows carry their own names and therefore "
+                         "their own accepted numbers")
     ap.add_argument("--only", action="append", default=[], metavar="FRAGMENT",
                     help="gate just the rows whose name contains this (repeatable)")
     ap.add_argument("--allow-stale", action="store_true",
@@ -336,9 +357,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json-out", type=Path, default=None, metavar="FILE")
     args = ap.parse_args(argv)
 
-    whole = benchmark.manifest()
-    if args.quick:
-        whole = [row.quick() for row in whole]
+    # Both tiers' names are "known", whichever tier is being gated. The baseline
+    # holds the tier a release is cut on, and the *other* tier's gate must report
+    # those rows as belonging to a depth it is not running — not as renamed or
+    # dropped, which is a hard failure and would make the unused tier permanently
+    # red for no reason anyone can act on.
+    tiers = benchmark.manifest()
+    known = {row.name for row in tiers} | {row.quick().name for row in tiers}
+    whole = [row.quick() for row in tiers] if args.quick else tiers
     rows = benchmark.select(whole, only=args.only)
     if not rows:
         print("no rows selected")
@@ -353,13 +379,12 @@ def main(argv: list[str] | None = None) -> int:
         # Built from the whole manifest rather than the selection: a --only
         # update would drop every unselected row from the file, quietly ungating
         # the rest of the bench.
-        fresh = build_baseline(whole, previous=previous)
+        fresh = build_baseline(whole, previous=previous, known=known)
         write_baseline(fresh, args.baseline)
         print(f"accepted {len(fresh['rows'])} row(s) into {args.baseline}")
         return 0
 
-    verdicts = check(previous, rows, known={row.name for row in whole},
-                     allow_stale=args.allow_stale)
+    verdicts = check(previous, rows, known=known, allow_stale=args.allow_stale)
     accepted = previous.get("accepted_at", "never")
     print(f"quality gate: {len(verdicts)} row(s) against {args.baseline.name} "
           f"(accepted {accepted})")

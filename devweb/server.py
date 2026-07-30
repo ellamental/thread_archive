@@ -53,9 +53,8 @@ def _lab(name: str):
 
     The lab is a repo-root directory on no import path by default, so the root is
     resolved from this file rather than from the process's working directory —
-    a server started from anywhere still finds it. Unlike the old bridge inside
-    the package, this does not need to survive the lab's absence: devweb and the
-    lab ship together, which is to say neither ships.
+    a server started from anywhere still finds it. It need not survive the lab's
+    absence: devweb and the lab ship together, which is to say neither ships.
     """
     import importlib
     import sys

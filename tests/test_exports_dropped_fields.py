@@ -1,4 +1,4 @@
-"""Provider-export fields that used to be silently dropped now survive import.
+"""Provider-export fields that survive import rather than being silently dropped.
 
 claude.ai: tool_use/tool_result pairing ids, text citations, thinking summaries,
 tool integration/MCP metadata + structured_content, safety ``flag`` blocks, and

@@ -424,7 +424,7 @@ def _xai_conversation_messages(bundle: dict) -> list[dict]:
         else:
             # A response with no message text still carries a real turn — an
             # image/attachment/generated-media or tool-only turn. Preserve it rather
-            # than dropping it (the old `continue` lost every one). Route it through a
+            # than dropping it: route it through a
             # generic role so the shared builder keeps it as a `message` event with
             # the full raw response — the user-role builder discards a text-less turn,
             # so plain "user"/"assistant" wouldn't reliably survive. The sender + raw

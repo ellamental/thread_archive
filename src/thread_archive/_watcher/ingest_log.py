@@ -124,11 +124,10 @@ def record_idle(
     that is right: the loop spends nearly all of its life finding nothing, and a
     row each would bury every row that matters. But it leaves the loop's *floor*
     unrecorded — the directory walks and fingerprint stats paid on every poll
-    whether or not anything changed. That cost is real, it scales with the number
-    of watched files rather than with activity, and until now it lived only in
-    ``health.json``'s per-source counters, which are cumulative since process
-    start and therefore erased by every restart. The same un-retention this
-    ledger was built to fix, for the quiet half of the loop.
+    whether or not anything changed. That cost is real and it scales with the
+    number of watched files rather than with activity, so the quiet half of the
+    loop needs retention of its own: ``health.json``'s per-source counters are
+    cumulative since process start and therefore erased by every restart.
 
     So: one row per window, not per pass — ``passes`` of them cost ``total_ms``
     between them, the worst taking ``max_ms``, over ``checked`` targets. Rate per

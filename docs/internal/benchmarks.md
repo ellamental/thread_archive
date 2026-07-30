@@ -13,9 +13,9 @@ number off them means anything.
 
 Corpora shaped like agent sessions — Claude Code / Codex / Cursor transcripts —
 are the domain match, and they carry no labels. Producing labels for them locally
-is not on the table: see `docs/search-quality.md` → "The admission rule" for why
-every scheme for doing so either grades the ranker with itself or asks questions
-nobody asked.
+is not on the table: see `docs/search-quality.md` → "Why your own archive has no
+score" for why every scheme for doing so either grades the ranker with itself or
+asks questions nobody asked.
 
 ## The two axes that decide whether a benchmark is worth anything
 
@@ -58,11 +58,12 @@ Every one is deterministic in scoring. Two carry no published retrieval baseline
 (BEAM, PerLTQA) and say so in their own output rather than borrowing a number
 from a different task.
 
-**PerLTQA carries a fixed 2,000-question sample.** Its full 8,588-question set
-takes about 44 minutes across the lexical and vector arms; the deterministic
-hash sample preserves coverage across people and memory types while bringing the
-pair near 10 minutes. The `~2000` row names make that measurement boundary
-explicit, and n=2,000 resolves deltas to 0.0005.
+**PerLTQA is the row the quick tier exists for.** Its full 8,588-question set takes
+about 38 minutes across the lexical and vector arms — most of the full tier's whole
+cost — so the quick tier scores a deterministic hash sample of 1,500 per arm,
+preserving coverage across people and memory types while bringing the pair near 7
+minutes. The `~1500` row names make that measurement boundary explicit, and the
+full rows still owe every question.
 
 **BEAM is scored narrower than it ships**, and both deviations are stated where a
 reader of a number will meet them. Only the **100K tier** is carried: the 500K and
@@ -97,7 +98,7 @@ floor of several points and never read a small delta on it.
 
 ### Free — `beir_eval.py` already supports these
 
-[beir_eval.py](../search_lab/beir_eval.py) carries published BM25 and dense
+[beir_eval.py](../../search_lab/beir_eval.py) carries published BM25 and dense
 references for 12 BEIR datasets; four are on the bench. Adding another is a
 `--dataset` value and CPU time.
 
@@ -123,7 +124,7 @@ a scifact artifact.
 ### One loader away
 
 Each of these needs a `*_groups()` generator in the shape of the loaders in
-[haystack_eval.py](../search_lab/haystack_eval.py) plus a dispatch branch, or a
+[haystack_eval.py](../../search_lab/haystack_eval.py) plus a dispatch branch, or a
 HuggingFace fetch branch beside `beir_eval.py`'s UKP zip fetcher.
 
 | benchmark | shape | labels | scoring | domain distance | note |
@@ -157,9 +158,9 @@ framing, or the file listing — only from the schema.
 
 ### Right task, wrong corpus size
 
-MTRAG now covers most of what these were wanted for — multi-turn conversational
-retrieval with human qrels, at a corpus size that fits — so what follows is the
-residue rather than a gap.
+MTRAG covers most of what these would be wanted for — multi-turn conversational
+retrieval with human qrels, at a corpus size that fits — so these are a residue
+rather than a gap.
 
 TREC CAsT / iKAT, QReCC, and TopiOCQA are the classic conversational-search sets
 and the closest thing in traditional IR to searching a conversation. They retrieve
@@ -185,6 +186,13 @@ a pooled-corpus variant with the caveat stated in the output.
 - Built corpora live under `~/.cache/thread-evals` (`<root>/<dataset>` for a
   download, `<root>/homes/<name>` for a built home), are large, and are entirely
   rebuildable — the whole tree is safe to delete.
-- `python -m search_lab benchmark`'s standard tier is the set whose corpus is
-  already built. Every row added here grows it; the plan estimator prices each row
-  from what it actually took last time, so `--list` is the honest budget.
+- **Every downloaded corpus is pinned to a content hash** (`search_lab/dataset-pins.json`,
+  `python -m search_lab pins`). None of the upstreams offer an immutable handle —
+  BEIR is a bare zip URL, three are a clone of a default branch, two are Hugging
+  Face `resolve/main` — so a re-fetch is exactly where a corpus would silently
+  become a different one. Harnesses verify before they build; deleting and
+  re-downloading the tree is safe only if the bytes come back the same, and the
+  pin is what tells you they did.
+- `python -m search_lab benchmark` runs the set whose corpus is already built.
+  Every row added here grows it; the plan estimator prices each row from what it
+  actually took last time, so `--list` is the honest budget.

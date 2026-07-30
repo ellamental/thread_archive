@@ -39,10 +39,10 @@ costs one panel rather than the page.
 **One default window, 14 days** — `DEFAULT_HOURS` in `frontend/src/api.ts`, which
 the overview, `/retrieval` and `/telemetry` all open on, and which the client's
 own two windowed calls take when nothing is passed. Each page's control still
-moves its own window from there. They used to default apart (14 days and 24
-hours), which put the same door table on two pages with different numbers in it
-— the instruments looking like they disagreed when it was one stretch of time
-against another. On the overview the one control drives retrieval and telemetry
+moves its own window from there. One default across all of them is what keeps the
+same door table reading the same on two pages: windows that differ put different
+numbers under one heading, and the instruments look like they disagree when it is
+one stretch of time against another. On the overview the one control drives retrieval and telemetry
 together, since two panels read side by side have to cover the same stretch; the
 bench inventory and the run ledger are windowless and do not move with it.
 
@@ -61,16 +61,16 @@ ledgers.
 
 ## Why it is separate
 
-The archive's viewer ([web-viewer.md](web-viewer.md)) is for reading
-conversations. These are instruments for working on the archive itself, and they
-used to be routes inside that same app, mounted by a `dev_panels` line in
-`config.json`. That meant the viewer's bundle carried them whether or not anyone
-had asked, and the watcher that serves the archive also served them.
+The archive's viewer ([../web-viewer.md](../web-viewer.md)) is for reading
+conversations. These are instruments for working on the archive itself, and the
+split between the two is structural rather than a flag: different bundle,
+different process, different port, different directory. There is nothing to
+switch on, because there is nothing here to switch — the archive's server 404s
+these endpoints and its app has no routes for their addresses.
 
-Now the split is structural rather than a flag: different bundle, different
-process, different port, different directory. There is nothing to switch on,
-because there is nothing here to switch. The archive's server 404s their
-endpoints and its app has no routes for their addresses.
+Mounting them inside the viewer instead would put them in a bundle every reader
+downloads whether or not they ever open one, and make the watcher that serves the
+archive serve them too.
 
 **It runs in the foreground.** No service unit, no always-on story — the natural
 lifetime is the terminal you started it in. Nothing depends on it: the watcher,

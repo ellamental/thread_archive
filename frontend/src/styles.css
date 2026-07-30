@@ -1153,6 +1153,44 @@ a.session-link:hover { color: var(--accent); }
 .drop-name { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
 .drop-meta { flex: none; color: var(--muted); font-size: 11px; }
 
+/* ---- the manual ---- */
+.docs-page h1 { margin: 0 0 10px; font-size: 22px; letter-spacing: -.01em; }
+.docs-lede { margin: 0 0 26px; color: var(--muted); max-width: 62ch; }
+.docs-index { display: grid; gap: 8px; }
+.docs-card {
+  display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: baseline;
+  padding: 13px 16px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--panel); color: inherit; text-decoration: none;
+}
+.docs-card:hover { border-color: var(--accent); }
+.docs-card-title { font-weight: 600; }
+.docs-card-slug {
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted);
+}
+.docs-card-summary { grid-column: 1 / -1; color: var(--muted); font-size: 12.5px; }
+
+.doc-crumb {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  margin-bottom: 18px; font-size: 12px;
+}
+.doc-crumb a { color: var(--accent); text-decoration: none; }
+.doc-crumb-slug { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+
+/* Manual prose is hard-wrapped in its source file, unlike a transcript's, where
+   the newlines the author typed are the layout. So paragraphs reflow here — and
+   the page grows the heading scale a document needs and a chat bubble doesn't. */
+.md-doc p { white-space: normal; }
+.md-doc { line-height: 1.62; }
+.md-doc h1 { font-size: 22px; letter-spacing: -.01em; margin: 0 0 14px; }
+.md-doc h2 { font-size: 17px; margin: 30px 0 10px; }
+.md-doc h3 { font-size: 14.5px; margin: 22px 0 8px; }
+.md-doc h4 { font-size: 13px; margin: 18px 0 6px; color: var(--muted); }
+.md-doc ul, .md-doc ol { margin: 0 0 12px; padding-left: 22px; }
+.md-doc li { margin: 3px 0; }
+.md-doc pre { margin: 0 0 14px; font-size: 12.5px; line-height: 1.5; }
+.md-doc table { display: block; overflow-x: auto; margin: 0 0 14px; font-size: 13px; }
+.md-doc hr { border: none; border-top: 1px solid var(--line); margin: 26px 0; }
+
 @media (min-width: 760px) and (max-width: 1000px) {
   aside { width: 260px; min-width: 260px; }
   .wrap { padding-inline: 22px; }

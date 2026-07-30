@@ -2,6 +2,12 @@ import type { Page, Route } from '@playwright/test'
 
 export const THREAD_ID = '01ARZ3NDEKTSV4RRFFQ69G5FAV'
 export const MODEL = 'claude-opus-4-8'
+/** The manual page the browser suite opens, and the index it is listed in. */
+export const DOC_SLUG = 'cli'
+export const DOC_PAGES = [
+  { slug: DOC_SLUG, title: 'CLI', summary: 'One namespaced command.' },
+  { slug: 'install', title: 'Install', summary: 'Python ≥ 3.12, macOS or Linux.' },
+]
 /** The recorded benchmark run the browser suite opens — the reported pass of a
  *  row still on the bench, which is the case carrying every section of the page. */
 
@@ -371,6 +377,21 @@ export async function mockApi(page: Page): Promise<string[]> {
     }
     if (path === '/api/stats') return json(route, stats)
     if (path === `/api/stats/model/${MODEL}`) return json(route, modelStats)
+    // The manual. Two pages: enough for the index to be a list, and the second
+    // is what the first page's cross-link resolves to.
+    if (path === '/api/docs') return json(route, { pages: DOC_PAGES })
+    if (path === `/api/docs/${DOC_SLUG}`) {
+      return json(route, {
+        slug: DOC_SLUG,
+        title: 'CLI',
+        markdown:
+          '# CLI\n\nOne namespaced command. See [install.md](install.md).\n\n' +
+          '```bash\nthread-archive status\n```\n',
+      })
+    }
+    if (path === '/api/docs/install') {
+      return json(route, { slug: 'install', title: 'Install', markdown: '# Install\n\nPython ≥ 3.12.\n' })
+    }
 
     unhandled.push(`${route.request().method()} ${path}`)
     return json(route, { error: 'unhandled browser-test API request' }, 501)

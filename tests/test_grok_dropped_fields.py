@@ -1,6 +1,6 @@
 """Grok line/session extras land as annotations + source_metadata, never dropped.
 
-Covers the fields the modeled path used to discard: assistant ``model_fingerprint``
+Covers the fields the modeled path would otherwise discard: assistant ``model_fingerprint``
 and user ``prior_turn_interrupt`` (message-level, carried via
 ``provider_data["annotations"]`` onto the anchor event payload per the annotations
 convention in ``thread_archive._thread_import.event_builder``), and the

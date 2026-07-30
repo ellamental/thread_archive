@@ -69,8 +69,8 @@ RECALL_KS = (1, 5, 10, 20)
 EXCLUDE_META = ["title", "summary"]
 
 # Tool families whose thread ids live in this archive's id space: the archive's
-# own MCP server and the legacy thread-commands server it superseded (the id
-# numbering carried over). Bare unnamespaced `thread_search` tools exist in the
+# own MCP server and the thread-commands server, which shares its id numbering.
+# Bare unnamespaced `thread_search` tools exist in the
 # trail too but belong to unrelated experiments — excluded by requiring the
 # family prefix.
 _TOOL_RE = re.compile(r"thread[-_](?:archive|commands)[_:]+thread_(search|read)$")

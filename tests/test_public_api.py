@@ -70,6 +70,7 @@ CLI_TREE = {
     "index": {"rebuild", "migrate", "embed", "verify", "repair"},
     "backup": {"run", "nightly", "drill", "restore"},
     "status": set(),
+    "docs": set(),
     "setup": set(),
     "service": {"install", "uninstall", "restart", "status"},
     "self-update": set(),

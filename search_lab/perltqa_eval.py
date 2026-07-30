@@ -69,6 +69,7 @@ sys.path.insert(0, str(_HERE.parent / "src"))
 # however this file was loaded: as a script, by path, or as search_lab.X.
 sys.path.insert(0, str(_HERE))
 
+import dataset_pins  # noqa: E402
 import eval_core  # noqa: E402
 import eval_home  # noqa: E402
 
@@ -223,6 +224,7 @@ def run(args) -> int:
             raise SystemExit(
                 f"PerLTQA data not found at {path}; fetch Dataset/en/ from "
                 f"github.com/Elvin-Yiming-Du/PerLTQA into {root}")
+    dataset_pins.verify("perltqa")
 
     if args.fresh:
         home = Path(tempfile.mkdtemp(prefix="perltqa-home-"))

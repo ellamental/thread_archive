@@ -572,8 +572,8 @@ def _cursor_to_normalized(msg: dict[str, Any]) -> dict[str, Any]:
         }
     # An unmodeled bubble type. The shared builder preserves any non-user/assistant/
     # system role as a `message` event (role + content + content_blocks), so carry the
-    # bubble's content/thinking/tool_call + full raw here rather than dropping the turn —
-    # the old bare {"role": role} silently discarded every one.
+    # bubble's content/thinking/tool_call + full raw here rather than dropping the turn.
+    # A bare {"role": role} would discard every one.
     role = role or "unknown"
     unknown_blocks: list[dict[str, Any]] = []
     if msg.get("thinking"):

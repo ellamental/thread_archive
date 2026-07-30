@@ -113,6 +113,19 @@ timeout = 1800
 name = "coverage-gate"
 argv = ["{repo}/.venv/bin/python", "{repo}/scripts/coverage_gate.py", "{repo}/coverage.json"]
 
+# The benchmark corpora are the bytes they were accepted on. Content hashes of
+# the files each harness reads (search_lab/dataset-pins.json) — none of the
+# upstreams offer an immutable handle, so a re-download or a re-clone is where a
+# corpus silently becomes a different one and every recorded number quietly stops
+# meaning what it did. Milliseconds: per-file digests are memoized on
+# (size, mtime_ns), so the ~1GB is read once and re-read only where it changed.
+#
+# A corpus absent from this box, or present but not yet pinned, passes — that is
+# a fact about the box. Only drift against an accepted pin reds the row.
+[[suite]]
+name = "dataset-pins"
+argv = ["{repo}/.venv/bin/python", "-m", "search_lab", "pins"]
+
 # Retrieval-arm liveness: asserts the model arm of the search stack loads.
 # Runs against THIS machine's live archive — read-only, and thread-ci runs
 # where the archive lives. --require-semantic asserts the embeddings arm

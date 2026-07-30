@@ -141,9 +141,9 @@ _write_version = 0
 # newest, not-yet-repacked vectors), probes the store's validity token at most once
 # per cooldown, and does the refresh — usually just the small delta read, occasionally
 # a full base rebuild — only in a single-flight background thread. Continuous ingest
-# moves the token every few minutes; the old inline rebuild put that multi-second cost
-# on whichever query raced the new token, and, unguarded, let a burst of concurrent
-# queries all rebuild the same ~GB pack at once. A writer that can't wait out the
+# moves the token every few minutes, so an inline rebuild would put that multi-second
+# cost on whichever query raced the new token, and unguarded would let a burst of
+# concurrent queries all rebuild the same ~GB pack at once. A writer that can't wait out the
 # cooldown calls ``reset_matrix_cache`` for immediate local effect — a stale window
 # only ever costs a ranking slot.
 _MATRIX_REFRESH_COOLDOWN_S = 60.0
@@ -158,7 +158,7 @@ _PACK_STALE_AGE_S = 3600
 
 # The pack is a base + delta: a large on-disk base pack (mmap) plus the vectors
 # written since it was built, held in RAM. Continuous ingest moves the store token
-# every few minutes, but a single new vector no longer invalidates the ~GB base — it
+# every few minutes, but a single new vector does not invalidate the ~GB base — it
 # lands in the delta, a cheap read. A fresh base (the full scan + np.vstack + write) is
 # packed only when the delta grows past this many rows, so the expensive rebuild
 # happens once per this-many new vectors, not once per new vector.
@@ -1051,14 +1051,13 @@ def reset_matrix_cache() -> None:
 def _time_rows(ts_arr, since: Optional[str], until: Optional[str]):
     """Row positions inside a time window, straight off the pack's timestamps.
 
-    The scope this serves used to arrive as ``allowed_ids`` from a query over
-    ``events``, and that query was the single most expensive thing a time-scoped
-    search did — not because it was badly planned but because of what it had to
-    materialize: ``since='180d'`` selects 3.6M event ids to mask a pack holding
-    275k vectors, so 93% of the ids fetched name rows the matrix does not contain.
-    The pack already knows every row's date; the window is a comparison over an
-    array it has in hand, and it costs under a millisecond regardless of how wide
-    the window is.
+    Deriving the same scope as ``allowed_ids`` from a query over ``events`` is the
+    single most expensive thing a time-scoped search can do — not for want of a good
+    plan but because of what it has to materialize: ``since='180d'`` selects 3.6M
+    event ids to mask a pack holding 275k vectors, so 93% of the ids fetched name
+    rows the matrix does not contain. The pack already knows every row's date; the
+    window is a comparison over an array it has in hand, and it costs under a
+    millisecond regardless of how wide the window is.
 
     Undated rows are excluded rather than ordered. They pack to empty bytes, which
     sorts below every real timestamp — so an ``until`` bound would otherwise sweep
@@ -1217,7 +1216,7 @@ def search(
     # A time bound is *not* in this list, and that is the point: the pack carries every
     # row's date, so a window is a comparison the KNN makes itself. Only the scopes
     # that need facts the pack does not hold — which thread, which source, which code
-    # path — still cost an id query, and a search scoped by time alone now costs none.
+    # path — cost an id query at all; a search scoped by time alone costs none.
     selective = (thread_id is not None or thread_ids is not None or bool(source)
                  or bool(path) or agents == "only")
     allowed_ids = None

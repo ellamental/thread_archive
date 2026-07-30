@@ -110,29 +110,87 @@ All in the worktree:
 - GitHub CI green on `release/X.Y.Z` (ruff, mypy, coverage floor, the pytest
   suite on the 3.12 floor and 3.14, frontend checks, and the same package
   lane).
-- The search-quality gate green: `python -m search_lab gate --run`. The bench's
-  numbers against the accepted ones in `search_lab/quality-baseline.json` —
-  public benchmarks whose labels somebody else made, so a breach is real
-  evidence the retrieval components got worse. `--run` measures whatever the
-  code has invalidated first: rows unchanged since their last run are fresh and
-  cost milliseconds, a ranking edit re-runs the set (a few hours cold — the
-  frozen branch is what makes that affordable). The ledger and corpus cache
-  live in the lab's own state home, so a fresh worktree starts warm. A row
-  last measured at other code fails as **stale** rather than passing on old
-  numbers — shipping an unmeasured ranking change under a green gate is the
-  failure this exists to prevent. See `search_lab/README.md` for the tiers
-  below it and what each one licenses.
+- The corpora unmoved: `python -m search_lab pins`. Content hashes of the files
+  each harness reads, against the accepted ones in
+  `search_lab/dataset-pins.json`. None of the upstreams offer an immutable
+  handle, so this is what makes the gate's numbers comparable to the accepted
+  ones at all — a drifted corpus turns a release check into a comparison
+  between two different measurements. Milliseconds; the harnesses verify the
+  same hashes before they build, so a drift found here has already stopped the
+  bench.
+- The search-quality gate green: `python -m search_lab gate --run --quick`. The
+  bench's numbers against the accepted ones in
+  `search_lab/quality-baseline.json` — public benchmarks whose labels somebody
+  else made, so a breach is real evidence the retrieval components got worse.
+  `--run` measures whatever the code has invalidated first: rows unchanged since
+  their last run are fresh and cost milliseconds, and a ranking edit re-runs the
+  quick tier in under 20 minutes. The ledger and corpus cache live in the lab's
+  own state home, so a fresh worktree starts warm. A row last measured at other
+  code fails as **stale** rather than passing on old numbers — shipping an
+  unmeasured ranking change under a green gate is the failure this exists to
+  prevent. See `search_lab/README.md` for the tiers below it and what each one
+  licenses.
+
+  **`--quick` is not optional here, and it is not a shortcut.** The quick tier
+  is a depth in its own right — every query on the rows that fit, a
+  deterministic sample on the three arms too large to score whole — and its rows
+  carry their own accepted numbers under their own `~N` names. Dropping the flag
+  gates the full tier instead, whose rows are hours of scoring and, on this box,
+  have no accepted numbers to compare against.
 
   A breach is a decision, not a formality. Either it is a regression — fix or
   revert — or it is a deliberate trade, accepted with
-  `python -m search_lab gate --update`, which puts the movement in the release
-  diff where a reader can see what was given up.
+  `python -m search_lab gate --quick --update`, which puts the movement in the
+  release diff where a reader can see what was given up.
 - If `frontend/` changed since the last release, the committed
   `_web/static/` bundle must be current: `cd frontend && npm run build`,
   and the regenerated static assets committed with the change that caused
   them — a clone runs whatever bundle is in the tree. This gates the clone
   only; the viewer is dev-only and no wheel carries it, so a stale bundle
   cannot reach an installed user.
+
+## Release candidates — optional, cut from the release branch
+
+PyPI has no release channels; PEP 440 pre-release versions are the
+mechanism, and they are enough. An `X.Y.ZrcN` upload lands on the same PyPI
+project as a final release, but pip and uv skip pre-releases unless asked:
+a tester opts in with `pip install --pre thread-archive` or an exact
+`thread-archive==X.Y.ZrcN` pin, and everyone else's `pip install` keeps
+resolving the last final. `self-update` is stricter still — it only ever
+offers a wheel naming a plain `X.Y.Z` — so an rc reaches nobody who did not
+explicitly ask for it. PEP 440 orders `X.Y.ZrcN < X.Y.Z`, so when the final
+ships, `--pre` installs converge onto it with a plain upgrade.
+
+An rc is a stabilization-branch artifact. It never touches `main`, `dev`,
+or the PR — it is a tagged commit on `release/X.Y.Z`, published by hand:
+
+1. Preflight first: at minimum the full suite and the package lane green on
+   the branch (an rc is still executable software offered to real installs).
+2. On `release/X.Y.Z`, set `__version__ = "X.Y.ZrcN"` and commit:
+   `Release candidate X.Y.ZrcN`. No changelog compression — that happens
+   once, at the final.
+3. Tag and push — the hand-pushed tag is publish.yml's manual path, and the
+   `v*` tag ruleset means the repository admin pushes it:
+
+   ```bash
+   git tag -a "vX.Y.ZrcN" -m "thread-archive X.Y.ZrcN (release candidate)"
+   git push origin "vX.Y.ZrcN"
+   ```
+
+4. Watch the Publish run. Its `verify` job installs the just-published rc
+   from PyPI into a fresh interpreter and smoke-tests the real entry
+   points — the same check §6 runs by hand for a final. A green `verify` on
+   the rc is the point of cutting one: it proves the published artifact
+   installs and runs over the exact path the final will take, before the
+   final's version number is at stake.
+
+Fixes found during the rc land on the release branch as usual; the next
+round is `rcN+1`. The §3 release commit replaces the rc string with the
+plain `X.Y.Z` — release.yml's version read accepts nothing else, so an rc
+string accidentally left in place fails the tag workflow on `main` loudly
+instead of shipping. Like any version, a published rc's number is burned:
+PyPI never accepts a re-upload, and a bad rc is yanked the same way a bad
+release is (below), followed by the next rc rather than a re-tag.
 
 ## 3. Compress the changelog, bump the version
 
@@ -200,8 +258,10 @@ python3 -m venv /tmp/ta-verify
 /tmp/ta-verify/bin/thread-archive --help
 ```
 
-And once the Publish run is green, from PyPI (the index can lag the upload by
-a minute or two):
+The PyPI half is automated: the Publish run's `verify` job installs the
+published version from PyPI into a fresh interpreter (wheel only — the
+self-update path), runs the entry points, and checks the installed
+`__version__` against the tag. Watch it go green. To repeat it by hand:
 
 ```bash
 /tmp/ta-verify/bin/pip install --force-reinstall "thread-archive==X.Y.Z"

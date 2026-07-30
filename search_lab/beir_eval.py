@@ -62,6 +62,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 # however this file was loaded: as a script, by path, or as search_lab.X.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import dataset_pins  # noqa: E402
 import eval_core  # noqa: E402
 import eval_home  # noqa: E402
 
@@ -289,6 +290,9 @@ def run(args) -> int:
     eval_home.pin_arms(vectors=args.vectors)
 
     data = fetch_dataset(args.dataset, cache_root)
+    # Right after the fetch: the zip URL carries no version, so a re-download is
+    # where this corpus would silently become a different one.
+    dataset_pins.verify(args.dataset)
     queries = load_queries(data / "queries.jsonl")
     qrels = load_qrels(data / "qrels" / "test.tsv")
     # Only queries with judgments in the test split are scorable.

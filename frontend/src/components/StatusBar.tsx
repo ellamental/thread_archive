@@ -8,6 +8,8 @@ function sectionLabel(pathname: string): string {
   if (pathname.startsWith('/stats/model/')) return 'Model stats'
   if (pathname === '/health') return 'Health'
   if (pathname === '/upload') return 'Import'
+  if (pathname === '/docs') return 'Manual'
+  if (pathname.startsWith('/docs/')) return 'Manual page'
   if (pathname.startsWith('/archive/')) return 'Conversation'
   return 'Archive'
 }

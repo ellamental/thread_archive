@@ -143,26 +143,49 @@ path = "src/thread_archive/__init__.py"
 # Provider parsers live in thread_archive._thread_import — a vendored,
 # zero-dependency clean island, kept private (no public top-level package)
 # until its API is deliberately exposed.
-packages = ["src/thread_archive"]
+#
+# Two trees land in the wheel: the package, and the manual. `docs/` stays at the
+# repo root — that is what the Documentation URL points at and what a reader
+# browsing the repo expects — and `sources` below renames it into the package as
+# `thread_archive/_docs/`, beside the `__init__.py` that resolves it. So an
+# install carries the manual and can answer for itself (`thread-archive docs`),
+# with no clone and no network.
+#
+# An ordinary include rather than `force-include`, deliberately: force-included
+# paths are NOT subject to `exclude`, which would carry `docs/internal/` — the
+# maintainer's own pages — into every install.
+only-include = ["src/thread_archive", "docs"]
 # The viewer is dev-only and does not ship. `_web` is the stdlib server plus the
 # built React bundle — 23% of the download and 28% of the unpacked install, a
-# browser UI every `pip install` paid for whether or not it ever opened one.
+# browser UI every `pip install` would pay for whether or not it ever opened one.
 # What an install is for is preservation, retrieval, and the MCP server; the
-# viewer is a thing a checkout has. `_dev` (the /retrieval and /lab pages) goes
-# for the older version of the same reason: it reads search_lab/, a source-tree
-# directory.
+# viewer is a thing a checkout has.
 #
-# Both are absence-tolerant rather than load-bearing — `thread_archive._viewer`
+# It is absence-tolerant rather than load-bearing — `thread_archive._viewer`
 # probes for the viewer and the CLI registers `web` / `watch --web` only when it
 # is there, so an install advertises no verb it cannot run.
 #
 # NOTE: there is deliberately no `artifacts` key. It re-includes paths that
 # `exclude` drops (its purpose is packaging gitignored build output), so listing
 # _web/static there would silently undo this.
+# `docs/internal/` is the manual's other half: the release process, the bench
+# landscape, the maintainer's dev panels. Their reader is whoever works on this
+# repo, and they name branches, gates and instruments no install has — so they
+# stay in the repo and out of the artifact, and `thread_archive._docs` (a
+# top-level `*.md` glob) does not serve them either. `docs/*.md` is therefore
+# exactly what ships and exactly what the CLI and the viewer show: one boundary,
+# drawn by which directory a page sits in.
 exclude = [
-    "src/thread_archive/_dev",
     "src/thread_archive/_web",
+    "docs/internal",
 ]
+
+# `src` is stripped (the package's own layout); `docs` is renamed into the
+# package. Written out rather than using the `packages` shorthand, which is
+# sugar for exactly these two keys and leaves no room for the second tree.
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
+"docs" = "thread_archive/_docs"
 
 [tool.hatch.build.targets.sdist]
 # Ship the package sources, tests, docs, and the frontend sources that build
@@ -170,6 +193,10 @@ exclude = [
 # scripts, node_modules — hatchling only reads the ROOT .gitignore, so nested
 # ignore files like frontend/.gitignore do NOT keep node_modules out) stays
 # local.
+#
+# `docs` here means the whole tree, `internal/` included: this is the source
+# distribution, whose reader is someone building or reading the source, which is
+# exactly who those pages are for. The wheel is where the split is drawn.
 only-include = [
     "src",
     "tests",

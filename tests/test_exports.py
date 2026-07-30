@@ -63,7 +63,7 @@ def test_claude_ai_export_import(archive_home) -> None:
 
 def test_claude_ai_export_force_reimports_into_existing_thread(archive_home) -> None:
     """``force=True`` on an already-imported conversation must reuse the existing
-    thread (the thread name is unique — a second create_thread raises and used to
+    thread (the thread name is unique — a second create_thread raises, which would
     leave a junk "(import error)" stub with nothing re-imported) and let dedup
     collapse the repeats, so only genuinely-new events land."""
     init_db()

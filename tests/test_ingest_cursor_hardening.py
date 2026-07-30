@@ -3,8 +3,8 @@
 Every provider file watcher re-reads a transcript and imports the slice past its
 watermark. That slice is only meaningful if the lines under the watermark are still
 the same lines — and the sources can be repaired, truncated, or rewritten in place,
-sometimes back to the *same byte length*. These are the ways content used to go
-missing forever, each of which now rewinds the cursor and re-imports (the dedup_key
+sometimes back to the *same byte length*. These are the ways content can go
+missing forever, each of which rewinds the cursor and re-imports (the dedup_key
 check collapses what's already held, so a rewind costs work, never duplicates).
 
 The final case is the mirror image: a torn tail line, which looks like a rewrite but

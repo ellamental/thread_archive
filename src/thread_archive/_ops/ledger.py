@@ -49,8 +49,8 @@ logger = logging.getLogger(__name__)
 #: telemetry.
 _STAMPED = re.compile(r"^\d{8}T\d{6}Z(?:\.\d+)?$")
 
-#: The pre-stamp rotation an older install left behind. Read, never written — it
-#: is one file and it is older than any stamped segment beside it.
+#: A pre-stamp rotation. Read, never written — it is one file and it is older
+#: than any stamped segment beside it.
 _LEGACY = re.compile(r"^\d+$")
 
 
@@ -59,9 +59,9 @@ def _stamp() -> str:
 
 
 def _sort_key(suffix: str) -> tuple[int, Any, int]:
-    """Order segments oldest-first. Legacy numeric rotations precede every stamped
-    one: they were written under the old scheme, so they predate the change that
-    introduced stamps whatever their number says.
+    """Order segments oldest-first. Numeric rotations precede every stamped one:
+    only the pre-stamp scheme wrote them, so they predate every stamp whatever
+    their number says.
 
     The same-second disambiguator is compared as a *number*, not as text — sorted
     lexically, a tenth rotation inside one second would file itself between the

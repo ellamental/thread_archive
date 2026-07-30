@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 
-import { MODEL, THREAD_ID } from './helpers'
+import { DOC_SLUG, MODEL, THREAD_ID } from './helpers'
 
 export interface SmokeRoute {
   path: string
@@ -21,6 +21,8 @@ export const PUBLIC_ROUTES: readonly string[] = [
   '/stats/model/:model',
   '/health',
   '/upload',
+  '/docs',
+  '/docs/:slug',
   '/archive/:id',
 ]
 
@@ -47,6 +49,11 @@ export const ROUTES: SmokeRoute[] = [
   {
     path: `/stats/model/${MODEL}`,
     landmark: (page) => page.getByRole('heading', { name: MODEL }),
+  },
+  { path: '/docs', landmark: (page) => page.getByRole('heading', { name: 'The manual' }) },
+  {
+    path: `/docs/${DOC_SLUG}`,
+    landmark: (page) => page.getByRole('heading', { name: 'CLI', exact: true }),
   },
   {
     path: `/archive/${THREAD_ID}`,

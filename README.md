@@ -71,12 +71,18 @@ import from account exports you download by hand.
 
 ## Documentation
 
+This is the manual, and it ships inside the package: `thread-archive docs` lists
+these pages and `thread-archive docs <page>` prints one, offline. From a clone,
+the web viewer serves the same pages at `/docs`. The links below are those pages
+on GitHub. (`docs/internal/` is
+the other half — the release process, the bench landscape, the maintainer's dev
+panels — written for whoever works on this repo, and in no install.)
+
 - [Install](https://github.com/ellamental/thread_archive/blob/main/docs/install.md) — the setup wizard, optional semantic search, updating, from-source, uninstall
 - [Search and retrieval](https://github.com/ellamental/thread_archive/blob/main/docs/retrieval.md) — the two tools, filters, and the code index
 - [CLI](https://github.com/ellamental/thread_archive/blob/main/docs/cli.md) — every verb, grouped by what it acts on
 - [MCP](https://github.com/ellamental/thread_archive/blob/main/docs/mcp.md) — server modes and client wiring
 - [Web viewer](https://github.com/ellamental/thread_archive/blob/main/docs/web-viewer.md) — the dev-only local UI, run from a clone
-- [Dev panels](https://github.com/ellamental/thread_archive/blob/main/docs/devweb.md) — retrieval / telemetry / lab, their own server
 - [How it works](https://github.com/ellamental/thread_archive/blob/main/docs/architecture.md) — the event model, durability, platform assumptions, repo layout
 - [Stability](https://github.com/ellamental/thread_archive/blob/main/docs/stability.md) — the four public interfaces and what may change
 - [When an import drifts](https://github.com/ellamental/thread_archive/blob/main/docs/import-drift.md) — the support tier and the repair loop
@@ -115,5 +121,5 @@ dependencies change).
 ## Origin
 
 thread-archive is the standalone member of a larger personal project ("thread"), built to
-stand on its own — self-contained, no hosted backend or external services. It's
-young, though: expect the occasional rough edge.
+stand on its own — self-contained, no hosted backend or external services. It is
+alpha software, and the version number says so.

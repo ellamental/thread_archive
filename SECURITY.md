@@ -4,9 +4,8 @@
 
 Report vulnerabilities privately through
 [GitHub security advisories](https://github.com/ellamental/thread_archive/security/advisories/new)
-— please don't open a public issue for anything exploitable. Reports get a
-response as fast as a one-maintainer project allows; fixes ship as a normal
-release (see the update model below for how fast a fix reaches installs).
+— please don't open a public issue for anything exploitable. Fixes ship as a
+normal release; the update model below is how fast one reaches an install.
 
 ## Trust model
 

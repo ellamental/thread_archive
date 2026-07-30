@@ -23,8 +23,9 @@ on a release:
   least in public CI. Windows is not supported, and no other platform exists
   here.
 - **More than one user.** No accounts, no authentication, no per-user scoping.
-  The web viewer binds to `127.0.0.1` and assumes whoever reaches it owns
-  everything in the archive.
+  Everything that serves the archive binds loopback and assumes whoever reaches
+  it owns all of it — the shared MCP server, and the web viewer where a clone
+  runs one.
 - **Live capture of web chats.** claude.ai, ChatGPT, and xAI arrive from account
   exports you download by hand — drop the ZIP into `<home>/dumps/`, or run
   `thread-archive source import-account` (from a clone, the viewer's `/upload`

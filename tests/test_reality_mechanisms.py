@@ -311,8 +311,8 @@ def test_summaries_are_never_searchable(tmp_path) -> None:
             "SELECT count(*) FROM events_fts WHERE content_type = 'summary'"
         )).scalar() == 0
     # A dry default scope guarantees the auto-widen fires here; the summary-only
-    # vocabulary must not surface through it, through the named scope that used to
-    # reach it, or through 'all'.
+    # vocabulary must not surface through it, through the scope that names it, or
+    # through 'all'.
     for kwargs in ({}, {"content_type": "summary"}, {"content_type": "all"}):
         assert str(tid) not in thread_search(query, **kwargs), (
             f"a stored summary surfaced for {kwargs or 'the default scope'}")

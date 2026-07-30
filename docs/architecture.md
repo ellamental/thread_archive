@@ -40,8 +40,11 @@ is for.
 
 ```text
 src/thread_archive/
+  _tools.py         # `thread_search` / `thread_read` — the one implementation the MCP
+                    #   server and the CLI verbs both serve
   _api.py           # internal coordination layer the CLI / MCP / web call into
   cli.py            # the `thread-archive` command — every verb, incl. `setup`
+  _docs/            # the manual, as package data: docs/*.md, force-included at build
   _setup/           # what the archive puts on a machine and takes back off it: the wizard
                     #   behind `thread-archive setup` (first-run setup + status), and the
                     #   `thread-archive uninstall` flow
@@ -51,6 +54,8 @@ src/thread_archive/
   _ops/             # backup kit: backup/mirror + restore drill, verify tiers, nightly,
                     #   health records, the action queue + its silences (notices.py)
   _importers/       # incremental import orchestration
+  _repair/          # the drift repair loop: override-patch scaffolding behind
+                    #   `thread-archive source fix`, its protocol and quirk notes
   _retrieval/       # FTS5 + vector search, read reconstruction, the code axis (code.py)
   _knowledge/       # storage seam for the truth format's extension region — an
                     #   external knowledge layer's records, stored and backed up
@@ -67,7 +72,7 @@ src/thread_archive/
 frontend/           # the viewer's React+Vite source (dev-only; builds into _web/static/)
 devweb/             # the dev panels (retrieval / telemetry / lab): their own server,
                       #   their own app, their own port — `python -m devweb`. Ships in
-                      #   nothing; see docs/devweb.md
+                      #   nothing; see docs/internal/devweb.md
 host/               # operator layer: Makefile over `thread-archive service`, family-manifest writer
 scripts/            # repo tooling (coverage gate, frontend-build check, license notices)
 search_lab/         # the search lab (never shipped): the scoring core, quality + calibration
