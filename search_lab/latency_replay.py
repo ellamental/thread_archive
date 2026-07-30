@@ -70,11 +70,7 @@ import speed  # noqa: E402
 
 from thread_archive._config import resolve_paths  # noqa: E402
 from thread_archive._retrieval import usage  # noqa: E402
-
-#: Queries a bench or a smoke test left in the ledger rather than an agent asking
-#: something. Replaying them measures nothing and skews the distribution toward the
-#: trivial — an empty query and a one-character probe both return in ~1 ms.
-PROBE_QUERIES = ("x", "test", "warmup", "hello")
+from thread_archive._retrieval.usage import PROBE_QUERIES  # noqa: E402
 
 
 def _pct(xs: list[float], q: float) -> float:

@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- **A starting process loads the corpus graph instead of rebuilding it: 8.9s → 0.12s.**
+  `graph_cache` has persisted the graph for exactly this, but the warm pass asked for
+  it through `get(block=True)`, which routes to `build()` — the authoritative path,
+  which requires the current validity token. Under continuous ingest that token moves
+  every few minutes, so a restart never matched and every warm pass paid a full
+  corpus-wide Leiden partition; the usage ledger's `graph_ms` (p50 8.88s, p90 19.8s)
+  was the documented *build* cost, not a load. `embed_graph.warm()` is now the
+  starting-server door and serves the persisted partition stale, exactly as the search
+  path already does; `get(block=True)` keeps its strict semantics for the eval, which
+  must be a function of its snapshot and not of what a previous process left on disk.
+  Measured on this archive: 177 process starts over six days spent 2,615s here.
+- **The machine rebuilds the graph at most once per `rebuild_floor_s`, not once per
+  process.** `_REFRESH_COOLDOWN_S` bounded how often one process re-probes, but nothing
+  bounded the fleet: restarts arrive in bursts, every fresh process finds a token ingest
+  has moved, and each independently rebuilds the same partition — the ledger caught two
+  warms 1.9s apart that took 303s each, contending for the box over identical work. A
+  rebuild is now skipped when any process persisted a graph within the floor (15 min by
+  default, `THREAD_ARCHIVE_GRAPH_REBUILD_FLOOR_S`), which is two orders of magnitude
+  inside the week of staleness `graph_cache.max_age_s` already accepts for a community
+  prior. Never gated when there is nothing on disk: the floor suppresses duplicate work,
+  never the only copy of it.
+- **The embed drain's pending-doc select is bounded by the batch, not by the corpus.**
+  It read as one `GROUP BY` over all of `event_vectors` joined against the whole FTS
+  shadow, with temp b-trees for both the grouping and the ordering — so SQLite
+  materialized 272k aggregate rows and sorted 242k candidates to return 64, on every
+  poll, growing with the corpus rather than with the backlog. `select_ms` was 70% of
+  embed-pass time (446s of 635s, p50 1.7s, worst 43s) against 30% for the encode that
+  is the actual work. The count now comes from a correlated primary-key probe, and
+  `ORDER BY` names `content_type` beside `event_id` so the sort matches the group key
+  column for column — which is what lets one walk of the new `idx_events_fts_pending`
+  answer both and stop at the `LIMIT`. A backlog pass drops from 302ms to 0.1ms; a
+  caught-up pass, which must still prove nothing is pending, from 361ms to 318ms. Rows
+  returned are byte-identical, verified against the old query over the live corpus.
+- **One definition of "probe query".** `latency_replay` and `retrieval_report` each
+  carried their own list of the throwaway text a bench leaves in the usage ledger, and
+  they had drifted — so two reports over one file disagreed about which rows counted as
+  traffic. `usage.PROBE_QUERIES` is now the single list, beside the ledger it describes.
+
 - **The viewer has a developer telemetry page.** Web endpoint latency and errors,
   ingest throughput and stage cost, retained ingest-fault signatures, and the
   operational ledger inventory are readable together at `/telemetry`; the route

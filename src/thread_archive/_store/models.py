@@ -228,6 +228,19 @@ class EventFts(Base):
         Index("idx_events_fts_event_id", "event_id"),
         Index("idx_events_fts_thread_id", "thread_id"),
         Index("idx_events_fts_tool_name", "tool_name"),
+        # The embed drain's pending-doc select groups this table by
+        # ``(event_id, content_type)`` and walks it newest-first, taking a batch off the
+        # top (``_retrieval.vectors.index_events_local``). Both halves of that matter:
+        # the pair is the group key, so an index over it means SQLite groups by walking
+        # rather than by building a temp b-tree over every indexed line in the corpus —
+        # and DESC on *both* columns is what lets the same walk satisfy the ORDER BY,
+        # which is what lets the LIMIT stop early. Ordered rather than plain because a
+        # sorted grouping the query then re-sorts is a full scan either way: the drain
+        # runs every poll and needs one batch, so the difference is work bounded by the
+        # batch against work bounded by the corpus. ``_retrieval.vectors.ensure_index``
+        # also creates this on demand — the drain is hot enough that waiting for a
+        # reindex to retrofit it is the wrong trade.
+        Index("idx_events_fts_pending", text("event_id DESC"), text("content_type DESC")),
         # The thread-meta docs (titles/summaries) are a ~1% slice of this table that
         # the maintenance sync reads in full every pass. Unindexed, finding them is a
         # scan of the whole shadow — every indexed line of every conversation — to

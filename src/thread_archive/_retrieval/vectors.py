@@ -426,12 +426,45 @@ def is_available() -> bool:
         return False
 
 
+#: The embed drain's pending-doc select rides this (see ``index_events_local``, and
+#: the reasoning on the matching declaration in :mod:`.._store.models`). Retrofitted
+#: here rather than left to a reindex: ``create_all`` does not add indexes to a table
+#: that already exists, and the drain runs every poll — it should not spend the
+#: interim scanning the whole shadow for one batch.
+_PENDING_INDEX = "idx_events_fts_pending"
+_CREATE_PENDING_INDEX = (
+    f"CREATE INDEX IF NOT EXISTS {_PENDING_INDEX} "
+    "ON events_fts (event_id DESC, content_type DESC)"
+)
+
+
+def _ensure_pending_index(s) -> None:
+    """Create the drain's covering index when it is missing. Fail-soft, and probed
+    with a read first: this runs on every :func:`ensure_index`, and issuing the DDL
+    unconditionally would open a write transaction against the store on paths that
+    only ever read it."""
+    try:
+        present = s.execute(
+            sa_text("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = :n"),
+            {"n": _PENDING_INDEX},
+        ).scalar()
+        if present:
+            return
+        s.execute(sa_text(_CREATE_PENDING_INDEX))
+        s.commit()
+        logger.info("vectors: built %s for the embed drain", _PENDING_INDEX)
+    except Exception:  # noqa: BLE001 — an index is an optimization; the drain runs without it
+        logger.debug("vectors: could not create %s", _PENDING_INDEX, exc_info=True)
+
+
 def ensure_index() -> bool:
     """Create the ``event_vectors`` table if absent; migrate a pre-chunking table
-    (no ``chunk`` column) in place, existing vectors becoming chunk 0. Idempotent."""
+    (no ``chunk`` column) in place, existing vectors becoming chunk 0; retrofit the
+    embed drain's ``events_fts`` index. Idempotent."""
     if not is_available():
         return False
     with get_session() as s:
+        _ensure_pending_index(s)
         exists = s.execute(
             sa_text("SELECT 1 FROM sqlite_master WHERE name = :n"), {"n": "event_vectors"}
         ).scalar()
@@ -601,21 +634,29 @@ def index_events_local(
     # The SQL mirrors _chunk()'s count — min(MAX_CHUNKS, ceil(len/CHUNK_CHARS)) —
     # over the same concatenated content; if the two formulas diverge the cohost
     # loops on the same docs forever, so change them together.
+    # The count comes from a correlated subquery rather than a joined aggregate: the
+    # aggregate form is one GROUP BY over all of ``event_vectors``, which SQLite
+    # materializes in full before the first candidate is looked at, while this form is
+    # a primary-key probe per candidate — and a candidate list the LIMIT can cut short.
     missing = ("" if rebuild else
-               " HAVING coalesce(v.nv, 0) < min(:mx, "
-               "(length(group_concat(f.content, ' ')) + :cc - 1) / :cc)")
+               " HAVING (SELECT count(*) FROM event_vectors v"
+               "         WHERE v.event_id = f.event_id AND v.content_type = f.content_type)"
+               "        < min(:mx, (length(group_concat(f.content, ' ')) + :cc - 1) / :cc)")
     order = "DESC" if newest_first else "ASC"
     limit = " LIMIT :cap" if max_events else ""
+    # ``content_type`` rides the ORDER BY beside ``event_id`` so the sort matches the
+    # group key column for column, which is the condition for SQLite to answer both
+    # from one index walk (``idx_events_fts_pending``) and stop at the LIMIT. Ordering
+    # on ``event_id`` alone reads identically and costs a sort of every pending doc in
+    # the corpus before returning one batch. It also makes the drain order total: docs
+    # sharing an event id have a defined position rather than the store's.
     sql = sa_text(
         "SELECT f.event_id AS eid, f.content_type AS ct, group_concat(f.content, ' ') AS content "
         "FROM events_fts f "
-        "LEFT JOIN (SELECT event_id, content_type, count(*) AS nv FROM event_vectors "
-        "           GROUP BY event_id, content_type) v "
-        "  ON v.event_id = f.event_id AND v.content_type = f.content_type "
         "WHERE f.content_type IN ('user', 'text', 'title') "
         "AND f.content IS NOT NULL AND f.content != ''"
         f" GROUP BY f.event_id, f.content_type{missing}"
-        f" ORDER BY f.event_id {order}" + limit
+        f" ORDER BY f.event_id {order}, f.content_type {order}" + limit
     )
     params: dict = {} if rebuild else {"mx": MAX_CHUNKS, "cc": CHUNK_CHARS}
     if max_events:

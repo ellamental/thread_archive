@@ -164,12 +164,15 @@ def warm_models(embedder=None) -> None:
     Three steps, ordered by what a request actually waits on: load the model
     explicitly (works even with an empty store), run one throwaway conceptual search to
     fill the process-global caches the first real query reuses (the vector matrix), and
-    only then build the corpus graph. The graph is
+    only then bring up the corpus graph. The graph is
     last because it is the one stage no search blocks on — the coherence re-rank serves
-    whatever is cached and returns the ranking unchanged when nothing is — while it is
-    also the longest (tens of seconds on a real corpus). Building it before the priming
-    search would leave the process paying full cold-search latency for that whole window,
-    which is precisely the cost this function exists to move off the request path.
+    whatever is cached and returns the ranking unchanged when nothing is — and because
+    it is the one stage that can go from cold to serving without computing anything:
+    :func:`.embed_graph.warm` loads a persisted partition rather than rebuilding one,
+    and only pays a build when no process has ever written one. Ordering it ahead of
+    the priming search would put whatever it does spend in front of the step a real
+    query does block on, which is precisely the cost this function exists to move off
+    the request path.
     ``embedder`` is the model to prime (default: the process one).
     Fail-soft throughout: a missing ``[embeddings]`` extra, a load failure, or an
     unavailable store just leaves search to cold-load lazily, exactly as before.
@@ -219,7 +222,7 @@ def warm_models(embedder=None) -> None:
     if _embed_graph.coherence_gamma() > 0.0:
         _t = perf_counter()
         try:
-            _embed_graph.get(block=True)
+            _embed_graph.warm()
         except Exception:  # noqa: BLE001 — warming is best-effort
             failed.append("graph")
             logger.debug("warm_models: corpus graph build skipped", exc_info=True)

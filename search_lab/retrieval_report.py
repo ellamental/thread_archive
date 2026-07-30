@@ -59,14 +59,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from thread_archive._retrieval.usage import UNATTRIBUTED
+from thread_archive._retrieval.usage import PROBE_QUERIES, UNATTRIBUTED
 
 logger = logging.getLogger(__name__)
-
-#: Queries a bench or a smoke test left behind rather than an agent asking
-#: something. Excluded everywhere: they are ~1 ms and there is no question they
-#: are the honest answer to.
-PROBE_QUERIES = ("x", "test", "warmup", "hello", "bogus")
 
 #: The flags a search sets when it paid a process-startup cost inside itself:
 #: ``cold`` for a model loaded on the request thread, ``matrix_built`` for a vector

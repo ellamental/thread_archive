@@ -56,6 +56,19 @@ LEDGER_FILE = "retrieval-usage.jsonl"
 #: importing the tool surface (:mod:`.._tools`, ~400 ms of engine).
 UNATTRIBUTED = "mcp"
 
+#: Query text a bench or a smoke test left in the ledger rather than an agent asking
+#: something. Every reader that computes a distribution over this file drops them:
+#: they return in ~1 ms and there is no question they are the honest answer to, so
+#: leaving them in pulls every percentile toward the trivial.
+#:
+#: Defined here for the same reason :data:`UNATTRIBUTED` is — the ledger owns the
+#: vocabulary of its own fields, and the alternative is what it replaced: a copy per
+#: reader, each quietly a different list, so two reports over one file disagreed about
+#: which rows were traffic. Exact text, never a shape heuristic: a short query is not
+#: automatically a probe (agents really do search ``p50``, ``EDS``, ``mps``), and a
+#: filter that guessed would silently drop the real ones.
+PROBE_QUERIES = ("x", "test", "warmup", "hello", "bogus")
+
 _MAX_RESULT_IDS = 20  # per-search result ids retained — enough to judge rank quality
 
 
