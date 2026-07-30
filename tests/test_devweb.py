@@ -115,6 +115,9 @@ def test_telemetry_endpoint_assembles_web_ingest_faults_and_ledger_cost(archive_
         },
         max_bytes=1 << 20,
     )
+    # The tally is process-global and only a signature's first sighting writes;
+    # a sibling test in this worker may already have burned this one.
+    ingest_errors.reset_tally()
     ingest_errors.record(["codex: could not parse /tmp/session-123.jsonl"], home=archive_home)
 
     status, ctype, payload = _get("/api/telemetry", hours=24)
