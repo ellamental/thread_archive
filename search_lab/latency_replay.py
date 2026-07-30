@@ -19,11 +19,24 @@ nobody ran.
 measures warm steady-state with the pool cache off; production is whatever the
 serving process happened to be. On this archive they diverge by an order of
 magnitude — the run prints the live ratio — while every bench reads "fast", which
-is the failure mode the comparison exists to make un-ignorable. Restarts are what
-drive it: the ledger's own cold/settled split is printed beside the ratio, and the
-settled half tracks the bench. The ledger half comes straight from ``retrieval-usage.jsonl`` over
-the same window, so a run says both "what the pipeline costs" and "what agents got"
-— and when they disagree the gap is the finding, not a rounding error.
+is the failure mode the comparison exists to make un-ignorable. The ledger half
+comes straight from ``retrieval-usage.jsonl`` over the same window, so a run says
+both "what the pipeline costs" and "what agents got" — and when they disagree the
+gap is the finding, not a rounding error.
+
+Two things make that comparison honest, and both are easy to get wrong:
+
+- **Weight both sides the same.** The bench replays *distinct* calls, one apiece;
+  the ledger is *rows*. One browse walk repeating a query a hundred times can own
+  the served median while the bench counts it once, and the ratio then reports a
+  difference in traffic mix as a difference in speed. The ``per query`` line is the
+  like-for-like one — each query collapsed to its own median first.
+- **Split the served population before reading it.** A one-shot ``thread_archive
+  search`` process pays a model load by construction and exits; the shared server
+  does not; an evicted server pays a fault-in that no warmth flag can see. Those
+  have different fixes and a median over all three describes none of them, so the
+  run prints them apart — by surface, by whether the request paid a load, and by
+  whether the process was still resident.
 
     .venv/bin/python search_lab/latency_replay.py                   # replay the ledger
     .venv/bin/python search_lab/latency_replay.py --limit 40         # 40 most recent calls
@@ -50,8 +63,14 @@ The cold-*start* tail is deliberately not measured here. A first search after a
 restart runs an order of magnitude slower (a cold embedder alone is measured at
 ~5 s against ~20 ms warm) and restarts are frequent, so it is a real cost — but it
 is a different problem with different knobs, and averaging it in swamps everything
-a ranking or scan change moves. ``uptime_s`` in the usage ledger is where that
-regime is measured instead, and the production summary below reports it.
+a ranking or scan change moves. The usage ledger is where that regime is measured
+instead, and the production summary below reports it as its own band.
+
+Read that band off the ledger's ``cold`` / ``embed_cold`` / ``matrix_built`` flags,
+which are set by the stages that did the work — never off process age. Age is a
+proxy that mixes two unrelated populations in both directions: every cache
+retrieval leans on is lazy, so an hours-old server serving its first query is fully
+cold, while a server restarted a minute ago that has already warmed is not.
 """
 
 from __future__ import annotations
@@ -88,6 +107,51 @@ def _delta(now: float, before: float | None) -> str:
     return "        =" if abs(pct) < 2.0 else f"  {pct:+6.1f}%"
 
 
+#: Below this share of its own peak, a process has been evicted rather than merely
+#: having freed something.
+#:
+#: Deliberately far below half. Peak is inflated by transients a healthy server does
+#: not hold — a graph build, a torch allocator high-water mark handed back
+#: afterwards — so a perfectly resident process sits around 45-60% of its own peak
+#: and a threshold near half would flag it. What this has to catch is the
+#: catastrophic case, and that one is not close: measured on this archive, an
+#: evicted server held 1.3% of peak and paid 1.7 s faulting the vector matrix back.
+#: A coarse signal for a coarse condition — read the band as "near-total eviction",
+#: never as a residency percentage.
+_RESIDENT_FRACTION = 0.25
+
+
+def _paid_a_load(rec: dict) -> bool:
+    """Whether this search built inside the request what a warm one reuses.
+
+    The ledger's own flags, not a proxy for them. Process age was the proxy this
+    replaced, and it conflates two unrelated populations: every cache retrieval
+    leans on is lazy, so an hours-old server serving its first query is cold, while
+    a server restarted a minute ago that has already warmed is not. The flags are
+    set by the stages that actually did the work."""
+    return bool(rec.get("cold") or rec.get("embed_cold") or rec.get("matrix_built"))
+
+
+def _evicted(rec: dict) -> bool | None:
+    """Whether the serving process had been paged out when this search arrived.
+
+    ``None`` when the row cannot say — the pair of readings is what answers it, and
+    peak alone (a high-water mark, which never falls) cannot. This is the regime no
+    other field sees: the models are constructed, so :func:`_paid_a_load` is false
+    and ``uptime_s`` is large, while the pages backing them are in swap and the
+    query pays to fault them back."""
+    peak, now = rec.get("rss_mb"), rec.get("rss_now_mb")
+    if not peak or now is None:
+        return None
+    return now < peak * _RESIDENT_FRACTION
+
+
+def _band(rows: list[dict], keep) -> dict | None:
+    """``{n, p50}`` over the rows ``keep`` selects, or None when it selects none."""
+    d = [r["duration_ms"] for r in rows if keep(r)]
+    return {"n": len(d), "p50": _pct(d, 0.5)} if d else None
+
+
 def observed_production(home: Path, *, days: int) -> dict | None:
     """What agents actually got, from the ledger, over the last ``days``.
 
@@ -96,7 +160,19 @@ def observed_production(home: Path, *, days: int) -> dict | None:
     machine was doing. Reported beside the bench distribution rather than instead
     of it — the bench says what the pipeline costs under control, this says what
     that turned into, and a wide gap is a fact about the conditions rather than
-    about the code."""
+    about the code.
+
+    Split three ways, because the aggregate over all served searches is a mixture
+    of populations with different fixes and describes none of them: by **surface**
+    (a one-shot CLI process cannot be warm — it exits before a second query, and no
+    amount of daemon warming reaches it), by whether the search **paid a load**
+    inside the request, and by whether the serving process had been **evicted**.
+
+    ``by_query_p50`` is the comparable number. The bench replays *distinct* calls,
+    one apiece; this file is *rows*, so a single browse walk repeating one query a
+    hundred times can carry the served median on its own while the bench weights it
+    at one. Collapsing each query to its own median before taking the percentile
+    puts both sides on the bench's weighting."""
     from datetime import datetime, timedelta, timezone
 
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
@@ -120,14 +196,30 @@ def observed_production(home: Path, *, days: int) -> dict | None:
     if not rows:
         return None
     d = [r["duration_ms"] for r in rows]
-    aged = [r for r in rows if r.get("uptime_s") is not None]
-    young = [r["duration_ms"] for r in aged if r["uptime_s"] < 120]
-    settled = [r["duration_ms"] for r in aged if r["uptime_s"] >= 120]
+
+    per_query: dict[str, list[float]] = {}
+    for r in rows:
+        per_query.setdefault(r.get("query", ""), []).append(r["duration_ms"])
+    query_medians = [_pct(xs, 0.5) for xs in per_query.values()]
+
+    by_surface = {}
+    for surface in sorted({r.get("surface") or "unattributed" for r in rows}):
+        band = _band(rows, lambda r, s=surface: (r.get("surface") or "unattributed") == s)
+        if band:
+            band["n_paid_load"] = sum(
+                1 for r in rows
+                if (r.get("surface") or "unattributed") == surface and _paid_a_load(r)
+            )
+            by_surface[surface] = band
+
     return {
         "n": len(rows), "p50": _pct(d, 0.5), "p90": _pct(d, 0.9), "p99": _pct(d, 0.99),
-        "n_aged": len(aged),
-        "young_p50": _pct(young, 0.5) if young else None, "n_young": len(young),
-        "settled_p50": _pct(settled, 0.5) if settled else None, "n_settled": len(settled),
+        "n_queries": len(per_query), "by_query_p50": _pct(query_medians, 0.5),
+        "by_surface": by_surface,
+        "warm": _band(rows, lambda r: not _paid_a_load(r)),
+        "paid_load": _band(rows, _paid_a_load),
+        "resident": _band(rows, lambda r: _evicted(r) is False),
+        "evicted": _band(rows, lambda r: _evicted(r) is True),
     }
 
 
@@ -191,21 +283,43 @@ def main(argv: list[str] | None = None) -> int:
     prod = observed_production(home, days=args.days)
     if prod:
         print(f"\n  what agents actually got, last {args.days}d "
-              f"(n={prod['n']}, from the usage ledger):")
+              f"(n={prod['n']} rows over {prod['n_queries']} distinct queries):")
         print(f"  {'served':16s} {prod['p50']:8.1f} {prod['p90']:8.1f} {prod['p99']:8.1f}")
-        ratio = prod["p50"] / max(stats.total["p50"], 0.1)
-        print(f"  served p50 is {ratio:.1f}x the bench p50.")
-        if prod["n_aged"]:
-            y = f"{prod['young_p50']:.0f}ms (n={prod['n_young']})" if prod["young_p50"] else "—"
-            s_ = f"{prod['settled_p50']:.0f}ms (n={prod['n_settled']})" if prod["settled_p50"] else "—"
-            print(f"    process <2min old: {y}   ·   settled: {s_}")
+        # Against the bench's own weighting, not the row-weighted median: the two
+        # populations differ, and comparing across that difference is what makes a
+        # busy browse walk read as a pipeline regression.
+        ratio = prod["by_query_p50"] / max(stats.total["p50"], 0.1)
+        print(f"  {'per query':16s} {prod['by_query_p50']:8.1f}"
+              f"   — {ratio:.1f}x the bench p50, like for like")
+
+        def band(label: str, b: dict | None, note: str = "") -> None:
+            if b:
+                print(f"    {label:22s} n={b['n']:4d}  p50={b['p50']:8.1f}ms  {note}")
+
+        print("\n    by surface:")
+        for surface, b in prod["by_surface"].items():
+            paid = b["n_paid_load"]
+            note = f"({paid} paid a load in-request)" if paid else ""
+            if surface == "cli":
+                note += "  one-shot: no daemon warming reaches these"
+            band(surface, b, note)
+
+        print("\n    by what the request actually paid for:")
+        band("warm", prod["warm"])
+        band("paid a load", prod["paid_load"], "model load or matrix build inside the request")
+
+        if prod["resident"] or prod["evicted"]:
+            print("\n    by residency (current RSS against this process's own peak):")
+            band("resident", prod["resident"])
+            band("evicted", prod["evicted"], "pages faulted back from swap")
         else:
-            print("    (no uptime_s on these rows — cold and warm are not separable "
-                  "in this window)")
+            print("\n    (no rss_now_mb on these rows — eviction is not separable here)")
+
         if ratio > 2.0:
-            print("    A gap this size is about the conditions, not the pipeline: the "
-                  "bench is warm\n    with the pool cache off, production is whatever "
-                  "the serving process happened to be.")
+            print("\n    A like-for-like gap this size is about the conditions rather "
+                  "than the pipeline:\n    the bench is warm with the pool cache off, "
+                  "production is whatever the serving\n    process happened to be. The "
+                  "bands above say which condition.")
 
     speed.record_run(home, snapshot_id=None, stats=stats, query_set=speed.OBSERVED_SET)
     if args.baseline:

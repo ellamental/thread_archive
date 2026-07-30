@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- **The shared server holds its own pages down between bursts.** Warming made the
+  models resident; nothing kept them that way. A warmed search server is a large,
+  quiet process — exactly what an OS evicts first under memory pressure — and the
+  eviction was invisible to every warmth signal the ledger recorded: the model
+  objects stay constructed, so `cold` and `embed_cold` read false, and `uptime_s`
+  only grows. Measured here, a server hours old with every flag reading warm
+  served a query in 2.2 s and the same query again in 0.34 s, the whole difference
+  being the vector matrix faulting back in from swap. The MCP server and the
+  cohosted viewer now touch their own retrieval path once they have been idle for
+  `THREAD_ARCHIVE_KEEPALIVE_S` seconds (90 by default; `0` disables, for a machine
+  that would rather have the gigabyte). A server with work in flight, or one that
+  has served anything since the last tick, does nothing at all — the touch is for
+  idle processes, and competing with the request it exists to protect would be
+  worse than the eviction. First search after seven idle minutes went from 2.2 s
+  to 0.40 s, with `knn_ms` from 1736 ms to 15 ms.
+
+- **The contention sample records current resident memory beside the peak.** Peak
+  is a high-water mark and never falls, so it could say whether a process had ever
+  been big enough to hurt the machine but never whether it still held what it
+  loaded — which is the one question that separates a warm server from an evicted
+  one. Both readings now ride on every recorded search, taken from the kernel
+  directly on macOS and Linux rather than through a new dependency.
+
+- **The latency replay splits the served population before reporting it.** Its
+  cold/warm line was drawn on process age, which mixes two unrelated populations
+  in both directions: every cache retrieval leans on is lazy, so an hours-old
+  server serving its first query is fully cold, while a server restarted a minute
+  ago that has already warmed is not. The split now reads the ledger's own
+  `cold` / `embed_cold` / `matrix_built` flags, set by the stages that did the
+  work, and the run additionally reports served latency by surface (a one-shot
+  `thread_archive search` process pays a model load by construction and no daemon
+  warming reaches it) and by residency. The headline ratio against the bench is
+  now computed per distinct query: the bench replays distinct calls one apiece
+  while the ledger is rows, so a single browse walk repeating one query could
+  carry the served median on its own and report a difference in traffic mix as a
+  difference in speed.
+
 - **Runtime telemetry records only on a dev install.** The ledgers of *how the
   archive ran* — served web requests, retrieval calls, ingest passes — are
   instruments for whoever maintains thread-archive. Nothing in the

@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import os
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from time import perf_counter
@@ -376,6 +378,131 @@ def start_warm_models() -> threading.Thread:
     throughout, since :func:`warm_models` never raises."""
     set_defer_construction(True)
     thread = threading.Thread(target=warm_models, name="archive-warm-models", daemon=True)
+    thread.start()
+    return thread
+
+
+#: How long the shared server may sit idle before it touches its own hot pages, in
+#: seconds (``THREAD_ARCHIVE_KEEPALIVE_S``; ``0`` disables).
+#:
+#: Warming makes the models resident; it does not keep them that way. An idle
+#: search server is a large, quiet process, which is exactly what the OS evicts
+#: first under memory pressure — and eviction is invisible to every other warmth
+#: signal, because the objects are still constructed and only their pages are gone.
+#: Measured on this archive, a server hours old with ``cold`` false served the same
+#: query in 2.2 s and then 0.34 s, the whole difference being the vector matrix
+#: faulting back in from swap.
+#:
+#: Ninety seconds because it has to be shorter than the idle gaps in real traffic —
+#: agents search in bursts and then work for minutes — while leaving an actively
+#: used server to do nothing at all (a tick is skipped outright when retrieval has
+#: run since the last one).
+KEEPALIVE_ENV = "THREAD_ARCHIVE_KEEPALIVE_S"
+DEFAULT_KEEPALIVE_S = 90.0
+
+#: How often the loop wakes to consider a touch. Bounded below the interval so a
+#: server that just went idle is touched near its deadline rather than a whole
+#: interval late.
+_KEEPALIVE_TICK_S = 15.0
+
+#: A touch slower than this had to fault its pages back in, which is the event the
+#: keepalive exists to prevent and the only one worth a log line. A resident touch
+#: costs a few hundred milliseconds on this corpus.
+_KEEPALIVE_SLOW_MS = 750.0
+
+
+def keepalive_interval_s() -> float:
+    """Idle seconds before a residency touch, from the environment. ``0`` disables.
+
+    Read per call rather than captured at import, so the operator can retune a
+    running install's aggressiveness by restarting the service alone."""
+    raw = os.environ.get(KEEPALIVE_ENV, "").strip()
+    if not raw:
+        return DEFAULT_KEEPALIVE_S
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logger.warning("ignoring unparseable %s=%r", KEEPALIVE_ENV, raw)
+        return DEFAULT_KEEPALIVE_S
+
+
+def _keepalive_touch() -> None:
+    """One residency touch: a real search, discarded.
+
+    A real search rather than a synthetic memory read because the point is to keep
+    resident exactly what a query needs — the embedder, the vector matrix, the
+    FTS pages, the hydration path — and the only description of that set which
+    cannot drift out of date is a query itself. Scoped like the priming search in
+    :func:`warm_models`, so it touches the matrix real queries reuse rather than
+    priming a differently-keyed one.
+
+    Nothing is recorded: :func:`thread_archive._api.search` writes no usage row (the
+    tool surface does), which is what keeps synthetic traffic out of the population
+    every retrieval report is computed over.
+
+    Entered into the in-flight span for the same two reasons :func:`warm_models` is.
+    It competes for the box exactly as a request does, and a caller that competes
+    without entering leaves a real search running beside it reporting an idle
+    machine. It also *is* activity: the span is what marks retrieval as having run,
+    and a touch outside it would leave the process reading idle forever after — so
+    every later tick would find the interval elapsed and touch again, turning a
+    ninety-second keepalive into one per tick.
+    """
+    from .. import _api as api
+
+    started = perf_counter()
+    with _contention.in_flight():
+        api.search(_WARM_QUERY, limit=1, content_types=DEFAULT_CONTENT_TYPES)
+    took_ms = (perf_counter() - started) * 1000.0
+    if took_ms >= _KEEPALIVE_SLOW_MS:
+        # Residency was already lost — this touch paid the fault-in a real query
+        # would otherwise have paid. Worth saying out loud: it means the interval
+        # is too long for this machine's memory pressure, or something evicted the
+        # process wholesale between ticks.
+        logger.info("keepalive: touch took %.0f ms — pages had been evicted", took_ms)
+    else:
+        logger.debug("keepalive: touch took %.0f ms", took_ms)
+
+
+def _should_touch(interval_s: float) -> bool:
+    """Whether a residency touch is due.
+
+    Two ways to be unnecessary, and skipping both is what keeps this free on a
+    server that is actually being used: work in flight means the pages are being
+    held down by the request itself, and a touch would only compete with the very
+    thing it exists to protect; recent work means they are still hot."""
+    if _contention.inflight_now() > 0:
+        return False
+    return _contention.idle_s() >= interval_s
+
+
+def _keepalive_loop(interval_s: float) -> None:
+    """Touch whenever retrieval has been idle for ``interval_s``. Never raises."""
+    while True:
+        time.sleep(_KEEPALIVE_TICK_S)
+        try:
+            if _should_touch(interval_s):
+                _keepalive_touch()
+        except Exception:  # noqa: BLE001 — residency is best-effort; never kill the thread
+            logger.debug("keepalive: touch failed", exc_info=True)
+
+
+def start_keepalive() -> Optional[threading.Thread]:
+    """Keep this process's retrieval pages resident while it idles.
+
+    For the shared server only, and the counterpart to :func:`start_warm_models`:
+    warming pays the load once, this keeps the OS from taking it back. A one-shot
+    process has nothing to keep — it exits before the first interval — and a
+    machine that would rather have the gigabyte can set
+    :data:`KEEPALIVE_ENV` to ``0``.
+
+    Returns the thread, or ``None`` when disabled."""
+    interval_s = keepalive_interval_s()
+    if interval_s <= 0:
+        logger.debug("keepalive: disabled by %s", KEEPALIVE_ENV)
+        return None
+    thread = threading.Thread(target=_keepalive_loop, args=(interval_s,),
+                              name="archive-keepalive", daemon=True)
     thread.start()
     return thread
 

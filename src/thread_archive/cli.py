@@ -598,7 +598,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
     # exists, so on an install the flag — and the attribute — is simply absent.
     if getattr(args, "web", False):
         from . import _tools
-        from ._retrieval import start_warm_models
+        from ._retrieval import start_keepalive, start_warm_models
         from ._web import serve_in_thread
 
         httpd = serve_in_thread(host=args.web_host, port=args.web_port)
@@ -619,6 +619,11 @@ def cmd_watch(args: argparse.Namespace) -> int:
         # reader happened to be looking at.
         _tools.set_default_surface("web")
         start_warm_models()
+        # And hold the pages down afterwards. The viewer idles far longer between
+        # searches than the MCP server does, so it is the likelier of the two to be
+        # evicted and pay the fault-in on exactly the query that forms someone's
+        # impression of the product.
+        start_keepalive()
 
     available = [w.source_name for w in watcher.available()]
     logging.getLogger("thread_archive._watcher").info(

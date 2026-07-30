@@ -59,17 +59,24 @@ Three signals, each cheap enough to take on every search:
     shortest the kernel keeps and still averages over more than a fast search;
     for a slow one — which is the case worth diagnosing — it covers most of it.
 
-``rss_mb``
-    Peak resident memory of the serving process. The model arms are hundreds of
-    megabytes each and the vector matrix is read whole into memory, so a process
-    serving search is the largest thing on the box, and the point where the
-    machine starts swapping is a latency finding that no timer can see.
+``rss_mb`` / ``rss_now_mb``
+    Peak resident memory of the serving process, and what it holds at this instant.
+    The model arms are hundreds of megabytes each and the vector matrix is read
+    whole into memory, so a process serving search is the largest thing on the box,
+    and the point where the machine starts swapping is a latency finding that no
+    timer can see.
 
-    A high-water mark (the kernel's, since process start), not an instantaneous
-    reading: it never falls, so a row does not say the memory is *currently*
-    held. That is the honest cheap number available on every platform this runs
-    on, and it is the one that answers the question worth asking — whether this
-    process has ever been big enough to hurt the machine it shares.
+    Both, because the gap between them is the finding. Peak is a high-water mark
+    since process start and never falls, so it answers whether this process has
+    ever been big enough to hurt the machine it shares — but for the same reason it
+    cannot say whether the memory is *currently* held. A warmed long-lived server
+    that peaked at 3 GB and is resident at 45 MB has been evicted to swap, and its
+    next query pays to fault the vector matrix back in: measured on this archive,
+    the same query costs seconds on that first search and a few hundred
+    milliseconds on the one after it, with every other warmth signal reading warm
+    throughout — ``uptime_s`` in the hours, ``cold`` and ``embed_cold`` both false,
+    because the models are constructed and only their pages are gone. The current
+    reading is the only one of these that sees it.
 
 The remaining fields are omitted unless they say something (no in-flight peers, no
 refresh, a long-quiet WAL), so a search on an idle machine records nothing and
@@ -81,10 +88,10 @@ real search, and is the heaviest thing a process ever does; a caller that sample
 without entering makes its own work invisible to everyone else's peak, and the
 ledger then reads idle on a machine that was not.
 
-``uptime_s``, ``load1`` and ``rss_mb`` are the exceptions and are always present:
-there is no reading of any of them that means *nothing to report*, and they are the
-denominators the others are read against — the process's cache state, the machine's
-own busyness, and what this process is costing it.
+``uptime_s``, ``load1``, ``rss_mb`` and ``rss_now_mb`` are the exceptions and are
+always present: there is no reading of any of them that means *nothing to report*,
+and they are the denominators the others are read against — the process's cache
+state, the machine's own busyness, and what this process is costing it.
 """
 
 from __future__ import annotations
@@ -115,6 +122,11 @@ _inflight = 0
 #: calls already running. Bounded by real concurrency (a handful), and every entry
 #: is removed in a ``finally``.
 _SPANS: list["Span"] = []
+
+#: When retrieval last finished work in this process, on the monotonic clock.
+#: Initialised to process start so a server that has served nothing reads as idle
+#: for its whole life rather than as having just worked.
+_last_activity = _STARTED
 
 
 class Span:
@@ -160,12 +172,30 @@ def in_flight() -> Iterator[Span]:
     try:
         yield span
     finally:
+        global _last_activity
         with _INFLIGHT_LOCK:
             _inflight -= 1
+            _last_activity = time.monotonic()
             try:
                 _SPANS.remove(span)
             except ValueError:  # never let bookkeeping break a search
                 pass
+
+
+def inflight_now() -> int:
+    """Retrieval calls in flight in this process at this instant.
+
+    The instantaneous reading :class:`Span` deliberately does not record, exposed
+    for the one caller the distinction suits: a background task deciding whether to
+    do optional work *now* wants to know whether it would be competing, not what
+    the peak was."""
+    with _INFLIGHT_LOCK:
+        return _inflight
+
+
+def idle_s() -> float:
+    """Seconds since retrieval last finished work in this process."""
+    return time.monotonic() - _last_activity
 
 
 def _wal_age_s() -> Optional[float]:
@@ -235,6 +265,9 @@ def sample() -> dict[str, Any]:
         rss = machine.rss_mb()
         if rss is not None:
             rec["rss_mb"] = rss
+        rss_now = machine.rss_now_mb()
+        if rss_now is not None:
+            rec["rss_now_mb"] = rss_now
         busy = _refreshing()
         if busy:
             rec["refreshing"] = busy

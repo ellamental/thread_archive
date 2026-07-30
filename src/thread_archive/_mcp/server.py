@@ -48,7 +48,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from .. import _tools
 from .._config import ENV_MCP_INGEST
-from .._retrieval import start_warm_models
+from .._retrieval import start_keepalive, start_warm_models
 
 logger = logging.getLogger(__name__)
 
@@ -457,6 +457,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     # MCP request timeout (commonly 60s), which surfaces to the model as a failed tool call.
     if plan.warm:
         start_warm_models()
+        # Warming makes the models resident; it does not keep them that way. An
+        # idle server is the first thing the OS evicts under memory pressure, and
+        # the eviction is invisible to every warmth signal the ledger records — so
+        # the shared copy also holds its own pages down between bursts.
+        start_keepalive()
     # Startup catch-up: whatever landed in the local stores since the last
     # ingest (by any process) is searchable by the time the first query
     # arrives — or shortly after; the pass is additive, never blocking.
