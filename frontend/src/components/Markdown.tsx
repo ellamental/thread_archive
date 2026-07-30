@@ -23,15 +23,30 @@ const components: Components = {
   },
 }
 
-export function Markdown({ children }: { children: string }) {
+export function Markdown({
+  children,
+  className,
+  components: extra,
+}: {
+  children: string
+  /** Extra class on the wrapper, for text whose typography differs (the manual). */
+  className?: string
+  /**
+   * Renderers layered over the defaults above. The manual passes its own `a` and
+   * heading renderers — its links address other manual pages, which are routes
+   * here, and its anchors need heading ids to land on. Transcript text passes
+   * none: an archived message gets exactly the guarded defaults.
+   */
+  components?: Components
+}) {
   const raw = useRaw()
   if (raw) return <pre className="md-raw">{children}</pre>
   return (
-    <div className="md">
+    <div className={className ? 'md ' + className : 'md'}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
-        components={components}
+        components={extra ? { ...components, ...extra } : components}
       >
         {children}
       </ReactMarkdown>

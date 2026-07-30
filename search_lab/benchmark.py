@@ -11,8 +11,19 @@ archive*, because a label made here would have to be made by searching here.
 Running them by hand means remembering a dozen invocations and their flags, so in
 practice they get run once at the end, if at all.
 
-    python -m search_lab benchmark                    # the set
+    python -m search_lab benchmark --quick            # the quick tier — the release bar
+    python -m search_lab benchmark                    # the full tier — every query
     python -m search_lab benchmark --list             # what it would run
+
+**Two tiers, and that is the whole taxonomy.** ``--quick`` samples the rows whose
+full query set is too slow to sit in a release preflight, sized so no row runs
+much past :data:`QUICK_ROW_BUDGET_MIN` minutes and the set finishes inside
+:data:`QUICK_SET_BUDGET_MIN`; every other row runs whole. The default tier scores
+**every judged query on every row** and samples nothing — the depth a published
+number would have to come from, and expensive enough (hours, dominated by the two
+``perltqa`` arms) that it is run deliberately rather than routinely. There is no
+third depth: a row is either scored whole or scored at its declared
+``quick_sample``, and the sampled one carries the sample size in its own name.
 
 **Built for the tuning loop.** Every row records what it measured against a
 content hash of the ranking code (``search_lab.bench_runs``), and a row whose
@@ -58,9 +69,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bench_runs  # noqa: E402
+import dataset_pins  # noqa: E402
 import eval_home  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
+
+#: What the quick tier is sized against: no single row should run much past this
+#: many minutes on a warm corpus. The cap is per-row rather than only on the total
+#: because one slow row is what turns a preflight into a decision about whether to
+#: bother running it, and a set nobody runs gates nothing.
+QUICK_ROW_BUDGET_MIN = 4
+
+#: And the whole quick set inside this. Both are design budgets for whoever sizes
+#: a ``quick_sample``, not runtime assertions — a cold corpus build blows through
+#: them on the first pass no matter what the sample is, and failing the run over
+#: that would be punishing the one pass that had to happen.
+QUICK_SET_BUDGET_MIN = 20
 
 
 @dataclass
@@ -88,6 +112,16 @@ class Row:
     #: instead of all of them. None means the row is already cheap enough to run
     #: whole in both tiers — which is the better answer when it is true, because
     #: then quick and full share one ledger series and one history.
+    #:
+    #: Sized from the row's *measured* seconds-per-query so its quick pass lands
+    #: under :data:`QUICK_ROW_BUDGET_MIN`, then left alone. Sampling a row that
+    #: already fits buys nothing and costs it a continuous history — and worse, a
+    #: second ledger series that has to be measured before it can gate anything.
+    #:
+    #: Sampled rows share one **n**, not one fraction. What a sampled row can
+    #: resolve is set by how many queries it scored, not by what share of the set
+    #: that was, so 300 of 1,583 and 300 of 8,588 carry the same error bar and
+    #: belong at the same number.
     quick_sample: int | None = None
 
     def dataset_name(self) -> str:
@@ -120,11 +154,21 @@ class Row:
                        argv=[*self.argv, "--sample", str(self.quick_sample)])
 
     def corpus_id(self) -> str | None:
-        """This row's corpus fingerprint, read from the built home's snapshot
-        manifest. None when the row has no single home, or the home is not built —
-        the run itself is what will say so, loudly."""
+        """This row's corpus fingerprint — the identity the gate refuses to read a
+        delta across.
+
+        A row that builds an archive home takes it from that home's snapshot
+        manifest. The per-question haystacks build one home per question and so
+        have no single manifest to read; theirs comes from the source dataset's
+        content hash instead (:mod:`search_lab.dataset_pins`). Without that they
+        reported no corpus identity at all, leaving the scored query count as their
+        only guard — and a corpus that changed *content* at a constant count read
+        as a ranking movement.
+
+        None means the corpus is not on this box, which the run itself will say
+        loudly; it must never mean "unchanged"."""
         if self.home is None:
-            return None
+            return dataset_pins.fingerprint(self.dataset_name())
         try:
             return json.loads((self.home / "snapshot.json").read_text()).get("snapshot_id")
         except (OSError, json.JSONDecodeError):
@@ -157,10 +201,8 @@ def manifest() -> list[Row]:
 
     **Completeness.** Every other row is effectively single-gold and therefore
     scores findability alone. ``beam``'s median question needs 2–3 messages and
-    its worst needs 96, so ``recall_all@k`` there is the one number on the bench
-    that asks whether a window holds *everything* bearing on a question. Its
-    three tiers are one conversation set at growing lengths, so the ladder reads
-    degradation as history grows.
+    its worst needs 16, so ``recall_all@k`` there is the one number on the bench
+    that asks whether a window holds *everything* bearing on a question.
 
     **Retrieval granularity.** ``locomo`` retrieves a turn, ``longmemeval`` a
     session, and ``perltqa`` a curated memory *unit* — three granularities of the
@@ -203,17 +245,6 @@ def manifest() -> list[Row]:
     # made on. Every one of them is replaced by the row's own elapsed time as
     # soon as it has run once (see `estimate`), so they only ever have to be
     # right to the nearest hour.
-    def beam_rows(tier: str, lexical: int, vectors: int,
-                  quick: int | None) -> list[Row]:
-        return [
-            Row(name=f"beam:{tier}[lexical]", cost_min=lexical, dataset="beam",
-                argv=[hay, "--dataset", "beam", "--beam-tier", tier],
-                build_hint=first_run, measure_keys=hay_keys, quick_sample=quick),
-            Row(name=f"beam:{tier}[vectors]", cost_min=vectors, dataset="beam",
-                argv=[hay, "--dataset", "beam", "--beam-tier", tier, "--vectors"],
-                build_hint=first_run, measure_keys=hay_keys, quick_sample=quick),
-        ]
-
     # Ordered cheapest-first: a cold pass is dominated by whichever corpora have
     # to be built, and a set that runs those first is a set nobody watches to the
     # end — every quick row would sit behind hours of embed before printing
@@ -242,19 +273,30 @@ def manifest() -> list[Row]:
         Row(name="longmemeval[lexical]", cost_min=15,
             argv=[hay, "--dataset", "longmemeval"],
             build_hint=first_run, measure_keys=hay_keys),
-        *beam_rows("100K", 4, 16, quick=8),
-        *beam_rows("500K", 12, 95, quick=8),
-        Row(name="perltqa[lexical]", cost_min=20,
-            argv=[perltqa], home=homes / "perltqa", build_hint=first_run,
-            measure_keys=ir, quick_sample=800),
-        Row(name="perltqa[vectors]", cost_min=40,
-            argv=[perltqa, "--vectors"], home=homes / "perltqa",
-            build_hint=first_run, measure_keys=ir, quick_sample=800),
+        Row(name="beam:100K[lexical]", cost_min=4, dataset="beam",
+            argv=[hay, "--dataset", "beam", "--beam-tier", "100K"],
+            build_hint=first_run, measure_keys=hay_keys),
+        Row(name="beam:100K[vectors]", cost_min=16, dataset="beam",
+            argv=[hay, "--dataset", "beam", "--beam-tier", "100K", "--vectors"],
+            build_hint=first_run, measure_keys=hay_keys),
+        # The three arms the quick tier exists for, and the only sampled rows on
+        # the bench. Neither dataset is slow per query — they are simply large, and
+        # between them they are most of the full tier's cost: cdr scores 1,583
+        # queries in ~11 min whole, perltqa 8,588 in ~19 min per arm, against under
+        # two minutes for every other row. The samples are sized from those
+        # measured per-query rates to land inside QUICK_ROW_BUDGET_MIN; the
+        # remaining nine rows already fit and are scored whole in both tiers.
         Row(name="cdr[vectors]", cost_min=20,
             argv=[cdr, "--vectors"],
             home=homes / "cdr", build_hint=first_run, measure_keys=ir,
-            quick_sample=300),
-        *beam_rows("1M", 22, 185, quick=6),
+            quick_sample=500),
+        Row(name="perltqa[lexical]", cost_min=19,
+            argv=[perltqa], home=homes / "perltqa",
+            build_hint=first_run, measure_keys=ir, quick_sample=1500),
+        Row(name="perltqa[vectors]", cost_min=20,
+            argv=[perltqa, "--vectors"],
+            home=homes / "perltqa", build_hint=first_run, measure_keys=ir,
+            quick_sample=1500),
     ]
 
 
@@ -489,11 +531,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--only", action="append", default=[], metavar="FRAGMENT",
                     help="run just the rows whose name contains this (repeatable)")
     ap.add_argument("--quick", action="store_true",
-                    help="the quick tier: score a deterministic query sample on "
-                         "the rows heavy enough to need one, every query on the "
-                         "rest. Minutes rather than hours, over the same ten "
-                         "datasets. Sampled rows are recorded under their own "
-                         "names (`row~N`), never mixed with full-run history")
+                    help="the quick tier — what a release is gated on: a "
+                         "deterministic query sample on the rows too large to "
+                         "score whole, every query on the rest, the same seven "
+                         "datasets either way. Sampled rows are recorded under "
+                         "their own names (`row~N`), never mixed with full-run "
+                         "history")
     ap.add_argument("--force", action="store_true",
                     help="re-run rows the ledger says are already fresh")
     ap.add_argument("--list", action="store_true",
@@ -529,8 +572,8 @@ def main(argv: list[str] | None = None) -> int:
           f"{len(rows) - to_run} fresh   [code {bench_runs.code_id()}]")
     if args.quick:
         print(f"  {sampled} row(s) sampled, {len(rows) - sampled} scored whole. "
-              f"A sampled row resolves deltas no finer than 1/n — read it as a "
-              f"smoke test, and re-run without --quick before claiming a change.")
+              f"A sampled row resolves deltas no finer than 1/n — enough to gate "
+              f"a release on, not enough to publish a number from.")
         if any(not fresh and not prior for _, prior, fresh in plan):
             print("  Rows that have never run still pay the full ingest+embed: "
                   "sampling cuts query time, not corpus building.")

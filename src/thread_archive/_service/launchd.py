@@ -106,9 +106,15 @@ def watcher_plist(
     home: Optional[str] = None,
     web: bool = True,
     web_port: int = 8787,
+    has_viewer: Optional[bool] = None,
 ) -> dict:
-    """The watcher LaunchAgent as a plist dict (pure)."""
-    return _plist(watcher_spec(entry, log_dir, home=home, web=web, web_port=web_port))
+    """The watcher LaunchAgent as a plist dict (pure).
+
+    ``has_viewer`` defaults to probing this installation — see
+    :func:`.spec.watcher_spec`.
+    """
+    return _plist(watcher_spec(entry, log_dir, home=home, web=web, web_port=web_port,
+                               has_viewer=has_viewer))
 
 
 def mcp_plist(
@@ -277,7 +283,7 @@ class LaunchdBackend:
 _BACKEND = LaunchdBackend()
 
 
-# ── module-level wrappers (the historical surface; back-compat for callers) ────
+# ── module-level wrappers over the backend ────────────────────────────────────
 
 
 def _log_dir(home: Optional[str]) -> Path:

@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 from .._config import ENV_HOME, ENV_MCP_INGEST
+from .._viewer import viewer_available
 
 # Open-file ceiling for the agents that touch the truth tree. A background job is
 # handed a soft limit of 256 descriptors, which the truth log's own append-handle
@@ -127,10 +128,22 @@ def watcher_spec(
     home: Optional[str] = None,
     web: bool = True,
     web_port: int = 8787,
+    has_viewer: Optional[bool] = None,
 ) -> AgentSpec:
-    """The always-on watcher (live ingest + cohosted web viewer)."""
+    """The always-on watcher (live ingest, plus the viewer where one exists).
+
+    ``web`` is what the caller asked for; ``has_viewer`` is whether there is
+    anything to ask for, and defaults to probing this installation.
+    """
+    if has_viewer is None:
+        has_viewer = viewer_available()
     argv = [str(entry), "watch"]
-    if web:
+    # The viewer is dev-only and ships in no wheel, so an install must never
+    # write a unit carrying a flag its own CLI does not register —
+    # launchd/systemd would restart-loop on argparse exit 2. Gated here rather
+    # than at each caller's default because this is the one place the request
+    # becomes argv.
+    if web and has_viewer:
         # Cohost the read-only viewer in the watcher's own process so it has a
         # persistent URL — one process, one engine; WAL makes the concurrent
         # reads safe (see _store/_base.py).

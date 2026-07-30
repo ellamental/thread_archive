@@ -28,6 +28,12 @@ from .sources import enabled_watchers
 
 logger = logging.getLogger(__name__)
 
+#: How long the idle-pass rollup accumulates before writing a row
+#: (:meth:`WatchDaemon._record_idle`). At the default five-second poll that is a
+#: row per ~60 quiet passes — enough resolution to see the loop's floor drift over
+#: weeks, few enough rows that the quiet loop stays cheap to keep.
+_IDLE_ROLLUP_S = 300.0
+
 
 class Watcher:
     """Polls a set of source watchers on an interval and imports new content.
@@ -104,6 +110,17 @@ class Watcher:
         self._pass_ms: Optional[float] = None
         self._pass_ms_max: float = 0.0
         self._lag_s: Optional[float] = None
+        # The quiet half of the loop, accumulated between rollup rows: passes that
+        # imported nothing, what they cost, and how many targets they looked at.
+        # See :func:`.ingest_log.record_idle` for why this is a window rather than
+        # a row per pass, and why it exists at all when health.json already counts.
+        self._idle_passes = 0
+        self._idle_ms = 0.0
+        self._idle_max_ms = 0.0
+        self._idle_checked = 0
+        self._idle_load_sum = 0.0
+        self._idle_load_n = 0
+        self._idle_window_started = time.monotonic()
 
     def _record_errors(self, errors: list[str]) -> None:
         """Surface poll errors two ways: the current state, and the durable record.
@@ -162,6 +179,64 @@ class Watcher:
             )
         except Exception:  # noqa: BLE001 — advisory; the loop must survive
             logger.debug("watch: could not record ingest pass", exc_info=True)
+
+    def _record_idle(self, pass_ms: float, checked: int) -> None:
+        """Fold one no-work pass into the idle window, flushing it when due.
+
+        Called only for passes that imported nothing — the ones
+        :meth:`_record_ingest` deliberately writes no row for."""
+        self._idle_passes += 1
+        self._idle_ms += pass_ms
+        self._idle_max_ms = max(self._idle_max_ms, pass_ms)
+        self._idle_checked += checked
+        # Per pass, not once per window: the row's cost is only readable against
+        # what the box was doing while it was paid, and a reading taken at flush
+        # describes the flush.
+        from .._ops import machine
+
+        load = machine.load1()
+        if load is not None:
+            self._idle_load_sum += load
+            self._idle_load_n += 1
+        if time.monotonic() - self._idle_window_started >= _IDLE_ROLLUP_S:
+            self._flush_idle()
+
+    def _flush_idle(self) -> None:
+        """Write the accumulated idle window and start a new one.
+
+        Also called on shutdown, so a daemon that stops between rollups still
+        accounts for the passes it ran — a daemon restarted more often than the
+        rollup interval would otherwise report no idle cost at all, which is the
+        restart-erases-everything failure this rollup exists to end.
+
+        Fail-soft: a rollup must never take the poll loop down."""
+        window_s = time.monotonic() - self._idle_window_started
+        try:
+            from .._config import resolve_paths
+            from . import ingest_log
+
+            ingest_log.record_idle(
+                home=resolve_paths().home,
+                passes=self._idle_passes,
+                total_ms=self._idle_ms,
+                max_ms=self._idle_max_ms,
+                window_s=window_s,
+                checked=self._idle_checked,
+                load1_avg=(self._idle_load_sum / self._idle_load_n
+                           if self._idle_load_n else None),
+            )
+        except Exception:  # noqa: BLE001 — advisory; the loop must survive
+            logger.debug("watch: could not record idle rollup", exc_info=True)
+        # Reset whether or not the write landed: a failed rollup drops one window,
+        # where carrying it forward would fold two windows' passes into a rate that
+        # matches neither.
+        self._idle_passes = 0
+        self._idle_ms = 0.0
+        self._idle_max_ms = 0.0
+        self._idle_checked = 0
+        self._idle_load_sum = 0.0
+        self._idle_load_n = 0
+        self._idle_window_started = time.monotonic()
 
     def _bump_source(self, name: str, r: WatchResult, ms: float = 0.0,
                      import_ms: float = 0.0) -> None:
@@ -308,6 +383,7 @@ class Watcher:
 
         total = WatchResult()
         pass_started = time.monotonic()
+        worked = False
         for w in self.watchers:
             source_started = time.monotonic()
             # One probe per source rather than one per pass: the stage split is only
@@ -330,10 +406,16 @@ class Watcher:
             # above and is charged nothing, which is what it costs.)
             self._bump_source(w.source_name, r, source_ms, probe.total_ms())
             self._record_ingest(w.source_name, probe, source_ms, r)
+            worked = worked or bool(probe.ran)
             total = total + r
 
         self._pass_ms = (time.monotonic() - pass_started) * 1000.0
         self._pass_ms_max = max(self._pass_ms_max, self._pass_ms)
+        # The same test :meth:`_record_ingest` applies per source, at the pass
+        # level: a pass where no source ran an import is one this ledger would
+        # otherwise be silent about, and its cost is the loop's floor.
+        if not worked:
+            self._record_idle(self._pass_ms, total.sources_checked)
         if total.events_created > 0:
             self._sample_lag()
         self._passes += 1
@@ -754,6 +836,11 @@ class Watcher:
                     time.sleep(min(0.5, delay - slept))
                     slept += 0.5
         finally:
+            # Flush the partial idle window. A daemon restarted more often than the
+            # rollup interval would otherwise report no idle cost at all — which is
+            # the restart-erases-everything failure this rollup exists to end.
+            if self._idle_passes:
+                self._flush_idle()
             self._release_owner()
 
     def stop(self) -> None:

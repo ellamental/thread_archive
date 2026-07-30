@@ -25,7 +25,7 @@ harnesses already carry, and the ledgers — so a benchmark row added or a datas
 downloaded shows up without an edit here. What is written down in this module is
 one line per corpus *family*, describing what that family of harness measures;
 the survey of benchmarks that could exist but do not yet lives in
-``docs/benchmarks.md``, which is prose and stays prose.
+``docs/internal/benchmarks.md``, which is prose and stays prose.
 
 The viewer renders this at ``/lab`` through ``thread_archive._dev``, the same way
 ``retrieval_report`` reaches ``/retrieval``: a dev page, excluded from the wheel,
@@ -432,8 +432,8 @@ def _miss_key(row: dict[str, Any]) -> tuple:
 
 def _lead_measure(rows: list[dict[str, Any]]) -> Optional[str]:
     """The metric a row is read on: the first its harness listed. Harnesses put
-    their headline first, and picking by name here would be a catalog of every
-    metric the lab might one day report."""
+    their headline first, and picking by name here would mean maintaining a catalog
+    of every metric any harness reports."""
     for row in rows:
         for key, value in (row.get("measures") or {}).items():
             if isinstance(value, (int, float)):

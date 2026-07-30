@@ -88,6 +88,13 @@ def _token() -> tuple:
         return vectors._validity_token(s)
 
 
+def _age_cache(seconds: float) -> None:
+    """Backdate every persisted file — the mtime an age probe reads."""
+    when = time.time() - seconds
+    for p in _cache_dir().glob("*"):
+        os.utime(p, (when, when))
+
+
 # ── The point of the exercise ────────────────────────────────────────────────
 
 
@@ -138,9 +145,9 @@ def test_what_comes_back_ranks_exactly_like_what_went_down(archive_home) -> None
 
 
 def test_an_unmoved_store_skips_the_rebuild_entirely(archive_home) -> None:
-    """The secondary win. ``build()`` is the authoritative path — the warm pass
-    calls it — so when the corpus has not moved since the last process wrote its
-    graph, there is nothing left to compute."""
+    """``build()`` is the authoritative path — an eval calls it — so when the corpus
+    has not moved since the last process wrote its graph, there is nothing left to
+    compute even under the strictest caller."""
     _seed()
     built = embed_graph.build()
 
@@ -183,6 +190,114 @@ def test_build_refuses_the_stale_graph_get_is_happy_to_serve(archive_home) -> No
 
     _restart()
     assert new["c1"] in embed_graph.build().thread_ids
+
+
+# ── The starting-server door ─────────────────────────────────────────────────
+
+
+def test_a_starting_process_loads_the_graph_instead_of_rebuilding_it(archive_home) -> None:
+    """``warm()`` is what a starting server calls, and the point of it is that it
+    computes nothing when a partition is already on disk.
+
+    Proven by what it serves rather than by watching it work: the store has moved
+    since the graph was written, so a rebuild would have to include the new threads.
+    Serving the old set is only possible by loading."""
+    old = _seed()
+    embed_graph.build()
+    new = _seed(clusters=(("c1", 2), ("c2", 2)))  # the token moves, as ingest moves it
+
+    _restart()
+    served = embed_graph.warm()
+    assert served is not None
+    assert set(served.thread_ids) == set(old.values()), (
+        "warm rebuilt the graph it could have read off disk"
+    )
+    assert new["c1"] not in served.community, (
+        "a thread the graph has not seen takes no boost — it is not misplaced"
+    )
+    _wait_for_refresh()
+
+
+def test_warm_builds_when_there_is_nothing_to_load(archive_home) -> None:
+    """A first run, or a build-shape change that invalidated every file. Cheapness is
+    not the contract — being useful is — so with no graph to serve, warm pays."""
+    ids = _seed()
+    _restart()
+    assert not _cache_dir().exists() or not list(_cache_dir().glob("graph-*.json"))
+
+    served = embed_graph.warm()
+    assert served is not None
+    assert set(served.thread_ids) == set(ids.values())
+
+
+def test_warm_on_a_store_with_no_embedded_vectors_is_not_an_error(archive_home) -> None:
+    """The graph degrades with the semantic arm, not separately."""
+    init_db()
+    assert embed_graph.warm() is None
+
+
+# ── One build per machine, not one per process ───────────────────────────────
+
+
+def test_a_graph_another_process_just_wrote_suppresses_the_rebuild(archive_home) -> None:
+    """The restart burst: several processes come up at once, each finds a token that
+    ingest has moved, and each would rebuild the same corpus-wide partition
+    concurrently. The floor is how any of them learns someone already did it."""
+    _seed()
+    embed_graph.build()
+    _seed(clusters=(("c1", 2), ("c2", 2)))
+
+    assert embed_graph._rebuild_redundant(), "a graph written seconds ago is enough"
+
+    _restart()
+    embed_graph.warm()
+    _wait_for_refresh()
+    assert not embed_graph._REFRESHING, "a redundant rebuild was started anyway"
+
+
+def test_an_aged_graph_lets_the_rebuild_through(archive_home) -> None:
+    """The floor bounds how often the machine rebuilds, not whether it ever does."""
+    _seed()
+    embed_graph.build()
+    assert embed_graph._rebuild_redundant()
+
+    _age_cache(embed_graph.rebuild_floor_s() + 60.0)
+    assert not embed_graph._rebuild_redundant()
+
+
+def test_nothing_on_disk_never_suppresses_a_build(archive_home) -> None:
+    init_db()
+    assert not embed_graph._rebuild_redundant(), (
+        "the floor suppresses duplicate work, never the only copy of it"
+    )
+
+
+def test_the_rebuild_floor_can_be_turned_off(archive_home, monkeypatch) -> None:
+    _seed()
+    embed_graph.build()
+    assert embed_graph._rebuild_redundant()
+
+    monkeypatch.setenv("THREAD_ARCHIVE_GRAPH_REBUILD_FLOOR_S", "0")
+    assert not embed_graph._rebuild_redundant()
+
+
+def test_a_bad_rebuild_floor_setting_falls_back_to_the_default(monkeypatch) -> None:
+    monkeypatch.setenv("THREAD_ARCHIVE_GRAPH_REBUILD_FLOOR_S", "shortly")
+    assert embed_graph.rebuild_floor_s() == 900.0
+    monkeypatch.delenv("THREAD_ARCHIVE_GRAPH_REBUILD_FLOOR_S")
+    assert embed_graph.rebuild_floor_s() == 900.0
+
+
+def test_the_age_probe_reports_an_absent_graph_as_none(archive_home) -> None:
+    """``None`` is the answer that must not read as "just built" — it is what gates
+    the floor off so a first build can happen."""
+    init_db()
+    assert graph_cache.newest_age_s() is None
+
+    _seed()
+    embed_graph.build()
+    age = graph_cache.newest_age_s()
+    assert age is not None and age < 60.0
 
 
 # ── Every failure lands on a rebuild ─────────────────────────────────────────

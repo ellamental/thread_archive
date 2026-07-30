@@ -91,7 +91,7 @@ def _fsync_dir(d: Path) -> None:
 TRUTH_FORMAT_VERSION = 2
 
 # The v1→v2 migration's durable legacy-id → ULID record, written beside the
-# truth dir (at the home root) by ``_scripts.migrate_thread_ulids``. Consumers
+# truth dir (at the home root) by :mod:`.migrate_v2`. Consumers
 # (e.g. the backup mirror's renamed-twin detection) treat a missing or
 # unreadable file as "never migrated".
 ULID_MAPPING_FILE = "ulid-mapping.json"

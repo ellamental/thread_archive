@@ -77,10 +77,49 @@ def test_wheel_carries_the_whole_runtime(dist) -> None:
     assert "thread_archive/cli.py" in names
     # the vendored parser island ships inside the package
     assert "thread_archive/_thread_import/__init__.py" in names
-    # the pre-built web viewer ships so `pip install` needs no node
-    assert "thread_archive/_web/static/index.html" in names
-    assert any(n.startswith("thread_archive/_web/static/assets/") and n.endswith(".js")
-               for n in names)
+    # retrieval and the MCP server are the runtime an install is for
+    assert "thread_archive/_mcp/server.py" in names
+    assert any(n.startswith("thread_archive/_retrieval/") for n in names)
+
+
+def test_wheel_carries_the_manual(dist) -> None:
+    # The public docs ship as package data under thread_archive/_docs, so an
+    # install can answer for itself: `thread-archive docs` reads these, offline,
+    # with no clone and no network.
+    wheel, _ = dist
+    names = set(zipfile.ZipFile(wheel).namelist())
+    shipped = {n for n in names if n.startswith("thread_archive/_docs/") and n.endswith(".md")}
+    on_disk = {f"thread_archive/_docs/{p.name}" for p in (REPO / "docs").glob("*.md")}
+    assert shipped == on_disk, f"the wheel's manual is not the repo's: {shipped ^ on_disk}"
+    # And the resolver that reads them, beside them.
+    assert "thread_archive/_docs/__init__.py" in names
+
+
+def test_wheel_carries_no_internal_docs(dist) -> None:
+    # docs/internal/ is the maintainer's half — the release process, the bench
+    # landscape, the dev panels. It names branches and instruments no install
+    # has, and an ordinary include (not force-include, which ignores `exclude`)
+    # is what keeps it out of the artifact.
+    wheel, _ = dist
+    names = zipfile.ZipFile(wheel).namelist()
+    leaked = [n for n in names if "internal" in n]
+    assert not leaked, f"internal docs leaked into the wheel: {leaked}"
+    internal = sorted(p.stem for p in (REPO / "docs" / "internal").glob("*.md"))
+    assert internal, "docs/internal/ is empty — this test proves nothing"
+    assert not [n for n in names if any(f"/{stem}.md" in n for stem in internal)]
+
+
+def test_wheel_carries_no_viewer(dist) -> None:
+    # The viewer is dev-only: a stdlib server plus a built React bundle that was
+    # a quarter of the download on its own. An install gets preservation,
+    # retrieval, and the MCP server — reading through a browser is a thing a
+    # checkout does.
+    wheel, _ = dist
+    names = zipfile.ZipFile(wheel).namelist()
+    leaked = [n for n in names
+              if n.startswith("thread_archive/_web/")
+              or n.endswith((".js", ".css", ".html"))]
+    assert not leaked, f"viewer surface leaked into the wheel: {leaked}"
 
 
 def test_wheel_carries_no_measurement_surface(dist) -> None:
@@ -309,8 +348,11 @@ def test_installed_cli_advertises_only_verbs_an_install_can_run(installed, tmp_p
     assert h.returncode == 0, h.stderr
     listed = set(re.findall(r"^\s{4}([a-z][a-z-]+)\b", h.stdout, re.M))
     assert listed, h.stdout
-    for gone in ("mine", "eval", "snapshot", "archives"):
+    # `web` joins the measurement verbs: the viewer it opens ships in no wheel,
+    # so an install neither lists it nor mentions it in the epilog.
+    for gone in ("mine", "eval", "snapshot", "archives", "web"):
         assert gone not in listed, f"{gone} is advertised but no longer exists"
+    assert "watch --web" not in h.stdout, h.stdout
 
     for verb in sorted(listed):
         r = _run(installed, ["thread_archive", verb, "--help"], tmp_path)
@@ -322,6 +364,24 @@ def test_installed_cli_advertises_only_verbs_an_install_can_run(installed, tmp_p
     gone = _run(installed, ["thread_archive", "mine"], tmp_path)
     assert gone.returncode == 2
     assert "invalid choice" in gone.stderr and "Traceback" not in gone.stderr
+
+
+def test_installed_cli_reads_the_manual_it_shipped_with(installed, tmp_path) -> None:
+    # The point of shipping the docs: a wheel install, no clone anywhere near it,
+    # answers "how do I drive this" from its own package data.
+    r = _run(installed, ["thread_archive", "docs"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "install" in r.stdout and "providers" in r.stdout
+    assert "releasing" not in r.stdout, "an internal page reached an install's index"
+
+    r = _run(installed, ["thread_archive", "docs", "cli"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.startswith("# CLI")
+
+    # And the page it names is inside the installed package, not a checkout.
+    r = _run(installed, ["thread_archive", "docs", "cli", "--path"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "site-packages/thread_archive/_docs/cli.md" in r.stdout.strip()
 
 
 def test_installed_uninstall_points_at_the_package_it_came_from(installed, tmp_path) -> None:
@@ -342,10 +402,17 @@ def test_installed_package_is_private_and_asset_complete(installed, tmp_path) ->
         "from pathlib import Path\n"
         "import thread_archive\n"
         "assert 'site-packages' in thread_archive.__file__, thread_archive.__file__\n"
-        "from thread_archive._web import server\n"
-        "assets = Path(server.STATIC_DIR) / 'assets'\n"
-        "assert (Path(server.STATIC_DIR) / 'index.html').is_file(), 'viewer shell missing'\n"
-        "assert any(p.suffix == '.js' for p in assets.iterdir()), 'built JS missing'\n"
+        # The viewer is absent by construction, and the probe every offer of it
+        # goes through must agree — a probe that said yes here would register a
+        # `web` verb with nothing behind it.
+        "from thread_archive._viewer import viewer_available\n"
+        "assert viewer_available() is False, 'viewer probe says yes in an install'\n"
+        "try:\n"
+        "    import thread_archive._web\n"
+        "except ModuleNotFoundError:\n"
+        "    pass\n"
+        "else:\n"
+        "    sys.exit('the dev-only viewer shipped in the wheel')\n"
         "from thread_archive._thread_import import get_parser\n"
         "for prov in ('chatgpt', 'claude', 'claude-code'):\n"
         "    assert get_parser(prov) is not None, prov\n"

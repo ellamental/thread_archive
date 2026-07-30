@@ -49,6 +49,66 @@ from ._state import (
 logger = logging.getLogger(__name__)
 
 
+# ── bounded member reads ─────────────────────────────────────────────────────
+# A dropped export is untrusted input — a file downloaded from a provider, and on
+# the viewer's upload path an HTTP request body — and every loader below reads a
+# member whole so a parser can see it. Unbounded, that is a decompression bomb:
+# a 200 KB ZIP declaring one JSON member expands to gigabytes, and the process
+# that dies for it is the watcher, which also cohosts the viewer and every other
+# source's ingest.
+#
+# Two bounds, because either alone is defeated. The **ratio** is what catches a
+# bomb: conversation JSON deflates around 5-20x and a crafted member reaches
+# thousands. The **ceiling** bounds what an honestly-compressed member may cost,
+# since a large export is legitimate and a larger one is not worth an OOM. Both
+# are measured against bytes actually decompressed, never against the header's
+# claim — a crafted entry declares whatever it likes, and zipfile only notices at
+# the CRC check, which is after the memory is already spent.
+
+MAX_MEMBER_BYTES = 8 << 30
+MAX_EXPANSION_RATIO = 100
+#: Below this, the ratio is not consulted: a small member is not a bomb whatever
+#: it compressed by, and a fixed floor keeps a legitimately repetitive sidecar (a
+#: projects.json of near-identical records) from tripping it.
+RATIO_FLOOR_BYTES = 16 << 20
+_READ_CHUNK = 1 << 20
+
+
+class ExportTooLarge(ValueError):
+    """A ZIP member expanded past what an account export may cost to read.
+
+    A ``ValueError`` so the classifier's existing parse guard treats a bomb as
+    "not a recognized export" rather than propagating: nothing claims it, the
+    upload is refused, and a hand-dropped copy is quarantined for a look.
+    """
+
+
+def _member_limit(info: zipfile.ZipInfo) -> int:
+    """The most ``info`` may decompress to before it reads as a bomb."""
+    return min(MAX_MEMBER_BYTES, max(RATIO_FLOOR_BYTES, info.compress_size * MAX_EXPANSION_RATIO))
+
+
+def read_member(zf: zipfile.ZipFile, name: str) -> bytes:
+    """One ZIP member's bytes, refused past :func:`_member_limit`.
+
+    Read in chunks and stopped at the limit, so the refusal costs the limit
+    rather than the expansion — ``ZipFile.read`` would have materialized the
+    whole member before anything could judge its size."""
+    info = zf.getinfo(name)
+    limit = _member_limit(info)
+    out = bytearray()
+    with zf.open(info) as fh:
+        while len(out) <= limit:
+            chunk = fh.read(min(_READ_CHUNK, limit - len(out) + 1))
+            if not chunk:
+                return bytes(out)
+            out += chunk
+    raise ExportTooLarge(
+        f"{name} expands past {limit} bytes from {info.compress_size} compressed "
+        f"— refusing to read it (declared {info.file_size})"
+    )
+
+
 def _parsed(parser, data, *, provider: str, conversation_id: str) -> list:
     """Parse one full export conversation via its ProviderParser, log the
     whole-conversation validation (never rejects), and return the messages for the
@@ -134,7 +194,7 @@ def classify_export(path: Path) -> Optional[str]:
             if "conversations.json" in names:
                 basenames = {n.rsplit("/", 1)[-1] for n in names}
                 return _classify_conversations_json(
-                    basenames, lambda: json.loads(zf.read("conversations.json"))
+                    basenames, lambda: json.loads(read_member(zf, "conversations.json"))
                 )
     return None
 
@@ -146,18 +206,18 @@ def _load_claude_export(path: Path) -> dict:
     if path.is_dir():
         return _load_claude_export_from_dir(path)
     with zipfile.ZipFile(path, "r") as zf:
-        conversations = json.loads(zf.read("conversations.json"))
+        conversations = json.loads(read_member(zf, "conversations.json"))
         try:
-            memories_raw = json.loads(zf.read("memories.json"))
+            memories_raw = json.loads(read_member(zf, "memories.json"))
             memories = memories_raw[0] if isinstance(memories_raw, list) and memories_raw else {}
         except (KeyError, json.JSONDecodeError):
             memories = {}
         try:
-            projects = json.loads(zf.read("projects.json"))
+            projects = json.loads(read_member(zf, "projects.json"))
         except (KeyError, json.JSONDecodeError):
             projects = []
         try:
-            users = json.loads(zf.read("users.json"))
+            users = json.loads(read_member(zf, "users.json"))
         except (KeyError, json.JSONDecodeError):
             users = []
     return {"conversations": conversations, "memories": memories, "projects": projects, "users": users}
@@ -247,7 +307,7 @@ def _load_chatgpt_export(path: Path) -> list:
         data = json.loads(conversations_path.read_text(encoding="utf-8"))
     else:
         with zipfile.ZipFile(path, "r") as zf:
-            data = json.loads(zf.read("conversations.json"))
+            data = json.loads(read_member(zf, "conversations.json"))
     return data if isinstance(data, list) else []
 
 
@@ -313,7 +373,7 @@ def _load_xai_export(path: Path) -> list:
         if not names:
             raise FileNotFoundError(f"xAI export ZIP missing {_XAI_MARKER}: {path}")
         for name in names:
-            data = json.loads(zf.read(name))
+            data = json.loads(read_member(zf, name))
             conversations.extend(data.get("conversations") or [])
     return conversations
 
@@ -364,7 +424,7 @@ def _xai_conversation_messages(bundle: dict) -> list[dict]:
         else:
             # A response with no message text still carries a real turn — an
             # image/attachment/generated-media or tool-only turn. Preserve it rather
-            # than dropping it (the old `continue` lost every one). Route it through a
+            # than dropping it: route it through a
             # generic role so the shared builder keeps it as a `message` event with
             # the full raw response — the user-role builder discards a text-less turn,
             # so plain "user"/"assistant" wouldn't reliably survive. The sender + raw

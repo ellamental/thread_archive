@@ -1,24 +1,9 @@
-import { afterEach, expect, it } from 'vitest'
+import { expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { App } from '../App'
-import { mswError, mswJson, recordRequests } from './msw'
-
-/** Stamp the shell the way the server does for an operator who asked for the
- *  dev panels (`"dev_panels": true` in config.json). */
-function stampDevPanels(): void {
-  const meta = document.createElement('meta')
-  meta.setAttribute('name', 'thread-archive-dev-panels')
-  meta.setAttribute('content', '1')
-  document.head.appendChild(meta)
-}
-
-afterEach(() => {
-  document.head
-    .querySelectorAll('meta[name="thread-archive-dev-panels"]')
-    .forEach((m) => m.remove())
-})
+import { mswJson, recordRequests } from './msw'
 
 
 it('renders the real application shell and landing route', async () => {
@@ -34,10 +19,7 @@ it('renders the real application shell and landing route', async () => {
   })
 
   render(
-    <MemoryRouter
-      initialEntries={['/']}
-      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-    >
+    <MemoryRouter initialEntries={['/']}>
       <App />
     </MemoryRouter>,
   )
@@ -82,43 +64,34 @@ it('opens and closes the responsive navigation drawer', async () => {
   expect(navigation).not.toHaveClass('open')
 })
 
-// The dev panels ship in the bundle and mount only for a viewer whose operator
-// asked for them. Unmounted has to mean *unrouted*, not hidden-but-reachable:
-// the address is the whole of what a shipped viewer would otherwise expose.
-it('does not route the lab in a viewer that was not asked for the dev panels', async () => {
-  const requested = recordRequests()
-  mswJson('/api/threads', { threads: [] })
-  mswJson('/api/sources', { sources: [] })
-  mswJson('/api/status', {
-    threads: 0, events: 0, topics: 0, fts_indexed: 0, vectors_indexed: 0, home: '/tmp/archive',
-  })
-  render(
-    <MemoryRouter initialEntries={['/lab']}>
-      <App />
-    </MemoryRouter>,
-  )
+// The dev panels are a different app on a different server (devweb/, port
+// 8789). They are not in this bundle and no switch can put them back — so every
+// one of their addresses is simply a path this app does not have, and nothing
+// here ever calls their endpoints.
+it.each(['/retrieval', '/telemetry', '/lab', '/lab/run/abc'])(
+  'does not route %s — the dev panels are their own app',
+  async (path) => {
+    const requested = recordRequests()
+    mswJson('/api/threads', { threads: [] })
+    mswJson('/api/sources', { sources: [] })
+    mswJson('/api/status', {
+      threads: 0, events: 0, topics: 0, fts_indexed: 0, vectors_indexed: 0, home: '/tmp/archive',
+    })
+    render(
+      <MemoryRouter initialEntries={[path]}>
+        <App />
+      </MemoryRouter>,
+    )
 
-  expect(document.querySelector('.content')).toBeEmptyDOMElement()
-  // Nothing rendered means nothing asked the lab for data, either.
-  expect(requested.some((url) => url.startsWith('/api/search-lab'))).toBe(false)
-})
-
-it('routes the lab once the shell says the operator asked for the dev panels', async () => {
-  stampDevPanels()
-  mswJson('/api/threads', { threads: [] })
-  mswJson('/api/sources', { sources: [] })
-  mswJson('/api/status', {
-    threads: 0, events: 0, topics: 0, fts_indexed: 0, vectors_indexed: 0, home: '/tmp/archive',
-  })
-  // The page itself is covered by SearchLabView's own tests; this asserts the
-  // route mounts, which its error state shows as well as its data would.
-  mswError('/api/search-lab', 503, 'bench offline')
-  mswError('/api/search-lab/runs', 503, 'bench offline')
-  render(
-    <MemoryRouter initialEntries={['/lab']}>
-      <App />
-    </MemoryRouter>,
-  )
-
-  expect(await screen.findByRole('heading', { name: 'Search lab', level: 1 })).toBeInTheDocument()
-})
+    expect(document.querySelector('.content')).toBeEmptyDOMElement()
+    // Nothing rendered means nothing asked for their data, either.
+    expect(
+      requested.some(
+        (url) =>
+          url.startsWith('/api/search-lab') ||
+          url.startsWith('/api/retrieval') ||
+          url.startsWith('/api/telemetry'),
+      ),
+    ).toBe(false)
+  },
+)

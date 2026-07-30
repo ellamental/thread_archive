@@ -67,7 +67,9 @@ def _calls(log: Path) -> list[list[str]]:
 
 
 def test_watcher_unit_shape() -> None:
-    units = systemd.watcher_units(ENTRY, LOG_DIR)
+    # has_viewer pinned: the viewer is dev-only, so the default would make this
+    # unit's ExecStart depend on checkout-vs-wheel.
+    units = systemd.watcher_units(ENTRY, LOG_DIR, has_viewer=True)
     assert set(units) == {"thread-archive-watcher.service"}
     text = units["thread-archive-watcher.service"]
     assert "Type=simple" in text
@@ -87,19 +89,35 @@ def test_watcher_unit_shape() -> None:
 
 
 def test_watcher_unit_home_and_web_options() -> None:
-    text = systemd.watcher_units(ENTRY, LOG_DIR, home="/data/arc", web=False)[
+    text = systemd.watcher_units(ENTRY, LOG_DIR, home="/data/arc", web=False, has_viewer=True)[
         "thread-archive-watcher.service"
     ]
     assert "Environment=THREAD_ARCHIVE_HOME=/data/arc" in text
     assert "--web" not in text
 
-    default = systemd.watcher_units(ENTRY, LOG_DIR)["thread-archive-watcher.service"]
+    default = systemd.watcher_units(ENTRY, LOG_DIR, has_viewer=True)["thread-archive-watcher.service"]
     assert "THREAD_ARCHIVE_HOME" not in default  # no explicit home → unset
 
-    custom_port = systemd.watcher_units(ENTRY, LOG_DIR, web_port=9000)[
+    custom_port = systemd.watcher_units(ENTRY, LOG_DIR, web_port=9000, has_viewer=True)[
         "thread-archive-watcher.service"
     ]
     assert "--web-port 9000" in custom_port
+
+
+def test_a_newline_in_a_path_cannot_write_a_second_directive() -> None:
+    """A unit file is parsed line by line, and a newline ends a directive whatever
+    quoting surrounds it — so a value carrying one would not become an awkward
+    argument, it would become the *next directive*, chosen by whoever supplied the
+    value. These paths come from the operator's own command line, so this guards a
+    mistake rather than an adversary; either way the render refuses, because the
+    alternative is a unit that installs cleanly and runs something else."""
+    home = "/data/arc\nExecStartPre=/bin/sh -c anything"
+    with pytest.raises(ValueError, match="newline"):
+        systemd.watcher_units(ENTRY, LOG_DIR, home=home)
+    with pytest.raises(ValueError, match="newline"):
+        systemd.watcher_units(Path("/opt/venv/bin/thread-archive\nUser=root"), LOG_DIR)
+    with pytest.raises(ValueError, match="newline"):
+        systemd.watcher_units(ENTRY, Path("/logs\nRestart=no"))
 
 
 # ── pure render: mcp ──────────────────────────────────────────────────────────

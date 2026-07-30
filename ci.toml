@@ -54,6 +54,31 @@ name = "frontend-test"
 argv = ["npx", "vitest", "run", "--coverage"]
 cwd = "frontend"
 
+# ── the dev panels (devweb/) ────────────────────────────────────────────────
+# A second, smaller app: the retrieval report, telemetry and the search lab,
+# served by `python -m devweb` on :8789. It ships in nothing — no wheel, no
+# sdist — so unlike the viewer there is no committed-bundle row to compare bytes
+# against. What still has to hold is that it compiles and its views work, since
+# nothing else would notice them rotting.
+[[suite]]
+name = "devweb-typecheck"
+argv = ["npx", "tsc", "--noEmit"]
+cwd = "devweb/frontend"
+
+[[suite]]
+name = "devweb-test"
+argv = ["npx", "vitest", "run"]
+cwd = "devweb/frontend"
+
+# Real-browser coverage for the panels, on its own preview port (4175) so it can
+# run beside the viewer's lane. Same mocked-at-the-network-boundary shape: the
+# bench's real run ledger is never read.
+[[suite]]
+name = "devweb-e2e"
+argv = ["npm", "run", "e2e"]
+cwd = "devweb/frontend"
+timeout = 600
+
 [[suite]]
 name = "pytest"
 # Branch coverage rides every sweep: the term report keeps blind spots visible in
@@ -88,6 +113,19 @@ timeout = 1800
 name = "coverage-gate"
 argv = ["{repo}/.venv/bin/python", "{repo}/scripts/coverage_gate.py", "{repo}/coverage.json"]
 
+# The benchmark corpora are the bytes they were accepted on. Content hashes of
+# the files each harness reads (search_lab/dataset-pins.json) — none of the
+# upstreams offer an immutable handle, so a re-download or a re-clone is where a
+# corpus silently becomes a different one and every recorded number quietly stops
+# meaning what it did. Milliseconds: per-file digests are memoized on
+# (size, mtime_ns), so the ~1GB is read once and re-read only where it changed.
+#
+# A corpus absent from this box, or present but not yet pinned, passes — that is
+# a fact about the box. Only drift against an accepted pin reds the row.
+[[suite]]
+name = "dataset-pins"
+argv = ["{repo}/.venv/bin/python", "-m", "search_lab", "pins"]
+
 # Retrieval-arm liveness: asserts the model arm of the search stack loads.
 # Runs against THIS machine's live archive — read-only, and thread-ci runs
 # where the archive lives. --require-semantic asserts the embeddings arm
@@ -105,6 +143,24 @@ name = "retrieval-gate"
 argv = ["{repo}/.venv/bin/python", "{repo}/search_lab/retrieval_eval.py",
         "--probes-only", "--require-semantic"]
 timeout = 600
+
+# The speed half of that gate, and the one exception to the no-metric rule above:
+# a millisecond is not graded by the ranker that produced it, so it can be checked
+# here without the circularity that keeps quality numbers on the public bench.
+#
+# Replays the slowest calls agents actually made (from the usage ledger, with their
+# recorded parameters) against a baseline recorded in THIS lane, and reds when they
+# got materially slower. What it is protecting against is the regression class no
+# other row can see: search that returns exactly the right hits, ever slower.
+#
+# Noise is the real design constraint — it runs on the operator's live machine
+# beside the rest of the sweep — so it is loose by construction: a 2x ratchet on
+# those queries' own recorded timings, and a confirm re-measure before any failure.
+# It seeds its own baseline on first run and passes. See the module docstring.
+[[suite]]
+name = "latency-gate"
+argv = ["{repo}/.venv/bin/python", "{repo}/search_lab/latency_smoke.py"]
+timeout = 900
 
 # The release lane: build the wheel + sdist, prove their contents, install the
 # wheel into a clean venv, and run the real CLI lifecycle from it. Deselected

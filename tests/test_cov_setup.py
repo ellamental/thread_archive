@@ -315,6 +315,7 @@ def test_truth_touching_agents_raise_the_open_file_limit() -> None:
         assert limit > MAX_OPEN_HANDLES, f"{p['Label']} caps files at {limit}"
 
 
+@pytest.mark.viewer
 def test_install_watcher_writes_plist_and_loads(tmp_path, monkeypatch, stub_bin) -> None:
     _darwin(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))  # Path.home() → tmp plist dir
@@ -708,6 +709,7 @@ def test_import_poll_failure_is_reported(archive_home, capsys) -> None:
     assert "1 item(s) could not be imported" in out
 
 
+@pytest.mark.viewer
 def test_setup_reports_web_viewer_and_missing_embeddings(archive_home, capsys) -> None:
     machine = FakeMachine(embeddings=False)
     rc = wizard.run_setup(

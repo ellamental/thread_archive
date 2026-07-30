@@ -28,21 +28,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Anchored to a plain X.Y.Z, and it fails rather than tags something else.
+      # Deliberately excludes pre-release strings: release candidates are
+      # tagged by hand from the release branch (docs/releasing.md, "Release
+      # candidates") and never reach main — an rc version string arriving
+      # here means the release commit forgot the final bump, and the loud
+      # failure is the guard.
+      # Whatever this prints reaches a shell in the job below, which holds the
+      # deploy key — so the read is the place to establish that the value cannot
+      # carry a newline or a shell metacharacter, not a thing to check later.
       - name: Read version
         id: version
         run: |
           v=$(python3 -c "
-          import re, pathlib
+          import re, pathlib, sys
           text = pathlib.Path('src/thread_archive/__init__.py').read_text()
-          print(re.search(r'__version__ = \"([^\"]+)\"', text).group(1))
+          m = re.search(r'^__version__ = \"(\d+\.\d+\.\d+)\"\$', text, re.M)
+          if not m:
+              sys.exit('__version__ must be a plain X.Y.Z release string')
+          print(m.group(1))
           ")
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
+      # Values reach the shell as environment variables, never as `${{ }}`
+      # spliced into the script text: an expression is substituted before bash
+      # ever parses the line, so a value that carried shell syntax would *be*
+      # shell here rather than an argument to it.
       - name: Create and push tag if absent
         env:
           DEPLOY_KEY: ${{ secrets.RELEASE_TAG_DEPLOY_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          tag="v${{ steps.version.outputs.version }}"
+          tag="v$VERSION"
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
             echo "Tag $tag already exists; nothing to do."
             exit 0
@@ -51,7 +69,7 @@ jobs:
           # verbatim. A missing section fails the release loudly — the tag
           # must carry the changelog, and its absence means the release
           # commit skipped the compression step.
-          python3 - "${{ steps.version.outputs.version }}" > tag-message.txt <<'PY'
+          python3 - "$VERSION" > tag-message.txt <<'PY'
           import re, pathlib, sys
           version = sys.argv[1]
           text = pathlib.Path("CHANGELOG.md").read_text()
@@ -71,4 +89,4 @@ jobs:
           printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/release_key"
           chmod 600 "$HOME/.ssh/release_key"
           GIT_SSH_COMMAND="ssh -i $HOME/.ssh/release_key -o StrictHostKeyChecking=accept-new" \
-            git push "git@github.com:${{ github.repository }}.git" "$tag"
+            git push "git@github.com:$REPOSITORY.git" "$tag"

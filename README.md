@@ -27,8 +27,7 @@ thread-archive setup
 counts, sizes, date ranges — *before* touching anything. Whatever is still on
 disk imports as a head start; from then on a background watcher keeps the
 archive current and the 30-day window stops mattering. It also wires the MCP
-server into your client and starts a local web viewer at
-`http://127.0.0.1:8787`. Every choice is skippable.
+server into your client. Every choice is skippable.
 
 Minutes after setup, ask mid-conversation:
 
@@ -44,15 +43,16 @@ written.
 
 ## What you get
 
-- **Search, three doors, one implementation** — MCP tools (`thread_search`,
-  `thread_read`) for agents, the same verbs on the CLI
-  (`thread-archive search "auth flow" --since 30d`), and a local web viewer for
-  reading. What you get at a prompt is what your agent gets.
+- **Search, two doors, one implementation** — MCP tools (`thread_search`,
+  `thread_read`) for agents, and the same verbs on the CLI
+  (`thread-archive search "auth flow" --since 30d`). What you get at a prompt is
+  what your agent gets.
 - **Full-text and semantic search**, fused and re-ranked, filterable by time,
   source, tool, and content type; an empty query browses recent activity.
 - **Indexed by code, not just by words** — ask which conversations worked on a
   file (`thread_search(path='rank.py')`), which sessions a commit is made of
-  (`thread_search(commit='31bade5')`), or what a session actually changed.
+  (`thread_search(commit='31bade5')`) or a pull request was built from
+  (`thread_search(pr=4)`), or what a session actually changed.
 - **Built like a database, not a folder of exports** — plain JSONL as the
   source of truth, crash-safe writes with intent journaling, built-in backup
   with nightly restore drills. The index is a disposable projection that
@@ -71,11 +71,18 @@ import from account exports you download by hand.
 
 ## Documentation
 
+This is the manual, and it ships inside the package: `thread-archive docs` lists
+these pages and `thread-archive docs <page>` prints one, offline. From a clone,
+the web viewer serves the same pages at `/docs`. The links below are those pages
+on GitHub. (`docs/internal/` is
+the other half — the release process, the bench landscape, the maintainer's dev
+panels — written for whoever works on this repo, and in no install.)
+
 - [Install](https://github.com/ellamental/thread_archive/blob/main/docs/install.md) — the setup wizard, optional semantic search, updating, from-source, uninstall
 - [Search and retrieval](https://github.com/ellamental/thread_archive/blob/main/docs/retrieval.md) — the two tools, filters, and the code index
 - [CLI](https://github.com/ellamental/thread_archive/blob/main/docs/cli.md) — every verb, grouped by what it acts on
 - [MCP](https://github.com/ellamental/thread_archive/blob/main/docs/mcp.md) — server modes and client wiring
-- [Web viewer](https://github.com/ellamental/thread_archive/blob/main/docs/web-viewer.md) — the local UI and its supported URLs
+- [Web viewer](https://github.com/ellamental/thread_archive/blob/main/docs/web-viewer.md) — the dev-only local UI, run from a clone
 - [How it works](https://github.com/ellamental/thread_archive/blob/main/docs/architecture.md) — the event model, durability, platform assumptions, repo layout
 - [Stability](https://github.com/ellamental/thread_archive/blob/main/docs/stability.md) — the four public interfaces and what may change
 - [When an import drifts](https://github.com/ellamental/thread_archive/blob/main/docs/import-drift.md) — the support tier and the repair loop
@@ -105,14 +112,14 @@ unmodeled provider fields preserved verbatim.
 ## License
 
 MIT — see [LICENSE](https://github.com/ellamental/thread_archive/blob/main/LICENSE).
-The pre-built web viewer bundle contains third-party open-source packages (all
-MIT/ISC/BSD); their license texts ship in
-`src/thread_archive/_web/THIRD_PARTY_NOTICES.md`
-(regenerate with `scripts/gen_third_party_notices.py` when frontend
+An install carries no third-party source: the web viewer's bundle, which is what
+vendors any, is dev-only and excluded from the wheel. Its dependencies (all
+MIT/ISC/BSD) are attributed in `src/thread_archive/_web/THIRD_PARTY_NOTICES.md`
+in the repo (regenerate with `scripts/gen_third_party_notices.py` when frontend
 dependencies change).
 
 ## Origin
 
 thread-archive is the standalone member of a larger personal project ("thread"), built to
-stand on its own — self-contained, no hosted backend or external services. It's
-young, though: expect the occasional rough edge.
+stand on its own — self-contained, no hosted backend or external services. It is
+alpha software, and the version number says so.

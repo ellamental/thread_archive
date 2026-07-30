@@ -45,7 +45,12 @@ coverage is their reconciliation:
   reach anything watching coverage instead of waiting to be read. Routine
   empty-session skips (``no_importable_content``) are held out of the warning —
   they fire constantly and would drown the signal — while staying in the ledger
-  and its full recent tally for the re-import audit.
+  and its full recent tally for the re-import audit. Drift records that report
+  only *additions* the parser preserved are held for their grace window
+  (:data:`.._importers._validation_ledger.ADDITIVE_GRACE_DAYS`, counted from the
+  finding's first sighting) unless the install runs in ``dev_mode``; drift that
+  loses content warns the day it lands either way. Held records stay in the
+  report's own drift line, so the evidence is never withheld — only the ask.
 
 Runs nightly as a pipeline stage (recording ``coverage_last``; an out-of-band
 green run retires a red nightly stage, see :mod:`.health`) and on demand via
@@ -55,10 +60,11 @@ green run retires a red nightly stage, see :mod:`.health`) and on demand via
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from .health import record_health, stamp_heartbeat
+from .health import elapsed_s, record_health, stamp_heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -83,14 +89,43 @@ MIN_HISTORY_FOR_DARK = 5
 # cadence, with no escalation path. Reviewers: a long-stale export is the
 # operator's chosen tempo, not a broken loop for the product to close.
 EXPORT_STALE_DAYS = 45.0
-# Sustained-drift thresholds for the per-source degradation verdict (the one
-# that names ``thread-archive source fix`` as the remedy, reaches agents in-session
-# via the MCP search notice, and triggers a preservation snapshot). Stricter
+# Sustained-drift thresholds for the per-source degradation verdict (the one that
+# names a remedy, reaches agents in-session via the MCP search notice, and
+# triggers a preservation snapshot). Stricter
 # than the coverage *warning*, which fires on a single ledger record: one
 # benign record deserves an operator glance, not a repair prompt in every
 # search result.
 DEGRADED_DRIFT_MIN = 3
 DEGRADED_SKIPS_MIN = 3
+
+# What a degraded source's operator is told to type. Owned here because the
+# verdict is: every surface that shows one (the CLI report, the MCP search notice)
+# reads its remedy off :func:`remedy_for` rather than deciding for itself, so they
+# cannot drift apart.
+#
+# ``recheck`` is the first move for every drift-shaped verdict, including the two
+# that name a repair. It re-reads exactly the files the ledgers named through the
+# parser as it stands now, which either recovers the content and closes the records
+# — a fix arrives by core release at least as often as by patch, and the operator
+# who upgrades has no other way to retire a verdict their upgrade already fixed —
+# or confirms the drift is live and points at ``source fix``. Advising the patch
+# scaffold first inverts that: it is the expensive move, and it is the wrong one
+# whenever the parser is already right.
+_REMEDIES = {
+    "validation_drift": "thread-archive source recheck {source}",
+    "capture_skips": "thread-archive source recheck {source}",
+    "stale_ingest": "thread-archive source recheck {source}",
+    # Nothing to re-read — the store itself is missing. The only actionable line is
+    # the coverage report's own (fix the path, or disable the source in config).
+    "went_dark": "thread-archive source coverage",
+}
+
+
+def remedy_for(reason: str, source: str) -> str:
+    """The command a source degraded for ``reason`` should be repaired with."""
+    return _REMEDIES.get(reason, "thread-archive source recheck {source}").format(
+        source=source
+    )
 
 
 def export_fed_sources() -> dict[str, str]:
@@ -238,7 +273,7 @@ def check_coverage(
     """Reconcile every enabled source's store against the archive (see module
     docstring for the checks). Returns the full report; records a compact
     ``coverage_last`` in health.json — including the per-source ``degraded``
-    verdicts the MCP search notice and ``thread-archive source fix`` key on. A
+    verdicts the MCP search notice and ``thread-archive source recheck`` key on. A
     degraded source's raw store is snapshotted into the drift quarantine
     (:mod:`.._watcher.drift_snapshot`) unless ``snapshot`` is false.
     ``watchers`` overrides the enabled set (tests inject stubs);
@@ -246,6 +281,7 @@ def check_coverage(
     reporting is computed against — when only ``watchers`` is injected it
     doubles as the full set, so a stub-driven test never discovers the real
     machine's stores."""
+    _t0 = time.monotonic()
     from .._api import open_archive
     from .._importers._skip_ledger import summarize_skips
     from .._importers._validation_ledger import summarize_drift
@@ -341,7 +377,7 @@ def check_coverage(
                 "store_latest": _iso(d.latest),
             }
     watcher_names = {w.source_name for w in all_watchers}
-    from .._config import load_config, source_enabled
+    from .._config import dev_mode, load_config, source_enabled
 
     cfg = load_config(home)
     now = datetime.now(timezone.utc).timestamp()
@@ -385,10 +421,23 @@ def check_coverage(
     # recording without warning left them invisible to everything watching
     # coverage (nightly notify, ops digest). Warn, never red — a single benign
     # drift record must not fail the pipeline, but it must surface.
-    if drift["recent_substantive"]:
+    # Additive drift — a field/type/role the provider grew and the parser preserved
+    # without modeling — is a maintenance to-do, not a hole, so off a dev install it
+    # is held for its grace window rather than posted the day it lands: the archive
+    # asking to be looked at is a cost, and one that buys nothing while a release or
+    # a patch still has time to close the finding. Lossy drift ignores the window.
+    # Held records stay in ``drift`` and in the CLI report's own drift line — this
+    # withholds the *warning*, never the evidence.
+    dev = dev_mode(cfg)
+    due = drift["recent_substantive"] if dev else drift["recent_due"]
+    due_findings = (
+        drift["recent_substantive_findings"] if dev else drift["recent_due_findings"]
+    )
+    held = 0 if dev else drift["recent_deferred"]
+    if due:
         warnings.append(
-            f"format drift: {drift['recent_substantive']} validation-drift record(s) "
-            f"({drift['recent_substantive_findings']} finding(s)) in the last "
+            f"format drift: {due} validation-drift record(s) "
+            f"({due_findings} finding(s)) in the last "
             f"{drift['days']:.0f}d "
             "— a parser no longer fully understands a source's format; see the "
             "drift ledger"
@@ -405,9 +454,13 @@ def check_coverage(
     # that, sustained *substantive* ledger volume for one source is (thresholds
     # above) — the routine records both ledgers take constantly (a version
     # sighting, an empty session) are trail, not evidence, and a source must
-    # never degrade on them. One reason per source, strongest first — the
-    # verdict names the remedy, and the remedy
-    # (`thread-archive source fix <source>`) is the same either way.
+    # never degrade on them. One reason per source, strongest first; the surfaces
+    # that show a verdict get its remedy from :func:`remedy_for`.
+    #
+    # Ledger volume here is *open* volume — records a repair has closed
+    # (:func:`.._importers._validation_ledger.record_resolution`) stay in the file
+    # and out of this count. Without that a verdict outlives its own repair by the
+    # rest of the rolling window, still naming a remedy that has already run.
     # ``since`` is the best available drift-onset timestamp for that reason.
     degraded: dict[str, dict] = {}
     for name, entry in sources.items():
@@ -444,6 +497,7 @@ def check_coverage(
         "unwatched": unwatched,
         "skips": skips,
         "drift": drift,
+        "drift_held": held,
         "degraded": degraded,
         "drift_snapshots": snapshots,
     }
@@ -455,6 +509,7 @@ def check_coverage(
         "skips_recent": skips["recent"],
         "drift_recent": drift["recent"],
         "degraded": degraded,
+        "duration_s": elapsed_s(_t0),
     })
     stamp_heartbeat()
     return result

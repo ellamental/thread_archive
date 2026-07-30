@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import os
 import threading
+import time
+from contextlib import contextmanager
 from datetime import datetime
 from time import perf_counter
 from typing import Optional
@@ -26,7 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .._store import Thread, use_session
-from . import _probe, fts, pool_cache
+from . import _contention, _probe, fts, pool_cache
 from . import embed_graph as _embed_graph
 from . import rank as _rank
 from ._classify import resolve_relative_date
@@ -153,6 +156,81 @@ def _apply_coherence(ranked: list[EventHit], gamma: float | None = None) -> list
 # A throwaway conceptual query for the warm pass.
 _WARM_QUERY = "warm up the retrieval vector index"
 
+#: flock on ``<home>/.warm.lock``: one warm pass at a time per machine.
+#:
+#: Warming is CPU-, GPU- and page-cache-hungry — a torch model load, an mmap'd vector
+#: pack read end to end, a graph off disk — and none of it is shareable, because the
+#: model has to end up resident in *this* process's address space. Several services
+#: warm independently and restarts arrive in bursts, so the passes overlap by default,
+#: and overlapping is far worse than queueing: measured on this archive, two passes
+#: 1.9s apart took ~303s each, against ~7s for one with the box to itself. Serialized
+#: they cost the sum of their work; concurrent they cost each other's thrash on top.
+#:
+#: Waiting is safe because a warm pass is off the request path by construction — a
+#: process that has not warmed yet serves cold, which is exactly what it did while it
+#: was warming anyway.
+_WARM_LOCK_FILE = ".warm.lock"
+
+#: How long to wait for a turn before warming anyway. A bound on the queue, not on
+#: the work: it exists so a wedged holder (alive but stuck — flock already releases on
+#: death) degrades this to the unserialized behavior rather than leaving a process
+#: permanently cold, which is the one outcome worse than contending.
+_WARM_LOCK_TIMEOUT_S = 120.0
+
+#: How often to retry the lock while waiting. Coarse on purpose: the thing being
+#: waited on takes seconds, so a tight poll would only burn the CPU the wait is
+#: meant to leave free.
+_WARM_LOCK_POLL_S = 0.25
+
+
+@contextmanager
+def _warm_turn(*, timeout_s: float = _WARM_LOCK_TIMEOUT_S, poll_s: float = _WARM_LOCK_POLL_S):
+    """Take this machine's warm turn, yielding the milliseconds spent waiting for it.
+
+    Fail-soft in both directions: if the lock cannot be taken at all (no home, a
+    read-only filesystem, a platform without ``flock``) the pass proceeds
+    unserialized, and if the wait reaches ``timeout_s`` it proceeds anyway. Never
+    raises into :func:`warm_models` — the worst this may cost is the contention it
+    exists to avoid.
+
+    ``timeout_s`` / ``poll_s`` are parameters rather than reads of the constants so a
+    caller that needs a different queue discipline — a test standing two passes up
+    against each other, a script that would rather warm cold than wait — states it
+    instead of reaching into this module.
+    """
+    import fcntl
+    import os
+    from time import sleep
+
+    started = perf_counter()
+    fd = None
+    try:
+        from .._config import resolve_paths
+
+        path = resolve_paths().home / _WARM_LOCK_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+        deadline = started + timeout_s
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if perf_counter() >= deadline:
+                    logger.debug("warm_models: waited out the warm lock; warming anyway")
+                    break
+                sleep(poll_s)
+    except Exception:  # noqa: BLE001 — serialization is an optimization, never a gate
+        logger.debug("warm_models: could not take the warm lock", exc_info=True)
+    try:
+        yield (perf_counter() - started) * 1000.0
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)  # closing the fd releases the flock
+            except OSError:
+                pass
+
 
 def warm_models(embedder=None) -> None:
     """Prime the whole retrieval pipeline on the caller's thread so the FIRST real search
@@ -164,15 +242,22 @@ def warm_models(embedder=None) -> None:
     Three steps, ordered by what a request actually waits on: load the model
     explicitly (works even with an empty store), run one throwaway conceptual search to
     fill the process-global caches the first real query reuses (the vector matrix), and
-    only then build the corpus graph. The graph is
+    only then bring up the corpus graph. The graph is
     last because it is the one stage no search blocks on — the coherence re-rank serves
-    whatever is cached and returns the ranking unchanged when nothing is — while it is
-    also the longest (tens of seconds on a real corpus). Building it before the priming
-    search would leave the process paying full cold-search latency for that whole window,
-    which is precisely the cost this function exists to move off the request path.
+    whatever is cached and returns the ranking unchanged when nothing is — and because
+    it is the one stage that can go from cold to serving without computing anything:
+    :func:`.embed_graph.warm` loads a persisted partition rather than rebuilding one,
+    and only pays a build when no process has ever written one. Ordering it ahead of
+    the priming search would put whatever it does spend in front of the step a real
+    query does block on, which is precisely the cost this function exists to move off
+    the request path.
     ``embedder`` is the model to prime (default: the process one).
     Fail-soft throughout: a missing ``[embeddings]`` extra, a load failure, or an
     unavailable store just leaves search to cold-load lazily, exactly as before.
+
+    The work runs one process at a time per machine (:data:`_WARM_LOCK_FILE`). None of
+    it is shareable — the model must end up resident here — so the passes cannot be
+    deduplicated the way the corpus graph's can, only kept from thrashing each other.
 
     The pass times itself into the usage ledger. This is the startup cost the whole
     function exists to move off the request path, and moving a cost is not the same
@@ -182,59 +267,83 @@ def warm_models(embedder=None) -> None:
     started = perf_counter()
     stage_ms: dict[str, float] = {}
     failed: list[str] = []
+    context: dict = {}
+    span: Optional[_contention.Span] = None
 
     if embedder is None:
         from . import embed as _embed
 
         embedder = _embed.default()
-    for name, stage in (("embed", embedder),):
-        _t = perf_counter()
-        try:
-            stage.warm()
-        except Exception:  # noqa: BLE001 — warming is best-effort; never raise into a caller
-            failed.append(name)
-            logger.debug("warm_models: a model stage failed to preload", exc_info=True)
-        stage_ms[name + "_ms"] = (perf_counter() - _t) * 1000.0
 
-    # Run one throwaway search end to end: it loads the vector matrix and runs a first
-    # cross-encoder inference, both of which cache process-globally for the real queries.
-    # Scoped to :data:`DEFAULT_CONTENT_TYPES` so the matrix this primes is keyed the
-    # same as the real queries reuse (the matrix cache is keyed by content-type scope;
-    # a mismatched scope would prime a matrix the real query never touches).
-    _t = perf_counter()
-    try:
-        from .. import _api as api
+    # One pass at a time per machine (see :data:`_WARM_LOCK_FILE`). The wait is a
+    # recorded stage rather than a hidden one: this is the number that says whether a
+    # slow restart was slow work or a queue, and the two want opposite fixes.
+    with _warm_turn() as wait_ms:
+        stage_ms["wait_ms"] = wait_ms
+        # A warm pass loads a model and runs a real search, so it competes for the box
+        # exactly as a request does. :mod:`._contention` records a *peak* across
+        # everything in flight, which is only true for every other caller if callers
+        # like this one enter it too — a surface that competes without entering leaves
+        # the ledger reading idle on a machine that was not, and warming is the
+        # heaviest thing this process ever does.
+        #
+        # Entered inside the turn rather than around it: a pass asleep on the lock is
+        # queued, not competing, and counting it there would attribute contention to a
+        # process that is doing nothing. That reading is ``wait_ms``'s job.
+        with _contention.in_flight() as span:
+            context = _contention.sample()
+            for name, stage in (("embed", embedder),):
+                _t = perf_counter()
+                try:
+                    stage.warm()
+                except Exception:  # noqa: BLE001 — warming is best-effort; never raise into a caller
+                    failed.append(name)
+                    logger.debug("warm_models: a model stage failed to preload", exc_info=True)
+                stage_ms[name + "_ms"] = (perf_counter() - _t) * 1000.0
 
-        api.search(_WARM_QUERY, limit=1, content_types=DEFAULT_CONTENT_TYPES)
-    except Exception:  # noqa: BLE001 — a store that isn't ready just warms the models, not the caches
-        failed.append("search")
-        logger.debug("warm_models: dummy warm search skipped", exc_info=True)
-    stage_ms["search_ms"] = (perf_counter() - _t) * 1000.0
+            # Run one throwaway search end to end: it loads the vector matrix and runs a first
+            # cross-encoder inference, both of which cache process-globally for the real queries.
+            # Scoped to :data:`DEFAULT_CONTENT_TYPES` so the matrix this primes is keyed the
+            # same as the real queries reuse (the matrix cache is keyed by content-type scope;
+            # a mismatched scope would prime a matrix the real query never touches).
+            _t = perf_counter()
+            try:
+                from .. import _api as api
 
-    # Build the corpus graph inline while we're already off the request path — the
-    # coherence re-rank serves from this cache and never builds during a search (a
-    # stale graph refreshes in the background; the FIRST build is the warm pass's
-    # job). Last of the stages: a search runs correctly without it, so every second
-    # spent here before the steps above would be a second of cold search latency.
-    if _embed_graph.coherence_gamma() > 0.0:
-        _t = perf_counter()
-        try:
-            _embed_graph.get(block=True)
-        except Exception:  # noqa: BLE001 — warming is best-effort
-            failed.append("graph")
-            logger.debug("warm_models: corpus graph build skipped", exc_info=True)
-        stage_ms["graph_ms"] = (perf_counter() - _t) * 1000.0
+                api.search(_WARM_QUERY, limit=1, content_types=DEFAULT_CONTENT_TYPES)
+            except Exception:  # noqa: BLE001 — a store that isn't ready just warms the models, not the caches
+                failed.append("search")
+                logger.debug("warm_models: dummy warm search skipped", exc_info=True)
+            stage_ms["search_ms"] = (perf_counter() - _t) * 1000.0
 
-    # The priming search ran a real encode, so the torch allocator is now holding that
-    # batch's peak — and on a unified-memory box that peak is dirty anonymous memory.
-    # A restart is exactly when the host can least afford it: several daemons warm at
-    # once, each parking a multi-GB high-water mark it will not need again until a
-    # query arrives. Hand it back at the end of the pass; the first real search
-    # re-acquires what it needs.
-    from .embed import release_accelerator_cache
+            # Bring up the corpus graph while we're already off the request path — the
+            # coherence re-rank serves from this cache and never builds during a search (a
+            # stale graph refreshes in the background; a build, when one is needed at all, is
+            # the warm pass's job). Last of the stages: a search runs correctly without it, so
+            # every second spent here before the steps above would be a second of cold search
+            # latency.
+            if _embed_graph.coherence_gamma() > 0.0:
+                _t = perf_counter()
+                try:
+                    _embed_graph.warm()
+                except Exception:  # noqa: BLE001 — warming is best-effort
+                    failed.append("graph")
+                    logger.debug("warm_models: corpus graph build skipped", exc_info=True)
+                stage_ms["graph_ms"] = (perf_counter() - _t) * 1000.0
 
-    release_accelerator_cache()
+            # The priming search ran a real encode, so the torch allocator is now holding that
+            # batch's peak — and on a unified-memory box that peak is dirty anonymous memory.
+            # A restart is exactly when the host can least afford it: the next process's turn
+            # is next, and it will want the same memory this one is no longer using. Hand it
+            # back before releasing the lock; the first real search re-acquires what it needs.
+            from .embed import release_accelerator_cache
 
+            release_accelerator_cache()
+
+    # Folded after the span closes, for the reason :func:`._contention.peak_inflight`
+    # documents: the peers that made this pass slow include the ones that arrived
+    # while it ran, so the peak is only known once it is over.
+    context.update(_contention.peak_inflight(span))
     try:
         from .._tools import _served_by
         from . import usage as _usage
@@ -244,6 +353,7 @@ def warm_models(embedder=None) -> None:
             stages=stage_ms,
             failed=failed,
             surface=_served_by(),
+            context=context,
         )
     except Exception:  # noqa: BLE001 — telemetry is advisory; warming stays fail-soft
         logger.debug("warm_models: could not record the warm pass", exc_info=True)
@@ -268,6 +378,131 @@ def start_warm_models() -> threading.Thread:
     throughout, since :func:`warm_models` never raises."""
     set_defer_construction(True)
     thread = threading.Thread(target=warm_models, name="archive-warm-models", daemon=True)
+    thread.start()
+    return thread
+
+
+#: How long the shared server may sit idle before it touches its own hot pages, in
+#: seconds (``THREAD_ARCHIVE_KEEPALIVE_S``; ``0`` disables).
+#:
+#: Warming makes the models resident; it does not keep them that way. An idle
+#: search server is a large, quiet process, which is exactly what the OS evicts
+#: first under memory pressure — and eviction is invisible to every other warmth
+#: signal, because the objects are still constructed and only their pages are gone.
+#: Measured on this archive, a server hours old with ``cold`` false served the same
+#: query in 2.2 s and then 0.34 s, the whole difference being the vector matrix
+#: faulting back in from swap.
+#:
+#: Ninety seconds because it has to be shorter than the idle gaps in real traffic —
+#: agents search in bursts and then work for minutes — while leaving an actively
+#: used server to do nothing at all (a tick is skipped outright when retrieval has
+#: run since the last one).
+KEEPALIVE_ENV = "THREAD_ARCHIVE_KEEPALIVE_S"
+DEFAULT_KEEPALIVE_S = 90.0
+
+#: How often the loop wakes to consider a touch. Bounded below the interval so a
+#: server that just went idle is touched near its deadline rather than a whole
+#: interval late.
+_KEEPALIVE_TICK_S = 15.0
+
+#: A touch slower than this had to fault its pages back in, which is the event the
+#: keepalive exists to prevent and the only one worth a log line. A resident touch
+#: costs a few hundred milliseconds on this corpus.
+_KEEPALIVE_SLOW_MS = 750.0
+
+
+def keepalive_interval_s() -> float:
+    """Idle seconds before a residency touch, from the environment. ``0`` disables.
+
+    Read per call rather than captured at import, so the operator can retune a
+    running install's aggressiveness by restarting the service alone."""
+    raw = os.environ.get(KEEPALIVE_ENV, "").strip()
+    if not raw:
+        return DEFAULT_KEEPALIVE_S
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logger.warning("ignoring unparseable %s=%r", KEEPALIVE_ENV, raw)
+        return DEFAULT_KEEPALIVE_S
+
+
+def _keepalive_touch() -> None:
+    """One residency touch: a real search, discarded.
+
+    A real search rather than a synthetic memory read because the point is to keep
+    resident exactly what a query needs — the embedder, the vector matrix, the
+    FTS pages, the hydration path — and the only description of that set which
+    cannot drift out of date is a query itself. Scoped like the priming search in
+    :func:`warm_models`, so it touches the matrix real queries reuse rather than
+    priming a differently-keyed one.
+
+    Nothing is recorded: :func:`thread_archive._api.search` writes no usage row (the
+    tool surface does), which is what keeps synthetic traffic out of the population
+    every retrieval report is computed over.
+
+    Entered into the in-flight span for the same two reasons :func:`warm_models` is.
+    It competes for the box exactly as a request does, and a caller that competes
+    without entering leaves a real search running beside it reporting an idle
+    machine. It also *is* activity: the span is what marks retrieval as having run,
+    and a touch outside it would leave the process reading idle forever after — so
+    every later tick would find the interval elapsed and touch again, turning a
+    ninety-second keepalive into one per tick.
+    """
+    from .. import _api as api
+
+    started = perf_counter()
+    with _contention.in_flight():
+        api.search(_WARM_QUERY, limit=1, content_types=DEFAULT_CONTENT_TYPES)
+    took_ms = (perf_counter() - started) * 1000.0
+    if took_ms >= _KEEPALIVE_SLOW_MS:
+        # Residency was already lost — this touch paid the fault-in a real query
+        # would otherwise have paid. Worth saying out loud: it means the interval
+        # is too long for this machine's memory pressure, or something evicted the
+        # process wholesale between ticks.
+        logger.info("keepalive: touch took %.0f ms — pages had been evicted", took_ms)
+    else:
+        logger.debug("keepalive: touch took %.0f ms", took_ms)
+
+
+def _should_touch(interval_s: float) -> bool:
+    """Whether a residency touch is due.
+
+    Two ways to be unnecessary, and skipping both is what keeps this free on a
+    server that is actually being used: work in flight means the pages are being
+    held down by the request itself, and a touch would only compete with the very
+    thing it exists to protect; recent work means they are still hot."""
+    if _contention.inflight_now() > 0:
+        return False
+    return _contention.idle_s() >= interval_s
+
+
+def _keepalive_loop(interval_s: float) -> None:
+    """Touch whenever retrieval has been idle for ``interval_s``. Never raises."""
+    while True:
+        time.sleep(_KEEPALIVE_TICK_S)
+        try:
+            if _should_touch(interval_s):
+                _keepalive_touch()
+        except Exception:  # noqa: BLE001 — residency is best-effort; never kill the thread
+            logger.debug("keepalive: touch failed", exc_info=True)
+
+
+def start_keepalive() -> Optional[threading.Thread]:
+    """Keep this process's retrieval pages resident while it idles.
+
+    For the shared server only, and the counterpart to :func:`start_warm_models`:
+    warming pays the load once, this keeps the OS from taking it back. A one-shot
+    process has nothing to keep — it exits before the first interval — and a
+    machine that would rather have the gigabyte can set
+    :data:`KEEPALIVE_ENV` to ``0``.
+
+    Returns the thread, or ``None`` when disabled."""
+    interval_s = keepalive_interval_s()
+    if interval_s <= 0:
+        logger.debug("keepalive: disabled by %s", KEEPALIVE_ENV)
+        return None
+    thread = threading.Thread(target=_keepalive_loop, args=(interval_s,),
+                              name="archive-keepalive", daemon=True)
     thread.start()
     return thread
 

@@ -21,7 +21,9 @@ LOG_DIR = Path("/data/arc/logs")
 
 
 def test_watcher_plist_shape() -> None:
-    p = watcher_plist(ENTRY, LOG_DIR)
+    # has_viewer pinned: the viewer is dev-only, so the default would make this
+    # unit's argv depend on whether the suite runs from a checkout or a wheel.
+    p = watcher_plist(ENTRY, LOG_DIR, has_viewer=True)
     assert p["Label"] == WATCHER_LABEL
     assert p["ProgramArguments"][:2] == [str(ENTRY), "watch"]
     assert "--web" in p["ProgramArguments"]  # viewer cohosted by default
@@ -35,14 +37,14 @@ def test_watcher_plist_shape() -> None:
 
 
 def test_watcher_plist_home_and_web_options() -> None:
-    p = watcher_plist(ENTRY, LOG_DIR, home="/data/arc", web=False)
+    p = watcher_plist(ENTRY, LOG_DIR, home="/data/arc", web=False, has_viewer=True)
     assert p["EnvironmentVariables"]["THREAD_ARCHIVE_HOME"] == "/data/arc"
     assert "--web" not in p["ProgramArguments"]
 
-    default = watcher_plist(ENTRY, LOG_DIR)
+    default = watcher_plist(ENTRY, LOG_DIR, has_viewer=True)
     # No explicit home → the agent resolves the default; the env var stays unset.
     assert "THREAD_ARCHIVE_HOME" not in default["EnvironmentVariables"]
-    custom_port = watcher_plist(ENTRY, LOG_DIR, web_port=9000)
+    custom_port = watcher_plist(ENTRY, LOG_DIR, web_port=9000, has_viewer=True)
     assert "9000" in custom_port["ProgramArguments"]
 
 

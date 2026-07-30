@@ -17,7 +17,4 @@ index.db-*
 *.sqlite
 /.mcp.json
 
-# the obfuscated real corpus is mounted at runtime, never baked in (may be private)
-tests/install/fixtures-real/
-
 .DS_Store

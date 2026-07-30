@@ -29,14 +29,15 @@ being served from the same process — and one multi-second search is enough to 
 every request beside it look degraded.
 
 Advisory and fail-soft throughout, like every other telemetry writer here: a
-metrics write must never break the request it describes.
-``THREAD_ARCHIVE_WEB_METRICS=0`` disables it.
+metrics write must never break the request it describes. Recorded only on an
+install being developed on (:mod:`.._ops.telemetry`) — someone reading their own
+conversations is not served by a row per page they opened;
+``THREAD_ARCHIVE_WEB_METRICS`` overrides either way.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -44,6 +45,7 @@ from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 from .._config import resolve_paths
 from .._ops import ledger as _ledger
+from .._ops import telemetry as _telemetry
 
 if TYPE_CHECKING:  # the probe is duck-typed at runtime — no import cost per request
     from .._retrieval._probe import SearchProbe
@@ -85,10 +87,16 @@ def max_bytes() -> int:
     return _ledger.env_max_bytes("THREAD_ARCHIVE_WEB_METRICS_MAX_BYTES", 8 * 1024 * 1024)
 
 
-def _enabled() -> bool:
-    return os.environ.get("THREAD_ARCHIVE_WEB_METRICS", "1").strip().lower() not in (
-        "0", "false", "no", "off",
-    )
+def enabled(home: Optional[Any] = None) -> bool:
+    """Whether this install records served requests at all.
+
+    Off unless the install is being developed on (:mod:`.._ops.telemetry`);
+    ``THREAD_ARCHIVE_WEB_METRICS`` overrides in either direction. Public so the
+    handler can skip building a record — the contention sample above all — that
+    nothing is going to write, and so a reader of this ledger can tell an empty
+    window from an install that writes nothing.
+    """
+    return _telemetry.recording("THREAD_ARCHIVE_WEB_METRICS", home)
 
 
 def record_request(
@@ -99,6 +107,7 @@ def record_request(
     method: str = "GET",
     size: Optional[int] = None,
     probe: Optional["SearchProbe"] = None,
+    workload: Optional[dict[str, Any]] = None,
     context: Optional[dict[str, Any]] = None,
 ) -> None:
     """Append one served request. Never raises.
@@ -108,11 +117,18 @@ def record_request(
     :func:`thread_archive._retrieval._contention.sample`, itself already empty on a
     quiet machine, so a request with nothing competing writes no context at all.
 
+    ``workload`` is the *shape* of the ask — ``limit`` and ``page`` — folded in flat
+    on the same field names for the same reason. It is not the query-string
+    exception it looks like: how many rows were asked for and how far into the set
+    is the single largest thing separating one search's cost from another's, and a
+    reader that cannot see it must either treat a 40-row page-9 walk as a question
+    or treat every question as a walk. The query *text* stays out.
+
     ``method`` is recorded only when it isn't a read: an upload's cost is the
     uploader's connection, not this archive's, and a row that looked like a GET of
     the same path would drag that time into the read-latency distribution.
     """
-    if not _enabled():
+    if not enabled():
         return
     record: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),
@@ -126,6 +142,8 @@ def record_request(
         record["size"] = size
     if probe is not None and probe.ran:
         record.update(probe.as_record())
+    if workload:
+        record.update(workload)
     if _concurrent > 1:
         record["concurrent"] = _concurrent
     if context:

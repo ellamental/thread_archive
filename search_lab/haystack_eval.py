@@ -32,15 +32,18 @@ Three datasets, one loop (``--dataset``):
   retrieval; ``_abs`` (abstention) questions are skipped, as the official eval
   does. Reference (on the -M split, so not directly comparable to -S): vanilla
   session Recall@10 = 0.710 BM25 / 0.823 Contriever.
-- **beam** — 20/35/35 conversations at the 100K/500K/1M token tiers
-  (``--beam-tier``), 360/630/630 questions across nine memory-ability categories.
-  Corpus = one conversation's messages, both roles (doc id = the message ``id``);
-  gold is the question's ``source_chat_ids``. Message-level retrieval, and the
-  **multi-answer** row on this bench: median 2–3 gold messages and up to 96, where
-  LoCoMo and LongMemEval sit near one. So recall@k here reads *completeness* — does
-  a window hold everything bearing on the question — which nothing else measures.
-  No published retrieval baseline: the paper scores end-to-end QA under a memory
-  framework, not the retrieval step.
+- **beam** — 20 conversations at the 100K token tier, ~280 questions across the
+  seven memory-ability categories that are retrieval questions (see
+  :data:`BEAM_UNSCORED` for the three that are not). Corpus = one conversation's
+  messages, both roles (doc id = the message ``id``); gold is the question's
+  ``source_chat_ids``. Message-level retrieval, and the **multi-answer** row on
+  this bench: median 2–3 gold messages and up to 16, where LoCoMo and LongMemEval
+  sit near one. So recall@k here reads *completeness* — does a window hold
+  everything bearing on the question — which nothing else measures. No published
+  retrieval baseline: the paper scores end-to-end QA under a memory framework, not
+  the retrieval step. BEAM also publishes 500K and 1M tiers, which are not carried:
+  they are the same conversations extended, so the length ladder they buy costs
+  11 hours of embed for questions this one already asks.
 
 Metrics, overall and per question category: mean per-question **recall@k**
 (fraction of gold retrieved), **recall_all@k** (all gold in top-k — LongMemEval's
@@ -53,13 +56,17 @@ certifies the stack retrieves conversational evidence competitively in general,
 the same complementary-tier caveat BEIR and CDR carry. Refuses the real archive
 home. The datasets are fetched by the recon step, not this script:
 
+    # Fetched at the revisions pinned in `search_lab/dataset_pins.py`, not at a
+    # branch tip: these produce the exact bytes the accepted numbers were measured
+    # on, and `pins` verifies that they did.
     # locomo ships in its repo; longmemeval-S is a 272MB HF file:
     #   git clone https://github.com/snap-research/locomo ~/.cache/thread-evals/locomo/repo
+    #   git -C ~/.cache/thread-evals/locomo/repo checkout 3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376
     #   curl -L -o ~/.cache/thread-evals/longmemeval/data/longmemeval_s_cleaned.json \\
-    #     https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
+    #     https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/98d7416c24c778c2fee6e6f3006e7a073259d48f/longmemeval_s_cleaned.json
     # beam ships as one parquet per tier:
     #   curl -L -o ~/.cache/thread-evals/beam/100K.parquet \\
-    #     https://huggingface.co/datasets/Mohammadta/BEAM/resolve/main/data/100K-00000-of-00001.parquet
+    #     https://huggingface.co/datasets/Mohammadta/BEAM/resolve/3205395e897e7318c7b094ef4e6047b9b82dbb03/data/100K-00000-of-00001.parquet
 
     .venv/bin/python search_lab/haystack_eval.py --dataset locomo
     .venv/bin/python search_lab/haystack_eval.py --dataset longmemeval
@@ -88,6 +95,7 @@ sys.path.insert(0, str(_HERE.parent / "src"))
 # however this file was loaded: as a script, by path, or as search_lab.X.
 sys.path.insert(0, str(_HERE))
 
+import dataset_pins  # noqa: E402
 import eval_core  # noqa: E402
 import eval_home  # noqa: E402
 
@@ -194,6 +202,28 @@ def locomo_groups(repo: Path):
             yield conv["sample_id"], corpus, queries
 
 
+#: BEAM categories whose questions are not retrieval tasks, and so are not scored
+#: as one. Each is skipped for a reason that holds however good the ranker is:
+#:
+#: - ``abstention`` — deliberately unanswerable from the conversation, and ships
+#:   with no ``source_chat_ids``. Nothing to retrieve.
+#: - ``summarization`` — "a comprehensive summary of how my project has
+#:   progressed" matches the whole corpus by construction, and its gold runs to 16
+#:   messages, so a *perfect* retriever caps at recall@10 = 0.625. The task is a
+#:   whole-conversation read, not a top-k window.
+#: - ``event_ordering`` — "list the order in which I brought up different aspects
+#:   of my project development, mention ONLY and ONLY five items". The query names
+#:   a broad topic and an output format; the operation asked for is sequencing,
+#:   and there is no distinguishing content in it to match on.
+#:
+#: ``instruction_following`` is deliberately **not** here. Its questions are
+#: generic ("Which libraries are used in this project?") and its gold is thin, so
+#: it scores low — but finding the message that answers a broad question is
+#: retrieval doing its actual job, and dropping a row for being hard is how a
+#: bench stops measuring anything.
+BEAM_UNSCORED = frozenset({"abstention", "summarization", "event_ordering"})
+
+
 def beam_groups(path: Path, tier: str):
     """One group per conversation: corpus = every chat message (``id`` ->
     ``role: content``), queries = the probing questions with their
@@ -212,13 +242,12 @@ def beam_groups(path: Path, tier: str):
 
     ``source_chat_ids`` arrives in three shapes: a flat id list, a dict of named
     id lists (``temporal_reasoning`` splits ``first_event`` / ``second_event``),
-    and — for five questions across the 500K and 1M tiers — absent, which drops
-    the question rather than scoring it against an empty gold set. Ids are clipped
-    to those that resolve to a real message; on the shipped data none are lost.
+    and occasionally absent, which drops the question rather than scoring it
+    against an empty gold set. Ids are clipped to those that resolve to a real
+    message; on the shipped data none are lost.
 
-    The ``abstention`` category is skipped: its questions are deliberately
-    unanswerable from the conversation and carry no ``source_chat_ids``, so there
-    is nothing to retrieve."""
+    The categories in :data:`BEAM_UNSCORED` are skipped — see there for why each
+    one is not a retrieval question."""
     import ast
 
     import pyarrow.parquet as pq
@@ -233,7 +262,7 @@ def beam_groups(path: Path, tier: str):
             continue
         queries = []
         for category, items in sorted(probing.items()):
-            if category == "abstention":
+            if category in BEAM_UNSCORED:
                 continue
             for i, item in enumerate(items):
                 raw = item.get("source_chat_ids")
@@ -329,7 +358,7 @@ def _build_group(api, home: Path, corpus: dict[str, str], *, vectors: bool) -> d
                 doc_of_thread[str(res.thread_id)] = docid
                 ph.advance()
     if vectors:
-        api.embed()
+        eval_home.embed_corpus(home)
     shutil.rmtree(work, ignore_errors=True)
     return doc_of_thread
 
@@ -375,8 +404,7 @@ def eval_group(api, home: Path, corpus: dict[str, str], queries: list[dict],
     for q in queries:
         with _probe.install() as probe:
             s0 = time.monotonic()
-            hits = api.search(q["text"], limit=limit, content_types=["user"],
-                              group="none")
+            hits = api.search(q["text"], limit=limit, content_types=["user"])
             elapsed = time.monotonic() - s0
         latencies.append(elapsed)
         if probe.ran:
@@ -421,7 +449,10 @@ def run(args) -> int:
         repo = Path(args.locomo_repo).expanduser()
         src = repo / "data" / "locomo10.json"
         if not src.exists():
-            raise SystemExit(f"locomo data not found at {src}; clone snap-research/locomo there")
+            raise SystemExit(
+                f"locomo data not found at {src}; clone snap-research/locomo there "
+                f"at the pinned revision {dataset_pins.SOURCES['locomo'].revision}")
+        dataset_pins.verify("locomo")
         groups = list(locomo_groups(repo))
     elif args.dataset == "beam":
         path = Path(args.beam_file or (_CACHE / "beam" / f"{args.beam_tier}.parquet")).expanduser()
@@ -430,11 +461,13 @@ def run(args) -> int:
                 f"beam tier not found at {path}; fetch it from "
                 f"huggingface.co/datasets/Mohammadta/BEAM "
                 f"(data/{args.beam_tier}-00000-of-00001.parquet)")
+        dataset_pins.verify("beam")
         groups = list(beam_groups(path, args.beam_tier))
     else:
         path = Path(args.longmemeval_file).expanduser()
         if not path.exists():
             raise SystemExit(f"longmemeval file not found at {path}; download longmemeval_s_cleaned.json there")
+        dataset_pins.verify("longmemeval")
         groups = list(longmemeval_groups(path))
     # Sampling *corpora* rather than questions: this shape builds or opens one
     # home per group, so cutting groups cuts the fixed per-corpus cost too, where
@@ -503,6 +536,8 @@ def run(args) -> int:
     if ref.get("recall"):
         print(f"  {'ref recall':<12}" + "".join(
             f"{str(ref['recall'].get(k, '-')):<9}" for k in ks))
+        if not eval_core.comparable_to_published(sample=args.sample):
+            print(eval_core.NOT_COMPARABLE)
     print()
     print("  recall@{} by category:".format(ks[1] if len(ks) > 1 else ks[0]))
     kk = ks[1] if len(ks) > 1 else ks[0]
@@ -544,8 +579,9 @@ def main() -> int:
     ap.add_argument("--locomo-repo", default=str(_CACHE / "locomo" / "repo"))
     ap.add_argument("--longmemeval-file",
                     default=str(_CACHE / "longmemeval" / "data" / "longmemeval_s_cleaned.json"))
-    ap.add_argument("--beam-tier", default="100K", choices=["100K", "500K", "1M"],
-                    help="BEAM conversation-length tier (default: 100K)")
+    ap.add_argument("--beam-tier", default="100K", choices=["100K"],
+                    help="BEAM conversation-length tier. Only the 100K tier is "
+                         "carried; --beam-file still points the loader anywhere")
     ap.add_argument("--beam-file", default=None,
                     help="explicit BEAM parquet path (default: <data-dir>/beam/<tier>.parquet)")
     ap.add_argument("--data-dir", default=str(_CACHE))

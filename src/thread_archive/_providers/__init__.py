@@ -1,9 +1,9 @@
 """The provider registry — one list of every source archive can preserve.
 
 Built-in providers and plugin-supplied ones land in the same registry and are
-indistinguishable downstream. Everything that used to enumerate providers by
-hand now asks here: the watcher set, ``thread-archive source import --provider``, setup's
-source list, export-drop classification, capture coverage.
+indistinguishable downstream. Everything that enumerates providers asks here
+rather than listing them by hand: the watcher set, ``thread-archive source import
+--provider``, setup's source list, export-drop classification, capture coverage.
 
 Loading a provider has one side effect beyond registration: its
 ``parser_config`` and ``parser`` are pushed into the parser island, which cannot

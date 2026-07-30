@@ -19,15 +19,21 @@ lives beside the other home-root ledgers (``capture-skips.jsonl``,
 ``validation-drift.jsonl``), outside ``truth/`` — it is operational telemetry,
 not archive data, and no backup/verify path depends on it.
 
-Three record kinds, distinguished by ``kind``: ``search`` and ``read`` for the two
-tools, and ``warm`` for one :func:`thread_archive._retrieval.warm_models` pass.
+Four record kinds, distinguished by ``kind``: ``search`` and ``read`` for the two
+tools, ``warm`` for one :func:`thread_archive._retrieval.warm_models` pass, and
+``refresh`` for one background rebuild of the vector matrix or the corpus graph.
 The warm row is here rather than in its own file because it is the other half of
 the same latency story — the startup cost the model arms carry, recorded where it
 is paid on purpose, against the cold flags that mark a request unlucky enough to
-pay it inside the call.
+pay it inside the call. The refresh row is the third: work a process does *between*
+requests that every request beside it pays for.
+
+(A fifth, ``serve``, is written by a serving surface rather than by the engine —
+what the front door cost around a tool call, see :func:`record_serve`.)
 
 Append-only JSONL, advisory, fail-soft — a ledger write must never break the
-retrieval call it describes. ``THREAD_ARCHIVE_USAGE_LOG=0`` disables it. At
+retrieval call it describes. Recorded only on an install being developed on
+(:mod:`.._ops.telemetry`); ``THREAD_ARCHIVE_USAGE_LOG`` overrides either way. At
 ``max_bytes()`` the file rotates to a stamped segment and a fresh one starts;
 every segment is retained and every reader here walks all of them
 (:mod:`.._ops.ledger`), so the eval population is the whole history rather than
@@ -37,12 +43,12 @@ whatever fit in the current file.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .._config import resolve_paths
 from .._ops import ledger as _ledger
+from .._ops import telemetry as _telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -56,23 +62,42 @@ LEDGER_FILE = "retrieval-usage.jsonl"
 #: importing the tool surface (:mod:`.._tools`, ~400 ms of engine).
 UNATTRIBUTED = "mcp"
 
+#: Query text a bench or a smoke test left in the ledger rather than an agent asking
+#: something. Every reader that computes a distribution over this file drops them:
+#: they return in ~1 ms and there is no question they are the honest answer to, so
+#: leaving them in pulls every percentile toward the trivial.
+#:
+#: Defined here for the same reason :data:`UNATTRIBUTED` is — the ledger owns the
+#: vocabulary of its own fields, and the alternative is what it replaced: a copy per
+#: reader, each quietly a different list, so two reports over one file disagreed about
+#: which rows were traffic. Exact text, never a shape heuristic: a short query is not
+#: automatically a probe (agents really do search ``p50``, ``EDS``, ``mps``), and a
+#: filter that guessed would silently drop the real ones.
+PROBE_QUERIES = ("x", "test", "warmup", "hello", "bogus")
+
 _MAX_RESULT_IDS = 20  # per-search result ids retained — enough to judge rank quality
 
 
 def max_bytes() -> int:
     """Size at which the ledger rotates to a new segment (32 MB by default).
 
-    Read per call from ``THREAD_ARCHIVE_USAGE_MAX_BYTES``, like ``_enabled()``
+    Read per call from ``THREAD_ARCHIVE_USAGE_MAX_BYTES``, like ``enabled()``
     beside it: a constant would answer once at import and ignore any later word
     on it.
     """
     return _ledger.env_max_bytes("THREAD_ARCHIVE_USAGE_MAX_BYTES", 32 * 1024 * 1024)
 
 
-def _enabled() -> bool:
-    return os.environ.get("THREAD_ARCHIVE_USAGE_LOG", "1").strip().lower() not in (
-        "0", "false", "no", "off",
-    )
+def enabled(home: Any = None) -> bool:
+    """Whether this install records retrieval usage at all.
+
+    Off unless the install is being developed on (:mod:`.._ops.telemetry`);
+    ``THREAD_ARCHIVE_USAGE_LOG`` overrides in either direction. Public because the
+    callers that *assemble* a record — the contention sample most of all — should
+    not pay for one nothing will write, and because a reader of this ledger has to
+    be able to tell an empty window from an install that writes nothing.
+    """
+    return _telemetry.recording("THREAD_ARCHIVE_USAGE_LOG", home)
 
 
 def _append(record: dict) -> None:
@@ -184,7 +209,7 @@ def record_search(
     before/after over this file means anything: retrieval's caches are all
     process-local, restarts are frequent, and a comparison that cannot exclude a
     cold process is comparing cache states rather than code."""
-    if not _enabled():
+    if not enabled():
         return
     record: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),
@@ -242,7 +267,7 @@ def record_read(
     ``context`` is the same contention sample searches carry — a read hydrates from
     the same store ingest is writing, and its tail (milliseconds at the median,
     seconds at the worst) is exactly where that would show."""
-    if not _enabled():
+    if not enabled():
         return
     record: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),
@@ -271,7 +296,7 @@ def record_serve(record: dict[str, Any]) -> None:
     the ``search`` or ``read`` row written microseconds earlier — the pair is what
     separates a slow pipeline from a slow front door, which no single number
     can."""
-    if not _enabled():
+    if not enabled():
         return
     _append({"at": datetime.now(timezone.utc).isoformat(), **record})
 
@@ -282,10 +307,17 @@ def record_warm(
     stages: dict[str, float],
     failed: Optional[list[str]] = None,
     surface: Optional[str] = None,
+    context: Optional[dict[str, Any]] = None,
 ) -> None:
     """Record one :func:`thread_archive._retrieval.warm_models` pass — how long a
     process took to become useful, split by stage (``embed_ms``, ``graph_ms``,
-    ``search_ms``).
+    ``search_ms``, and ``wait_ms`` for the queue in front of them).
+
+    ``duration_ms`` covers the wait as well as the work, because the question it
+    answers is when the process started being useful and a queued process is not
+    useful yet. ``wait_ms`` is what separates the two readings of a slow pass — work
+    that got slower against a turn that came late — which want opposite fixes and are
+    indistinguishable in a total.
 
     A ``warm`` row is the counterpart to the cold flags on a search: those say a
     request paid a load, this says what the load costs when it is paid where it
@@ -299,8 +331,23 @@ def record_warm(
     rows use. These rows are the only count of process starts there is, and
     several daemons warm independently — without it a restart rate is a total over
     services that restart for unrelated reasons, and cannot be lined up with the
-    latency of the one front door a reader is looking at."""
-    if not _enabled():
+    latency of the one front door a reader is looking at.
+
+    ``context`` is the same contention sample searches and reads carry. A stage
+    total says how long the model took to load; it cannot say whether that number
+    is the load or the machine, and the two want opposite fixes. The spread is not
+    subtle — the same load measures seconds on a quiet box and over a minute beside
+    a test suite — so without this a regression in the load and an afternoon of
+    heavy traffic are the same row. ``wait_ms`` does not cover it: that separates
+    work from *this* queue, and the competition worth naming here is mostly not
+    other warm passes.
+
+    It also carries ``uptime_s``, which is what joins a warm row to the searches of
+    its own process — ``at - uptime_s`` is the process start, shared by every row
+    that process writes. That join is the only way to ask whether a slow search ran
+    before its own warm pass finished, which is a different fault from a slow
+    search on a warmed process."""
+    if not enabled():
         return
     record: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),
@@ -312,4 +359,56 @@ def record_warm(
     record.update({k: round(v, 1) for k, v in stages.items()})
     if failed:
         record["failed_stages"] = failed
+    if context:
+        record.update(context)
+    _append(record)
+
+
+def record_refresh(
+    what: str,
+    *,
+    duration_ms: float,
+    failed: bool = False,
+    detail: Optional[dict[str, Any]] = None,
+    context: Optional[dict[str, Any]] = None,
+) -> None:
+    """Record one background rebuild — the vector matrix (``what="matrix"``) or the
+    corpus graph (``what="graph"``) — and what it cost.
+
+    These are the two pieces of work in a serving process that are neither a
+    request nor a startup, and until they are recorded they exist in this ledger
+    only as somebody else's problem: a search that ran beside one carries
+    ``refreshing`` in its contention sample, which names the rebuild and says
+    nothing about it. How long it ran, how often it runs, and whether it is
+    getting slower are all invisible from the field that reports it — so the one
+    thing in the process most able to make a search slow is the one thing with no
+    series of its own.
+
+    ``uptime_s`` (from ``context``) is what makes the pair readable: a refresh row
+    and the search rows around it share a process, so a rebuild's window can be
+    laid over the searches it overlapped rather than inferred from a boolean on
+    each of them.
+
+    ``detail`` is whatever the rebuild can say about its own size — the row count
+    it packed, the nodes and edges it built. A duration without it is the same
+    trap ``chars`` exists to close on reads: the corpus grows, so a rebuild that
+    costs more may be doing more, and only the size says which.
+
+    Cheap to write (one row per rebuild, not per request) and fail-soft like every
+    other writer here: a background thread's telemetry must never take a search's
+    process down with it."""
+    if not enabled():
+        return
+    record: dict[str, Any] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "kind": "refresh",
+        "what": what,
+        "duration_ms": round(duration_ms, 1),
+    }
+    if failed:
+        record["failed"] = True
+    if detail:
+        record.update(detail)
+    if context:
+        record.update(context)
     _append(record)

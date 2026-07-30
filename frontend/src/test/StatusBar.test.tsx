@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { StatusBar } from '../components/StatusBar'
 
 function renderAt(path: string, onSearch = vi.fn()) {
@@ -23,6 +23,11 @@ describe('app header', () => {
   it('labels a thread as a conversation', () => {
     renderAt('/archive/01ARZ3NDEKTSV4RRFFQ69G5FAV')
     expect(screen.getByText('Conversation')).toBeInTheDocument()
+  })
+
+  it('names the manual, index and page alike', () => {
+    renderAt('/docs')
+    expect(screen.getByText('Manual')).toBeInTheDocument()
   })
 
   it('labels the trust center as health', () => {

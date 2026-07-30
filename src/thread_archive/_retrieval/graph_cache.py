@@ -2,17 +2,22 @@
 
 The graph (:mod:`.embed_graph`) is a process-local cache, so every restart starts
 with none and the coherence re-rank stands down until a build lands — measured
-here at a p50 of 8.7s and a p90 of 21.6s. The cost is not the interesting part:
-the build is off the request path by construction, and a search runs correctly
-without the graph. What a restart actually produces is a **window in which the
-same query returns a different order**, with nothing in the output to say so.
-Persisting the graph closes that window; skipping a rebuild when the corpus has
-not moved is the smaller, secondary win.
+here at a p50 of 8.7s and a p90 of 21.6s. What a restart produces is a **window in
+which the same query returns a different order**, with nothing in the output to say
+so; persisting the graph closes that window, which is why this module exists.
+
+The build cost is the other half, and on a machine that restarts often it is the
+larger one. Restarts arrive in bursts, the validity token moves with every ingest
+pass, and the partition is corpus-wide Leiden — so a fleet of processes each holding
+its own copy of "my token has moved" will rebuild the same graph over and over,
+concurrently, contending for the box while they do it. A file here is what lets any
+of them answer *someone already did this*: :func:`newest_age_s` is the probe and
+:func:`.embed_graph.rebuild_floor_s` the judgement made from it.
 
 Derived and disposable, like the vector pack it is built from: files are named by
 the store's validity token, published by ``os.replace``, and swept when
 superseded. Nothing here is authoritative — every failure path returns "no
-cache", which is precisely the state this module was written to improve on.
+cache", which is the degraded state this exists to make rare, never a wrong one.
 
 **A loaded graph is served stale on purpose.** Requiring a token match would make
 this useless under continuous ingest, where the token moves every few minutes and
@@ -197,6 +202,30 @@ def load(params: dict) -> Optional[tuple[tuple[int, int], "CorpusGraph"]]:
         return key, graph
     except Exception:  # noqa: BLE001 — a bad cache must never break retrieval
         logger.debug("embed_graph: could not load the persisted graph", exc_info=True)
+        return None
+
+
+def newest_age_s() -> Optional[float]:
+    """Seconds since the newest persisted graph was written, or ``None`` when there
+    is none to have been written.
+
+    Read from the file's mtime rather than the ``built_at`` stamp it carries. The
+    caller is a rebuild gate asking whether some other process has recently done
+    this work, and that answer must not cost parsing a document whose thread list
+    and community map run to hundreds of KB. :func:`save` publishes the document
+    with :func:`os.replace` from a temp written moments earlier, so the two agree to
+    well inside any useful gate; :func:`describe` reads the stamp itself for the
+    operator-facing number, where precision is the point.
+    """
+    try:
+        d = _dir()
+        if d is None or not d.is_dir():
+            return None
+        found = _newest(d)
+        if found is None:
+            return None
+        return max(0.0, time.time() - found[1].stat().st_mtime)
+    except OSError:
         return None
 
 

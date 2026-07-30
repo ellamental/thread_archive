@@ -240,8 +240,8 @@ def test_partially_errored_import_is_quarantined_not_retained(archive_home) -> N
     """An export holding one good conversation and one whose ``chat_messages`` is
     the wrong shape entirely: the bad one is preserved as a stub and counted as an
     error, so the bundle is quarantined for review — not retained as if clean, and
-    above all not deleted. Sol's finding: the watcher used to clear the export
-    whenever it processed ≥1 conversation, even when some errored."""
+    above all not deleted. Clearing an export on "≥1 conversation processed" would
+    delete the only copy of the one that errored."""
     init_db()
     dumps = archive_home / "dumps"
     export_dir = _claude_batch_dir(dumps, "claude-export", convs=[

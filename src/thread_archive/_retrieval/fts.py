@@ -834,7 +834,7 @@ SET_EXAMINE_CAP = 2_000_000
 
 def _set_scan_sql(
     select_cols: str, predicate: str, shared: list[str], *, group: str = "",
-    scan_floor: bool = False,
+    scan_floor: bool = False, ceiling: bool = False,
 ) -> str:
     """SQL for a capped exact-set query: take the newest ``SET_SCAN_CAP`` matched
     rows, then aggregate. The cap sits on the *inner* scan, so it bounds the work
@@ -851,20 +851,32 @@ def _set_scan_sql(
     reads rather than seeks. fts5 takes a rowid bound as a range constraint on the
     same walk the ordering already uses, so the window truncates the scan instead
     of filtering its output — and it truncates the OLD end, which is the same
-    thing the match cap drops."""
-    floor = ["rowid > :scan_floor"] if scan_floor else []
+    thing the match cap drops.
+
+    ``ceiling`` pins the NEW end to the watermark the answer is attributed to.
+    Ingest runs while this scan does, so without it a scan started at watermark W
+    can return rows above W and be stored as "the set as of W" — an overlap that a
+    later delta off W would then count a second time. Bounded, the answer is
+    exactly what its watermark claims, which is what lets one be extended by
+    another at all."""
+    bounds = ["rowid > :scan_floor"] if scan_floor else []
+    if ceiling:
+        bounds.append("rowid <= :set_ceiling")
     inner = (
         "SELECT thread_id, event_id, occurred_at FROM event_search WHERE "
-        + " AND ".join([predicate] + floor + shared)
+        + " AND ".join([predicate] + bounds + shared)
         + " ORDER BY rowid DESC LIMIT :set_cap"
     )
     return "SELECT " + select_cols + " FROM (" + inner + ")" + group
 
 
 #: Upper bound on how long a memoized exact-set answer is served (see
-#: :func:`_set_memo_get`). The watermark below catches appended rows outright, so
-#: this only bounds what a watermark cannot see — an in-place update, a reindex's
-#: deletes — and a minute is short against the cadence any of those run at.
+#: :func:`_set_memo_get`). Appends are handled exactly — the watermark below sees
+#: them and :func:`matched_threads` scans them — so this bounds only what a
+#: watermark cannot see, and it is the sole thing that does: an in-place update or
+#: a reindex's deletes change rows *below* the watermark, which every memoized set
+#: and every delta merged onto one takes on faith. A minute is short against the
+#: cadence either of those runs at.
 _SET_MEMO_TTL_S = 60.0
 
 #: Distinct exact-set answers kept. The set queries are per (query, scope), and the
@@ -873,7 +885,10 @@ _SET_MEMO_TTL_S = 60.0
 #: per matched thread, which the corpus itself bounds.
 _SET_MEMO_MAX = 8
 
-_set_memo: "OrderedDict[tuple, tuple[float, Any]]" = OrderedDict()
+#: ``key -> (stored_at, watermark, payload)``. The watermark is part of the value
+#: rather than the key so an entry stays findable after ingest moves the index; what
+#: to do about the move is the reading caller's decision.
+_set_memo: "OrderedDict[tuple, tuple[float, object, Any]]" = OrderedDict()
 _set_memo_lock = threading.Lock()
 _set_memo_hits = 0
 _set_memo_misses = 0
@@ -906,7 +921,7 @@ def _set_watermark(session: Optional[Session]) -> object:
 
 
 def _set_memo_get(key: tuple) -> Any:
-    """A memoized exact-set answer for ``key``, or ``None``.
+    """A memoized exact-set answer for ``key`` as ``(watermark, payload)``, or ``None``.
 
     The exact-set scan is the one stage whose cost does not depend on the page
     being asked for: a saturated pool resolves the whole match set to decide
@@ -915,6 +930,12 @@ def _set_memo_get(key: tuple) -> Any:
     walk. Memoizing it is also what makes the walk *coherent*: pages are sold as
     slices of one ordering, and a set re-resolved per page against a moving index
     can drop a row a later page was counting on.
+
+    The watermark rides in the value rather than the key, so an entry survives
+    ingest for callers that can carry it forward (:func:`matched_threads` scans
+    the delta and merges). Keyed on the query alone, an entry is *findable* after
+    the index moves; what to do about the move is the caller's decision, and the
+    two callers here answer differently.
     """
     global _set_memo_hits, _set_memo_misses
     now = time.monotonic()
@@ -928,16 +949,72 @@ def _set_memo_get(key: tuple) -> Any:
             return None
         _set_memo_hits += 1
         _set_memo.move_to_end(key)
-        return entry[1]
+        return entry[1], entry[2]
 
 
-def _set_memo_put(key: tuple, value: Any) -> None:
-    """Store ``value`` under ``key``, evicting least-recently-used past the cap."""
+def _set_memo_put(key: tuple, watermark: object, value: Any) -> None:
+    """Store ``value`` under ``key`` as of ``watermark``, evicting LRU past the cap."""
     with _set_memo_lock:
-        _set_memo[key] = (time.monotonic(), value)
+        _set_memo[key] = (time.monotonic(), watermark, value)
         _set_memo.move_to_end(key)
         while len(_set_memo) > _SET_MEMO_MAX:
             _set_memo.popitem(last=False)
+
+
+def _set_ceiling(watermark: object) -> dict:
+    """The ``rowid <= …`` bound for a scan attributed to ``watermark``, as SQL params.
+
+    Empty when the watermark is not a usable rowid — an empty index (``max(rowid)``
+    is NULL) or the sentinel an unreadable probe returns. Both leave the scan
+    unbounded at the new end, which is only ever *more* rows; the memo declines to
+    extend such an answer anyway (:func:`_appended_since`), so nothing can later
+    treat it as an exact set-as-of."""
+    return {"set_ceiling": watermark} if isinstance(watermark, int) else {}
+
+
+def _appended_since(stored: object, current: object) -> bool:
+    """True when ``current`` is ``stored`` plus appended rows and nothing else.
+
+    The one index movement a memoized set can be carried across. Anything else —
+    a watermark that went backwards or sideways (a reindex), or either end being
+    the sentinel an unreadable probe returns — is not an append and gets a rescan.
+    """
+    return (
+        isinstance(stored, int) and isinstance(current, int) and current > stored
+    )
+
+
+def _merge_thread_rows(base: list[dict], delta: list[dict]) -> list[dict]:
+    """Fold newly-appended per-thread tallies into a memoized set.
+
+    Exact rather than approximate, because the two scans partition the rows they
+    aggregate: the base covered rowids up to the watermark it was taken at and the
+    delta covers everything above it, so no event is counted twice and none is
+    missed. Which makes the merged row identical to what one scan over the whole
+    range would have produced — ``n_hits`` adds, and the two ``max()`` columns take
+    the larger, exactly as the SQL aggregate would.
+
+    Re-sorted newest-match-first: a thread the delta touched has moved to the front
+    of the ordering, which is the entire reason its page has to change.
+    """
+    merged = {r["thread_id"]: dict(r) for r in base}
+    for row in delta:
+        current = merged.get(row["thread_id"])
+        if current is None:
+            merged[row["thread_id"]] = dict(row)
+            continue
+        current["n_hits"] += row["n_hits"]
+        for column in ("event_id", "last_match"):
+            new, old = row[column], current[column]
+            if old is None or (new is not None and new > old):
+                current[column] = new
+    # NULL-safe: occurred_at is nullable, and SQLite's DESC puts those last. A bare
+    # comparison would raise on the first one instead.
+    return sorted(
+        merged.values(),
+        key=lambda r: (r["last_match"] is not None, r["last_match"]),
+        reverse=True,
+    )
 
 
 def reset_set_memo() -> None:
@@ -952,7 +1029,7 @@ def reset_set_memo() -> None:
 
 def _set_memo_key(
     kind: str, where: str, params: dict, shared: list[str], shared_params: dict,
-    watermark: object,
+    *extra: object,
 ) -> tuple:
     """The memo key for one exact-set query: the SQL it would run, its bound values,
     and the index it would run against.
@@ -962,11 +1039,19 @@ def _set_memo_key(
     scope share an entry, and a scope field that reaches the SQL cannot be left out
     of the key by omission. ``id(get_engine())`` scopes it to the open archive: a
     process holding two homes (the ``use_engine`` seam) must not serve one's set as
-    the other's."""
+    the other's.
+
+    The *question*, not the answer's vintage: the watermark an entry was computed at
+    is stored with the entry (:func:`_set_memo_put`) instead of keyed into it, so a
+    caller can find its own earlier answer after the index has moved and decide
+    whether it can be carried forward.
+
+    ``extra`` is anything else the caller's answer depends on that the SQL text does
+    not already carry — a bound passed as a parameter rather than compiled in."""
     return (
         kind, id(get_engine()), where,
         tuple(sorted(params.items())), tuple(shared), tuple(sorted(shared_params.items())),
-        watermark,
+        *extra,
     )
 
 
@@ -990,6 +1075,7 @@ def matched_threads(
     match_mode: str = "token",
     startswith: Optional[str] = None,
     session: Optional[Session] = None,
+    set_cap: int = SET_SCAN_CAP,
     **scope,
 ) -> tuple[list[dict], bool]:
     """Every thread the query matches, tallied — the exact-set half of a
@@ -997,8 +1083,10 @@ def matched_threads(
 
     Rows are ``{thread_id, n_hits, event_id, last_match}``, newest match first;
     ``event_id`` is the thread's newest matching event, so a row opens where the
-    query landed rather than at the thread's tail. ``capped`` is True when the
-    scan hit :data:`SET_SCAN_CAP` and the enumeration is therefore a floor.
+    query landed rather than at the thread's tail. ``capped`` is True when a bound
+    truncated the enumeration — :data:`SET_SCAN_CAP` on what matched, or the
+    :data:`SET_EXAMINE_CAP` window on what a scanning predicate read — so the tally
+    is a floor rather than a total.
 
     This is the query that makes a *complete* answer possible. The candidate pool
     :func:`search_events` returns is a cut — ``pool_floor`` rows deep, ordered by
@@ -1006,6 +1094,12 @@ def matched_threads(
     worse, indistinguishable from a set that simply ended. Here the set is
     resolved directly and ranking is a separate question applied on top of it.
     ``**scope`` takes the :func:`_shared_filters` arguments verbatim.
+
+    ``set_cap`` overrides :data:`SET_SCAN_CAP` for one call — how many matched
+    rows this is willing to examine before giving up on an exact answer. Lower it
+    to bound the work of a query known to be broad and accept a floor; the memo
+    keys on the query rather than the bound, so a set resolved under one is not
+    reused under a different one.
     """
     ensure_fts(session)
     if match_mode not in MATCH_MODES:
@@ -1019,30 +1113,75 @@ def matched_threads(
     shared, shared_params = _shared_filters(**scope)
     _t = perf_counter()
     watermark = _set_watermark(session)
-    key = _set_memo_key("threads", where, params, shared, shared_params, watermark)
+    # The bound is part of the question: a set resolved under a low cap is a floor,
+    # and handing it to a caller that asked for the real thing would answer a
+    # different question than the one asked.
+    key = _set_memo_key("threads", where, params, shared, shared_params, set_cap)
+    tally = (
+        "thread_id, count(*) AS n_hits, max(event_id) AS event_id, "
+        "max(occurred_at) AS last_match"
+    )
+    grouped = " GROUP BY thread_id ORDER BY last_match DESC"
+
     memo = _set_memo_get(key)
     if memo is not None:
-        # Fresh dicts per hand-out: the rows travel into a caller that builds hits
-        # beside them, and a shared dict is one careless write away from a memoized
-        # answer that drifts from the query it answers.
-        _probe.record("set_ms", _t)
-        return [dict(r) for r in memo[0]], memo[1]
+        stored, (rows, capped, saturated) = memo
+        if stored == watermark:
+            # Fresh dicts per hand-out: the rows travel into a caller that builds
+            # hits beside them, and a shared dict is one careless write away from a
+            # memoized answer that drifts from the query it answers.
+            _probe.record("set_ms", _t)
+            _probe.bump("set_hits")
+            return [dict(r) for r in rows], capped
+        # A saturated set is not extendable. It holds the newest SET_SCAN_CAP
+        # matched rows and nothing else, so folding more in makes something that is
+        # no longer that set — a tally that grows past its own cap with every page,
+        # instead of the fixed floor the cap defines. Those rescan.
+        if not saturated and _appended_since(stored, watermark):
+            # The index moved by appending, which is what it does all day: a live
+            # watcher writes every few seconds, so a walk of any length spans
+            # several. Rescanning the whole set per page for those few rows is what
+            # makes the memo miss exactly when it is needed most — the answer for
+            # everything below the old watermark is still on hand and still correct,
+            # so only the rows above it are scanned. Bounded at both ends: the base
+            # holds everything through ``stored`` and this must hold exactly the
+            # rest, or the overlap is double-counted into the tally.
+            sql = sa_text(_set_scan_sql(tally, where, shared, group=grouped,
+                                        scan_floor=True, ceiling=True))
+            with use_session(session) as s:
+                fresh = s.execute(
+                    sql,
+                    {**shared_params, **params, "scan_floor": stored,
+                     "set_ceiling": watermark, "set_cap": set_cap},
+                ).mappings().all()
+            merged = _merge_thread_rows(rows, [dict(r) for r in fresh])
+            # Both scans enumerated their ranges completely, so the merge is exact
+            # over the union however large it grows — the cap only makes an answer
+            # a floor when it actually truncated one.
+            saturated = sum(r["n_hits"] for r in fresh) >= set_cap
+            capped = capped or saturated
+            _probe.record("set_ms", _t)
+            _probe.bump("set_deltas")
+            _set_memo_put(key, watermark, (merged, capped, saturated))
+            return [dict(r) for r in merged], capped
+
     window, floored = _scan_window(watermark) if scans else ({"scan_floor": 0}, False)
-    sql = sa_text(_set_scan_sql(
-        "thread_id, count(*) AS n_hits, max(event_id) AS event_id, "
-        "max(occurred_at) AS last_match",
-        where, shared, group=" GROUP BY thread_id ORDER BY last_match DESC",
-        scan_floor=scans,
-    ))
+    # Pinned to the watermark this answer will be stored under, so a row ingest
+    # appends mid-scan lands in the next delta rather than in both.
+    ceiling = _set_ceiling(watermark)
+    sql = sa_text(_set_scan_sql(tally, where, shared, group=grouped,
+                                scan_floor=scans, ceiling=bool(ceiling)))
     with use_session(session) as s:
         rows = s.execute(
-            sql, {**shared_params, **params, **window, "set_cap": SET_SCAN_CAP},
+            sql, {**shared_params, **params, **window, **ceiling,
+                  "set_cap": set_cap},
         ).mappings().all()
     _probe.record("set_ms", _t)
-    total_hits = sum(r["n_hits"] for r in rows)
-    result = ([dict(r) for r in rows], floored or total_hits >= SET_SCAN_CAP)
-    _set_memo_put(key, result)
-    return [dict(r) for r in result[0]], result[1]
+    _probe.bump("set_scans")
+    saturated = sum(r["n_hits"] for r in rows) >= set_cap
+    capped = floored or saturated
+    _set_memo_put(key, watermark, ([dict(r) for r in rows], capped, saturated))
+    return [dict(r) for r in rows], capped
 
 
 def count_matches(
@@ -1073,11 +1212,17 @@ def count_matches(
     shared, shared_params = _shared_filters(**scope)
     _t = perf_counter()
     watermark = _set_watermark(session)
-    key = _set_memo_key("count", where, params, shared, shared_params, watermark)
+    key = _set_memo_key("count", where, params, shared, shared_params)
     memo = _set_memo_get(key)
-    if memo is not None:
+    if memo is not None and memo[0] == watermark:
         _probe.record("set_ms", _t)
-        return memo
+        _probe.bump("set_hits")
+        return memo[1]
+    # No delta path here, unlike :func:`matched_threads`: ``n_threads`` is a
+    # DISTINCT, and a count cannot tell whether the threads a delta touched were
+    # already in it. Carrying it forward would need the id set this deliberately
+    # does not keep — and the walk that made the delta path worth building drives
+    # the thread tally, not this.
     window, floored = _scan_window(watermark) if scans else ({"scan_floor": 0}, False)
     sql = sa_text(_set_scan_sql(
         "count(*) AS n_events, count(DISTINCT thread_id) AS n_threads", where, shared,
@@ -1088,9 +1233,10 @@ def count_matches(
             sql, {**shared_params, **params, **window, "set_cap": SET_SCAN_CAP},
         ).mappings().one()
     _probe.record("set_ms", _t)
+    _probe.bump("set_scans")
     result = (row["n_events"], row["n_threads"],
               floored or row["n_events"] >= SET_SCAN_CAP)
-    _set_memo_put(key, result)
+    _set_memo_put(key, watermark, result)
     return result
 
 
@@ -1153,8 +1299,9 @@ def index_thread_meta(session: Optional[Session] = None, thread_ids: Optional[li
     """Sync thread titles into the FTS surface (shadow + FTS5) as thread-meta
     docs. Diff-based: an unchanged thread writes nothing, a changed title replaces
     its rows (and drops its stale vector so the embed cohost re-embeds it), a
-    vanished one is deleted — which is also how a summary doc left over from when
-    summaries were indexed gets collected. ``thread_ids=None`` syncs every
+    vanished one is deleted — as is any other thread-meta doc the desired set does
+    not name, so a stale doc of a kind this no longer writes is collected too.
+    ``thread_ids=None`` syncs every
     thread — cheap enough for the watcher's maintenance cadence. Returns the
     number of rows written."""
     ensure_fts(session)

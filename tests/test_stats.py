@@ -11,10 +11,15 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from sqlalchemy import text
 
-from thread_archive import _api as ta
-from thread_archive._web import route
+# The /api/stats survey is read through the viewer's router, which is dev-only
+# and ships in no wheel — see docs/web-viewer.md.
+pytest.importorskip("thread_archive._web", reason="the viewer is dev-only (no wheel carries it)")
+
+from thread_archive import _api as ta  # noqa: E402
+from thread_archive._web import route  # noqa: E402
 
 
 def _seed_events(archive_home, rows):

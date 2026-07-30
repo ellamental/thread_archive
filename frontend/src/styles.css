@@ -424,6 +424,18 @@ h1.title { font-size: 19px; margin: 0 0 4px; }
 }
 .model-switch-label b { color: var(--ink); font-weight: 600; font-family: ui-monospace, Menlo, monospace; text-transform: none; }
 
+/* the pull request a session recorded working on — a quiet one-line provenance
+   marker, not a message; the ref itself is monospace so it reads as an identifier */
+.pr-link {
+  display: flex; align-items: baseline; gap: 8px; margin: 8px 0; font-size: 12px;
+}
+.pr-link-tag {
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+}
+.pr-link a, .pr-link span:last-child {
+  font-family: ui-monospace, Menlo, monospace; color: var(--ink);
+}
+
 /* the safeguard reason behind a fallback — an inline amber callout, shown open */
 .safeguard {
   margin: 8px 0; padding: 9px 12px; border-radius: 8px;
@@ -767,7 +779,7 @@ a.session-link:hover { color: var(--accent); }
 }
 /* The wide pages — dashboards and the import flow — share one measure. Kept ahead
    of the breakpoints below so their narrower padding wins on source order. */
-.health-page, .upload-page, .retrieval-page, .lab-page {
+.health-page, .upload-page, .retrieval-page, .telemetry-page, .lab-page {
   max-width: 1120px; margin: 0 auto; padding: 34px 38px 96px;
 }
 .health-hero {
@@ -1141,12 +1153,50 @@ a.session-link:hover { color: var(--accent); }
 .drop-name { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
 .drop-meta { flex: none; color: var(--muted); font-size: 11px; }
 
+/* ---- the manual ---- */
+.docs-page h1 { margin: 0 0 10px; font-size: 22px; letter-spacing: -.01em; }
+.docs-lede { margin: 0 0 26px; color: var(--muted); max-width: 62ch; }
+.docs-index { display: grid; gap: 8px; }
+.docs-card {
+  display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: baseline;
+  padding: 13px 16px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--panel); color: inherit; text-decoration: none;
+}
+.docs-card:hover { border-color: var(--accent); }
+.docs-card-title { font-weight: 600; }
+.docs-card-slug {
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted);
+}
+.docs-card-summary { grid-column: 1 / -1; color: var(--muted); font-size: 12.5px; }
+
+.doc-crumb {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  margin-bottom: 18px; font-size: 12px;
+}
+.doc-crumb a { color: var(--accent); text-decoration: none; }
+.doc-crumb-slug { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+
+/* Manual prose is hard-wrapped in its source file, unlike a transcript's, where
+   the newlines the author typed are the layout. So paragraphs reflow here — and
+   the page grows the heading scale a document needs and a chat bubble doesn't. */
+.md-doc p { white-space: normal; }
+.md-doc { line-height: 1.62; }
+.md-doc h1 { font-size: 22px; letter-spacing: -.01em; margin: 0 0 14px; }
+.md-doc h2 { font-size: 17px; margin: 30px 0 10px; }
+.md-doc h3 { font-size: 14.5px; margin: 22px 0 8px; }
+.md-doc h4 { font-size: 13px; margin: 18px 0 6px; color: var(--muted); }
+.md-doc ul, .md-doc ol { margin: 0 0 12px; padding-left: 22px; }
+.md-doc li { margin: 3px 0; }
+.md-doc pre { margin: 0 0 14px; font-size: 12.5px; line-height: 1.5; }
+.md-doc table { display: block; overflow-x: auto; margin: 0 0 14px; font-size: 13px; }
+.md-doc hr { border: none; border-top: 1px solid var(--line); margin: 26px 0; }
+
 @media (min-width: 760px) and (max-width: 1000px) {
   aside { width: 260px; min-width: 260px; }
   .wrap { padding-inline: 22px; }
   .home { padding-inline: 28px; }
   .recent-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .health-page, .retrieval-page, .lab-page { padding-inline: 26px; }
+  .health-page, .retrieval-page, .telemetry-page, .lab-page { padding-inline: 26px; }
   .health-check-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
@@ -1206,7 +1256,7 @@ a.session-link:hover { color: var(--accent); }
   .hit-nav { justify-content: space-between; }
   .msg { padding: 11px 13px; }
   .stat-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .health-page, .retrieval-page, .lab-page { max-width: none; padding: 22px 16px 76px; }
+  .health-page, .retrieval-page, .telemetry-page, .lab-page { max-width: none; padding: 22px 16px 76px; }
   .health-hero { padding: 22px; }
   .health-check-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .health-detail-grid { grid-template-columns: 1fr; }
@@ -1249,6 +1299,55 @@ a.session-link:hover { color: var(--accent); }
 .rv-swatch.muted { height: 1px; opacity: .5; }
 .rv-legend .rv-muted-key { opacity: .65; }
 .rv-mark { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 2 3; opacity: .5; }
+
+/* The door table is the page's headline, so its cells are read as tiles rather
+   than as table text: one big number per door per metric, with the count or
+   companion percentile under it. */
+.rv-doors th { text-align: right; vertical-align: bottom; }
+.rv-doors th:first-child { text-align: left; }
+.rv-doors td.rv-door { white-space: normal; min-width: 160px; max-width: 320px; padding-right: 22px; }
+.rv-doors td.rv-door code, .rv-doors td.rv-door > span:first-child { display: block; }
+.rv-doors td.rv-door .small { line-height: 1.35; }
+.rv-doors td.rv-cell { text-align: right; padding-top: 10px; padding-bottom: 10px; }
+.rv-doors .rv-cell .n { display: block; font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.rv-doors .rv-cell .s { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+/* The pooled row is data the page explicitly does not lead with. */
+.rv-doors tr.rv-mixture td { color: var(--muted); border-top: 1px solid var(--line); }
+.rv-doors tr.rv-mixture .rv-cell .n { font-weight: 500; }
+
+/* ---- developer telemetry ---- */
+.telemetry-page h1 { margin: 0; }
+.telemetry-page .eyebrow { margin: 0 0 2px; }
+.telemetry-page section { margin-top: 36px; }
+.telemetry-page section > h2 { margin: 0 0 6px; font-size: 17px; }
+.telemetry-lede { max-width: 72ch; color: var(--muted); margin: 10px 0 24px; }
+.telemetry-method {
+  display: inline-block; margin-right: 7px; padding: 1px 5px;
+  border-radius: 4px; background: var(--badge); color: var(--muted);
+  font: 9px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.telemetry-bad { color: #b34233; font-weight: 600; }
+.telemetry-split {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 32px; margin-top: 26px;
+}
+.telemetry-split h3 {
+  margin: 0 0 7px; color: var(--muted); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.telemetry-faults { min-width: 840px; }
+.telemetry-faults td:nth-child(2) {
+  max-width: 440px; overflow: hidden; text-overflow: ellipsis;
+}
+.telemetry-page a { color: var(--accent); text-decoration: none; }
+.telemetry-page a:hover { text-decoration: underline; }
+.telemetry-path { margin-top: 12px; color: var(--muted); font-size: 11px; }
+@media (prefers-color-scheme: dark) {
+  .telemetry-bad { color: #e0806f; }
+}
+@media (max-width: 759px) {
+  .telemetry-split { grid-template-columns: 1fr; }
+}
 
 /* ---- search lab (dev) ---- */
 /* An inventory, not a dashboard: every value is categorical or a count, so the
@@ -1379,4 +1478,15 @@ a.session-link:hover { color: var(--accent); }
   background: var(--badge); border-radius: 8px; padding: 10px 12px;
   font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-all;
   margin: 0;
+}
+
+/* A rail link that leaves this origin — the dev panels on their own server.
+   Pushed to the bottom of the nav and dimmed: it is a maintainer's door, shown
+   only when the operator asked for it (src/dev.ts). */
+.rail-link.rail-away {
+  margin-top: 0.5rem;
+  opacity: 0.7;
+}
+.rail-link.rail-away:hover {
+  opacity: 1;
 }

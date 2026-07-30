@@ -139,7 +139,7 @@ def build_home(dataset: str, corpus: dict[str, str], home: Path, *,
 
     if vectors:
         _log("embedding (slow)...")
-        api.embed()
+        eval_home.embed_corpus(home)
     return doc_of_thread
 
 

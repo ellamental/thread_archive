@@ -4,8 +4,7 @@ Claude Code writes a sibling ``<session>.context.jsonl`` of hook-context lines
 (``{"hook", "context", "ts", "prompt", "metadata"}``) — content that never reaches
 the session JSONL. Each non-empty ``context`` line becomes a ``hook_context`` event
 on the same thread, cursored independently via a derived ``{source_id}:context``
-import-state row so re-imports only carry the grown tail. Ported from canonical
-``streaming/incremental_import/_events.py:_import_sidecar_lines``.
+import-state row so re-imports only carry the grown tail.
 """
 
 from __future__ import annotations

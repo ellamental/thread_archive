@@ -404,11 +404,183 @@ def test_reimport_resets_ledgered_watermarks(archive_home, tmp_path):
     summary = _repair.reimport_source("claude-code")
     assert summary["source_ids"] == 1
     assert summary["watermarks_reset"] == 1
+    # Rewound to line 0, not deleted: an absent watermark is what triggers the
+    # importer's adoption guard, which would re-stamp it at EOF and import nothing.
     with get_session() as s:
-        gone = s.execute(
+        state = s.execute(
             select(ImportState).filter_by(source="claude-code", source_id="proj:led")
-        ).first()
-    assert gone is None
+        ).scalar_one()
+        assert state.last_line_count == 0
+        assert state.last_file_size == 0
+        assert state.last_content_hash is None
+
+
+def test_reimport_actually_re_reads_the_file_the_ledger_named(
+    archive_home, tmp_path, monkeypatch
+):
+    """The end-to-end property the whole module exists for, and the one nothing was
+    asserting: after a repair, content the old parser skipped is in the archive.
+
+    Stands in for a parser fix by importing a file, then deleting the events one
+    line produced — a re-read that genuinely happens puts it back, and one that
+    adopts or skips leaves the hole.
+    """
+    from sqlalchemy import select
+
+    from thread_archive import _api as ta
+    from thread_archive._importers import import_session_incremental
+    from thread_archive._store import Event, get_session
+
+    # A real claude-code store under a per-test $HOME, so the repair runs end to end
+    # through the registry's own provider and its own discovery — no stand-in.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    f = tmp_path / ".claude" / "projects" / "proj" / "led.jsonl"
+    f.parent.mkdir(parents=True)
+    write_jsonl(f, [cc_user("first"), cc_assistant("second")])
+
+    ta.open_archive()
+    result = import_session_incremental(f, "proj:led")
+    tid = result.thread_id
+
+    with get_session() as s:
+        victim = s.execute(
+            select(Event).where(Event.thread_id == tid,
+                                Event.event_type == "user_message_sent")
+        ).scalars().first()
+        assert victim is not None
+        s.delete(victim)
+        s.commit()
+
+    def _user_events() -> int:
+        with get_session() as s:
+            return len(s.execute(
+                select(Event.id).where(Event.thread_id == tid,
+                                       Event.event_type == "user_message_sent")
+            ).all())
+
+    assert _user_events() == 0
+
+    now = datetime.now(timezone.utc).isoformat()
+    (archive_home / "validation-drift.jsonl").write_text(
+        json.dumps({"at": now, "provider": "claude-code", "source_id": "proj:led",
+                    "findings": ["x"]}) + "\n"
+    )
+
+    summary = _repair.reimport_source("claude-code")
+
+    assert summary["files_reread"] == 1
+    assert _user_events() == 1  # the hole is filled — the re-read really happened
+
+
+def test_reimport_drops_the_poll_fingerprints_that_would_skip_the_files(archive_home):
+    """A watcher skips an unchanged file on its fingerprint *before* any watermark
+    is read. Left standing, that fingerprint makes the whole ledger-driven recovery
+    a no-op for any session that has stopped growing — which is all but the live
+    one — and it reports a clean run having re-read nothing."""
+    from thread_archive import _api as ta
+    from thread_archive._watcher import fingerprints
+
+    ta.open_archive()
+    fingerprints.save("claude-code", {"/some/led.jsonl": (123, 456)}, force=True)
+    assert fingerprints.load("claude-code") != {}
+
+    now = datetime.now(timezone.utc).isoformat()
+    (archive_home / "capture-skips.jsonl").write_text(
+        json.dumps({"at": now, "source": "claude-code", "source_id": "proj:led",
+                    "reason": "empty_import_discarded"}) + "\n"
+    )
+    summary = _repair.reimport_source("claude-code")
+    assert summary["fingerprints_dropped"] is True
+    assert fingerprints.load("claude-code") == {}
+
+
+def test_reimport_rereads_a_ledgered_file_a_live_fingerprint_would_skip(
+    archive_home, tmp_path
+):
+    """The failure this path exists to survive: the watcher daemon owns the
+    fingerprint cache and flushes it back on its own schedule, so a repair cannot
+    win by clearing the persisted copy. Recovery must re-read the ledgered file with
+    a *fully populated* cache standing — which is the state a real repair runs in."""
+    from thread_archive import _api as ta
+    from thread_archive._importers import import_session_incremental
+    from thread_archive._repair.reimport import _reimport_files
+
+    projects = tmp_path / "projects"
+    (projects / "proj").mkdir(parents=True)
+    f = projects / "proj" / "led.jsonl"
+    write_jsonl(f, [cc_user("led"), cc_assistant("led")])
+
+    ta.open_archive()
+    import_session_incremental(f, "proj:led")
+
+    # Stand the cache up exactly as the daemon leaves it: this file, fingerprinted.
+    st = f.stat()
+    fingerprints_map = {str(f.resolve()): (st.st_mtime_ns, st.st_size)}
+    from thread_archive._watcher import fingerprints as fp
+
+    fp.save("claude-code", fingerprints_map, force=True)
+
+    # A watcher pointed at this store, with the cache loaded, would skip the file.
+    from thread_archive._watcher.sources import ClaudeCodeWatcher
+
+    w = ClaudeCodeWatcher(projects_dirs=[projects])
+    assert w.poll().items_imported == 0
+
+    # The targeted path re-reads it regardless of what any cache says.
+    class _P:
+        name = "claude-code"
+        kind = "line-stream"
+        importer = staticmethod(import_session_incremental)
+        watcher = staticmethod(lambda: ClaudeCodeWatcher(projects_dirs=[projects]))
+
+    out = _reimport_files(_P(), {"proj:led"})
+    assert out["eligible"] and out["read"] == 1 and out["errors"] == []
+
+
+def test_reimport_files_skips_an_id_the_provider_has_pruned(archive_home, tmp_path):
+    """A ledgered id whose file is gone is the snapshot replay's job, not an error."""
+    from thread_archive import _api as ta
+    from thread_archive._importers import import_session_incremental
+    from thread_archive._repair.reimport import _reimport_files
+    from thread_archive._watcher.sources import ClaudeCodeWatcher
+
+    projects = tmp_path / "projects"
+    (projects / "proj").mkdir(parents=True)
+    ta.open_archive()
+
+    class _P:
+        name = "claude-code"
+        kind = "line-stream"
+        importer = staticmethod(import_session_incremental)
+        watcher = staticmethod(lambda: ClaudeCodeWatcher(projects_dirs=[projects]))
+
+    out = _reimport_files(_P(), {"proj:vanished"})
+    assert out["eligible"] and out["read"] == 0 and out["errors"] == []
+
+
+def test_forgetting_one_source_leaves_the_others_cached(archive_home):
+    """The drop is per-source: repairing claude-code must not cost every other
+    provider a full re-verify pass."""
+    from thread_archive import _api as ta
+    from thread_archive._watcher import fingerprints
+
+    ta.open_archive()
+    fingerprints.save("claude-code", {"/a.jsonl": (1, 2)}, force=True)
+    fingerprints.save("codex", {"/b.jsonl": (3, 4)}, force=True)
+
+    assert fingerprints.forget("claude-code") is True
+    assert fingerprints.load("claude-code") == {}
+    assert fingerprints.load("codex") == {"/b.jsonl": (3, 4)}
+
+
+def test_forgetting_a_source_with_no_fingerprints_is_a_noop(archive_home):
+    from thread_archive import _api as ta
+    from thread_archive._watcher import fingerprints
+
+    ta.open_archive()
+    fingerprints.save("codex", {"/b.jsonl": (3, 4)}, force=True)
+    assert fingerprints.forget("claude-code") is False
+    assert fingerprints.load("codex") == {"/b.jsonl": (3, 4)}
 
 
 def test_reimport_replays_pruned_snapshot_copies(archive_home):

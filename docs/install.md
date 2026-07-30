@@ -12,22 +12,27 @@ thread-archive setup
 **`setup` is the onboarding.** On first run it discovers this machine's
 conversation stores and shows what it found — counts, sizes, date ranges —
 *before* touching anything, then asks: import (all, a selection, or skip),
-install the always-on watcher (launchd on macOS, systemd on Linux; includes
-the web viewer at :8787), **schedule a nightly backup** (a second question —
+install the always-on watcher (launchd on macOS, systemd on Linux),
+**schedule a nightly backup** (a second question —
 *where should backups go?* — that installs the daily backup → verify →
 restore-drill pipeline to a disk you name), wire the MCP server into detected
 clients (the `claude` CLI, or it prints the JSON block for any other client),
-and — with the watcher serving it — open the archive in your browser. Every
-choice is skippable and persists in `<home>/config.json`; a disabled source
-stays disabled across every ingest path — and across later runs of `setup`,
-which only changes a source's policy where you state a new one (the edit
-selection). The end state is a populated, searchable archive served over MCP,
-plus the `thread-archive` operator CLI and the pre-built web viewer (no node at
-any point). `thread-archive status` shows status; `thread-archive setup`
+and — from a clone, where the viewer exists — open the archive in your browser.
+Every choice is skippable and persists in `<home>/config.json`; a disabled
+source stays disabled across every ingest path — and across later runs of
+`setup`, which only changes a source's policy where you state a new one (the
+edit selection). The end state is a populated, searchable archive served over
+MCP, plus the `thread-archive` operator CLI. `thread-archive status` shows
+status; `thread-archive setup`
 revisits the choices. Non-interactive (agents,
 scripts): `thread-archive setup --yes` accepts every default — without `--yes`,
 a non-TTY run only prints guidance and never ingests, and neither shape opens a
 browser.
+
+**The manual comes with it.** These pages ship inside the package, so
+`thread-archive docs` lists them and `thread-archive docs <page>` prints one —
+offline, no clone, no network. The web viewer serves the same pages at `/docs`
+([web-viewer.md](web-viewer.md)).
 
 ## Semantic search (optional)
 
@@ -77,7 +82,8 @@ The development install is a clone with an editable venv:
 ```bash
 git clone https://github.com/ellamental/thread_archive.git thread-archive && cd thread-archive
 python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'          # add -e '.[embeddings]' for local semantic search
+.venv/bin/pip install --upgrade pip        # `--group` is PEP 735; needs pip >= 25.1
+.venv/bin/pip install -e . --group dev     # add -e '.[embeddings]' for local semantic search
 .venv/bin/pytest tests/ -q                 # confirm green (add `-m package` for the wheel/sdist release lane)
 
 # wire the read MCP server into this clone's .mcp.json (absolute venv path)

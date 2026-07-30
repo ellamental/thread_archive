@@ -24,6 +24,8 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Communications :: Chat",
     "Topic :: Text Processing :: Indexing",
     "Topic :: Utilities",
 ]
@@ -44,9 +46,12 @@ dependencies = [
     "sqlalchemy>=2.0",
     "numpy>=1.26",
     "networkx>=3.2",  # kNN graph container + the seeded Louvain engine
+    # >=1.10: the first release carrying mcp.server.transport_security, which the
+    # HTTP server's DNS-rebinding allow-list is built from — a lower resolve would
+    # serve an unauthenticated full read of the archive with no Host validation.
     # <2: the server is written against the 1.x FastMCP API; mcp 2.0 removes
     # mcp.server.fastmcp, so an unpinned resolve breaks archive-mcp at import.
-    "mcp>=1.0,<2",
+    "mcp>=1.10,<2",
 ]
 
 [project.optional-dependencies]
@@ -74,20 +79,39 @@ embeddings = [
     "thread-archive[leiden]",
 ]
 # Every runtime feature in one name, for an install that wants the whole product
-# rather than a considered subset. Runtime only — `dev` and `testing` are bench
-# and plugin-author tooling, not features, so they stay out.
+# rather than a considered subset. Runtime only — `testing` is plugin-author
+# tooling, not a feature, so it stays out.
 all = ["thread-archive[embeddings]", "thread-archive[leiden]"]
+# What a provider plugin needs to test itself against the archive: the golden
+# harness and isolated-home fixture in thread_archive.provider.testing. An extra
+# rather than a dependency group, unlike `dev` below: its audience installs
+# thread-archive from the index and never sees this repo, so it has to travel in
+# the published metadata.
+testing = ["pytest>=8.0"]
+
+# The maintainer's toolchain — a PEP 735 group, not an extra, because none of it
+# is a feature of the installed package. An extra is published metadata: every
+# `pip install thread-archive` advertises it, and `pip install thread-archive[dev]`
+# from the index resolves a test toolchain against a wheel that carries no tests.
+# A group is read from this file, so it reaches a checkout (`pip install -e .
+# --group dev`) and nothing else. Needs pip >= 25.1, which is also the floor for
+# the CI and container installs that use it.
+#
 # pyarrow: search_lab/haystack_eval.py reads the BEAM parquet shards. Bench-only —
 # no product code imports it.
 # hypothesis: generated queries against the never-raise contract (tests/test_search_fuzz.py).
+[dependency-groups]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-xdist>=3.6", "pytest-timeout>=2.3", "ruff>=0.6", "mypy>=1.11", "build>=1.2", "pyarrow>=17.0", "hypothesis>=6.100"]
-# What a provider plugin needs to test itself against the archive: the golden
-# harness and isolated-home fixture in thread_archive.provider.testing.
-testing = ["pytest>=8.0"]
 
 [project.urls]
 Homepage = "https://github.com/ellamental/thread_archive"
 Repository = "https://github.com/ellamental/thread_archive"
+# The docs tree, not a single page: install, cli, mcp, providers and format are
+# each the entry point for a different reader, and the index is what lets them
+# find theirs. `main` rather than a tag — it tracks the released code (release
+# PRs are the only thing that moves it), so the link never points at docs for a
+# version nobody can install.
+Documentation = "https://github.com/ellamental/thread_archive/tree/main/docs"
 Changelog = "https://github.com/ellamental/thread_archive/blob/main/CHANGELOG.md"
 Issues = "https://github.com/ellamental/thread_archive/issues"
 
@@ -119,17 +143,49 @@ path = "src/thread_archive/__init__.py"
 # Provider parsers live in thread_archive._thread_import — a vendored,
 # zero-dependency clean island, kept private (no public top-level package)
 # until its API is deliberately exposed.
-packages = ["src/thread_archive"]
-# The dev-only viewer surfaces (the /retrieval report page) read the search lab,
-# which is a source-tree directory and not part of an install. Excluding them
-# keeps that dependency out of the wheel entirely: the shipped server imports
-# _dev fail-softly and answers 404 for the pages it backs.
-exclude = ["src/thread_archive/_dev"]
-# The web viewer ships pre-built: frontend/ (node, dev-only) builds into
-# _web/static/, which is committed and packaged so `pip install` needs no node.
-# Under the package dir and tracked, so hatchling includes it by default; declared
-# explicitly so the bundle ships even if static/ is ever gitignored as build output.
-artifacts = ["src/thread_archive/_web/static/**/*"]
+#
+# Two trees land in the wheel: the package, and the manual. `docs/` stays at the
+# repo root — that is what the Documentation URL points at and what a reader
+# browsing the repo expects — and `sources` below renames it into the package as
+# `thread_archive/_docs/`, beside the `__init__.py` that resolves it. So an
+# install carries the manual and can answer for itself (`thread-archive docs`),
+# with no clone and no network.
+#
+# An ordinary include rather than `force-include`, deliberately: force-included
+# paths are NOT subject to `exclude`, which would carry `docs/internal/` — the
+# maintainer's own pages — into every install.
+only-include = ["src/thread_archive", "docs"]
+# The viewer is dev-only and does not ship. `_web` is the stdlib server plus the
+# built React bundle — 23% of the download and 28% of the unpacked install, a
+# browser UI every `pip install` would pay for whether or not it ever opened one.
+# What an install is for is preservation, retrieval, and the MCP server; the
+# viewer is a thing a checkout has.
+#
+# It is absence-tolerant rather than load-bearing — `thread_archive._viewer`
+# probes for the viewer and the CLI registers `web` / `watch --web` only when it
+# is there, so an install advertises no verb it cannot run.
+#
+# NOTE: there is deliberately no `artifacts` key. It re-includes paths that
+# `exclude` drops (its purpose is packaging gitignored build output), so listing
+# _web/static there would silently undo this.
+# `docs/internal/` is the manual's other half: the release process, the bench
+# landscape, the maintainer's dev panels. Their reader is whoever works on this
+# repo, and they name branches, gates and instruments no install has — so they
+# stay in the repo and out of the artifact, and `thread_archive._docs` (a
+# top-level `*.md` glob) does not serve them either. `docs/*.md` is therefore
+# exactly what ships and exactly what the CLI and the viewer show: one boundary,
+# drawn by which directory a page sits in.
+exclude = [
+    "src/thread_archive/_web",
+    "docs/internal",
+]
+
+# `src` is stripped (the package's own layout); `docs` is renamed into the
+# package. Written out rather than using the `packages` shorthand, which is
+# sugar for exactly these two keys and leaves no room for the second tree.
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
+"docs" = "thread_archive/_docs"
 
 [tool.hatch.build.targets.sdist]
 # Ship the package sources, tests, docs, and the frontend sources that build
@@ -137,6 +193,10 @@ artifacts = ["src/thread_archive/_web/static/**/*"]
 # scripts, node_modules — hatchling only reads the ROOT .gitignore, so nested
 # ignore files like frontend/.gitignore do NOT keep node_modules out) stays
 # local.
+#
+# `docs` here means the whole tree, `internal/` included: this is the source
+# distribution, whose reader is someone building or reading the source, which is
+# exactly who those pages are for. The wheel is where the split is drawn.
 only-include = [
     "src",
     "tests",
@@ -198,6 +258,7 @@ markers = [
     "package: builds the wheel/sdist and installs into a throwaway venv; slow, selected explicitly with -m package",
     "beir: runs the BEIR retrieval-calibration harness (network download + torch + a full ingest); tens of minutes, selected explicitly with -m beir",
     "quality_models: the synthetic search-quality corpus under the real embedding model (fused pipeline); minutes of model loads, selected explicitly with -m quality_models",
+    "viewer: needs the web viewer, which is dev-only and ships in no wheel — runs from a checkout, skipped where thread_archive._web is absent (the Docker install lane runs this suite against the installed wheel). Applied automatically by tests/conftest.py.",
 ]
 filterwarnings = [
     "error::ResourceWarning",

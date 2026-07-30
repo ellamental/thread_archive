@@ -34,11 +34,12 @@ from __future__ import annotations
 import filecmp
 import json
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
 from .._config import ArchivePaths, resolve_paths
-from .health import record_health, stamp_heartbeat
+from .health import elapsed_s, record_health, stamp_heartbeat
 from .verify import verify
 
 # Delete-sync sanity bound: refuse to delete more than this fraction of the
@@ -622,6 +623,7 @@ def backup(
     """
     from .._api import open_archive
 
+    _t0 = time.monotonic()
     open_archive(home)
     from .._truth import checkpoint as _checkpoint
     from .._truth.jsonl_log import _truth_write_lock, _try_rebalance_lock
@@ -728,6 +730,7 @@ def backup(
         "verify_ok": verify_ok,
         "mirror_complete": result["mirror_complete"],
         "files_copied": result["files_copied"],
+        "duration_s": elapsed_s(_t0),
     })
     stamp_heartbeat()
     return {
@@ -865,7 +868,11 @@ def restore_drill(
         "ok": bool(result.get("ok")),
         "events": scan["events_effective"],
         "coverage": result.get("coverage"),
-        "seconds": result["seconds"],
+        # ``duration_s`` in the health record, ``seconds`` in the returned result:
+        # the record shares one field name with every other scheduled operation so
+        # they can be read as one series, and the result keeps the name its caller
+        # and the CLI already render.
+        "duration_s": result["seconds"],
     })
     stamp_heartbeat()
     return result
@@ -1027,7 +1034,7 @@ def restore(
         "to": str(to_path),
         "ok": bool(result["ok"]),
         "events": scan["events_effective"],
-        "seconds": result["seconds"],
+        "duration_s": result["seconds"],
     })
     return result
 

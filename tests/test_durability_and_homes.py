@@ -1,4 +1,4 @@
-"""Regression tests for three real bugs:
+"""Three durability invariants, each with a failure mode that loses data silently:
 
 1. Home switching within a process must not split the archive (SQLite writing one
    store while JSONL appends resolve to another).

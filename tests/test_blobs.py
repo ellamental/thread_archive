@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import os
 
+import pytest
 from sqlalchemy import text
 
 from tests.helpers import write_jsonl
@@ -231,7 +232,8 @@ def test_inline_history_materializes_on_read(tmp_path, archive_home):
     assert any(small.encode() in tf.read_bytes() for tf in truth_files)
 
 
-# ── the web surface ──────────────────────────────────────────────────────────
+# ── the web surface (dev-only: no wheel carries the viewer) ──────────────────
+@pytest.mark.viewer
 def test_web_blob_endpoint(tmp_path, archive_home):
     _import_image_session(tmp_path)
     from thread_archive._web import route

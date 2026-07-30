@@ -6,12 +6,13 @@ from __future__ import annotations
 import errno
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
 from .backup import backup, restore_drill
 from .coverage import check_coverage
-from .health import read_health, record_health, stamp_heartbeat
+from .health import elapsed_s, read_health, record_health, stamp_heartbeat
 from .source_mirror import mirror_sources
 from .verify import verify
 
@@ -122,22 +123,33 @@ def nightly(
     """
     from .._api import open_archive
 
+    _t0 = time.monotonic()
     open_archive(home)
     failed: list[str] = []
     result: dict = {"dest": str(Path(dest).expanduser())}
+    # Wall time per stage, keyed by the names ``failed_stages`` uses so the two
+    # read together. Each stage also records its own duration in its own health
+    # record — but only when it *completed*: a stage that raised writes nothing,
+    # and a stage that hangs until the night is gone is exactly the one worth
+    # costing. Here the timer is outside the ``except``, so every stage is timed
+    # whatever it did.
+    stage_s: dict[str, float] = {}
 
     # Source mirror first: raw harness stores prune on their own clocks
     # (Claude Code at ~30 days), so their capture is the most time-sensitive
     # stage — and it must not be forfeited to a failure later in the night.
+    _t = time.monotonic()
     try:
         m = mirror_sources(home=home)
         mirror_ok = bool(m.get("ok"))
     except Exception as e:
         m, mirror_ok = {"error": _stage_error(e)}, False
+    stage_s["source-mirror"] = elapsed_s(_t)
     result["source_mirror"] = m
     if not mirror_ok:
         failed.append("source-mirror")
 
+    _t = time.monotonic()
     try:
         b = backup(dest, home=home, allow_shrink=allow_shrink)
         backup_ok = bool(
@@ -145,6 +157,7 @@ def nightly(
         )
     except Exception as e:
         b, backup_ok = {"error": _stage_error(e)}, False
+    stage_s["backup"] = elapsed_s(_t)
     result["backup"] = b
     if not backup_ok:
         failed.append("backup")
@@ -152,6 +165,7 @@ def nightly(
     deep_due = _health_is_due("verify_deep_last", _DEEP_EVERY_DAYS)
     hashes_due = _health_is_due("verify_hashes_last", _HASHES_EVERY_DAYS)
     result["escalations"] = {"deep": deep_due, "hashes": hashes_due}
+    _t = time.monotonic()
     try:
         v = verify(
             home=home, deep=deep_due, hashes=hashes_due,
@@ -165,16 +179,19 @@ def nightly(
         verify_ok = bool(v["ok"])
     except Exception as e:
         v, verify_ok = {"error": _stage_error(e)}, False
+    stage_s["verify"] = elapsed_s(_t)
     result["verify"] = v
     if not verify_ok:
         failed.append("verify")
 
     if drill:
+        _t = time.monotonic()
         try:
             d = restore_drill(dest, home=home)
             drill_ok = bool(d.get("ok"))
         except Exception as e:
             d, drill_ok = {"error": _stage_error(e)}, False
+        stage_s["restore-drill"] = elapsed_s(_t)
         result["drill"] = d
         if not drill_ok:
             failed.append("restore-drill")
@@ -183,11 +200,13 @@ def nightly(
     # _ops.coverage). The other stages protect what was captured; this one
     # asserts capture itself is still whole — a source gone dark or ingest
     # gone stale fails the night like any integrity break.
+    _t = time.monotonic()
     try:
         c = check_coverage(home=home)
         coverage_ok = bool(c.get("ok"))
     except Exception as e:
         c, coverage_ok = {"error": _stage_error(e)}, False
+    stage_s["coverage"] = elapsed_s(_t)
     result["coverage"] = c
     if not coverage_ok:
         failed.append("coverage")
@@ -195,6 +214,8 @@ def nightly(
     result["ok"] = not failed
     result["failed_stages"] = failed
     result["drift_alert"] = _drift_alert()
+    result["duration_s"] = elapsed_s(_t0)
+    result["stage_s"] = stage_s
     record_health("nightly_last", {
         "dest": result["dest"],
         "ok": result["ok"],
@@ -202,6 +223,14 @@ def nightly(
         "deep": deep_due,
         "hashes": hashes_due,
         "drill": drill,
+        # The night's total and where it went. The pipeline runs unattended in a
+        # window that has to end before the machine is used, and it is the one
+        # operation here whose cost is the sum of five others — so a total that
+        # grew says only that the night got longer, and the split says which
+        # stage did it. Read against ``deep``/``hashes``: an escalated night is
+        # legitimately longer than an ordinary one.
+        "duration_s": result["duration_s"],
+        "stage_s": stage_s,
     })
     # Publish the verdict to the family-monitor heartbeat (see stamp_heartbeat):
     # stamped on every completion whatever the outcome, and the `nightly_last`

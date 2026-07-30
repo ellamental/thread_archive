@@ -26,6 +26,11 @@ about an archive, not archive content, so the truth mirror doesn't carry it:
     Append-only history, one row per finished run. Phase timings over time turn
     "the embed is slow" into a series rather than an impression.
 
+Both are written on every install, unlike the ledgers of served requests and
+retrieval calls (:mod:`.telemetry`). Neither accumulates — one row per load
+someone deliberately started — and both are the operator's own business: the
+viewer's health page renders them as what building this archive cost.
+
 Advisory and fail-soft throughout: a telemetry write must never break the load it
 describes. ``THREAD_ARCHIVE_LOAD_LOG=0`` disables both files.
 """
@@ -57,7 +62,18 @@ _STATE_WRITE_INTERVAL_S = 1.0
 _RATE_WINDOW_S = 10.0
 
 
-def _enabled() -> bool:
+def enabled(home: Optional[Path] = None) -> bool:
+    """Whether either file is written.
+
+    Unlike the ledgers of served requests and retrieval calls, this one is not
+    gated on ``dev_mode`` (:mod:`.telemetry`). Both halves are the operator's own
+    business and neither accumulates: the live state is the progress bar for a
+    load that may run for hours, and the history is one row per load someone
+    deliberately started — a handful over an install's life, rendered on the
+    viewer's health page as what building this archive cost. ``home`` is accepted
+    so every caller reads the same shape; only ``THREAD_ARCHIVE_LOAD_LOG=0``
+    silences it.
+    """
     return os.environ.get("THREAD_ARCHIVE_LOAD_LOG", "1").strip().lower() not in (
         "0", "false", "no", "off",
     )
@@ -364,7 +380,7 @@ class LoadRun:
         if self.current is not None:
             self.current._sample()  # ride the refresh; the progress path pays nothing
         snap = self.snapshot()
-        if _enabled():
+        if enabled(self.home):
             try:
                 _write_atomic(state_path(self.home), snap)
             except OSError as e:
@@ -397,7 +413,7 @@ class LoadRun:
         self.status = status
         self.error = error
         self._touch(force=True)
-        if not _enabled():
+        if not enabled(self.home):
             return
         record = {"at": _now(), "kind": "load-run",
                   "duration_s": round(time.monotonic() - self._t0, 3), **self.snapshot()}

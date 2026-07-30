@@ -15,6 +15,7 @@ import logging
 
 from thread_archive._importers._events import log_parse_validation
 from thread_archive._importers._validation_ledger import (
+    ADDITIVE_GRACE_DAYS,
     LEDGER_FILE,
     VERSION_SIGHTING_LEAD,
     record_drift,
@@ -218,8 +219,34 @@ def test_clean_import_writes_no_drift_record(archive_home):
     )
     assert _drift_records(archive_home) == []
     assert summarize_drift() == {"total": 0, "recent": 0, "recent_substantive": 0,
-                                 "recent_substantive_findings": 0, "recent_findings": 0,
-                                 "days": 7.0, "by_provider": {}}
+                                 "recent_substantive_findings": 0, "recent_due": 0,
+                                 "recent_due_findings": 0, "recent_deferred": 0,
+                                 "recent_findings": 0, "recent_resolved": 0,
+                                 "days": 7.0, "grace_days": ADDITIVE_GRACE_DAYS,
+                                 "by_provider": {}}
+
+
+def test_the_seam_flags_a_preserved_addition_as_additive(archive_home):
+    # An unknown block type is carried through, not dropped, so the record says so
+    # — the ledger can't re-derive that later, when the finding is just prose.
+    log_parse_validation(
+        [_msg("user", block_type="wobble")],
+        provider="claude-code", conversation_id="proj:s1", batch_safe=True,
+    )
+    assert _drift_records(archive_home)[0]["additive"] is True
+
+
+def test_a_record_that_also_reports_a_loss_is_not_additive(archive_home):
+    # A missing timestamp is content the archive does not have. Mixed with an
+    # addition, the loss decides — the record gets no grace window.
+    log_parse_validation(
+        [_msg("user", block_type="wobble", created_at=None)],
+        provider="claude-code", conversation_id="proj:s1", batch_safe=False,
+    )
+    rec = _drift_records(archive_home)[0]
+    assert rec["additive"] is False
+    assert any("wobble" in f for f in rec["findings"])
+    assert any("lacks created_at" in f for f in rec["findings"])
 
 
 def test_record_drift_empty_findings_is_a_noop(archive_home):
@@ -241,9 +268,14 @@ def test_drift_surfaces_in_the_coverage_check(archive_home):
     drift = r["drift"]
     assert drift["by_provider"]["claude-code"].pop("since")  # volatile timestamp
     assert drift == {"total": 1, "recent": 1, "recent_substantive": 1,
-                     "recent_substantive_findings": 1, "recent_findings": 1, "days": 7.0,
+                     "recent_substantive_findings": 1, "recent_due": 1,
+                     "recent_due_findings": 1, "recent_deferred": 0,
+                     "recent_findings": 1, "recent_resolved": 0,
+                     "days": 7.0, "grace_days": ADDITIVE_GRACE_DAYS,
                      "by_provider": {"claude-code": {"recent": 1, "recent_substantive": 1,
-                                                     "recent_findings": 1}}}
+                                                     "recent_due": 1, "recent_deferred": 0,
+                                                     "recent_findings": 1,
+                                                     "recent_resolved": 0}}}
     assert read_health()["coverage_last"]["drift_recent"] == 1
 
 

@@ -1,8 +1,7 @@
 """Title + one-line-description extraction for Claude Code import.
 
-Ported from canonical ``streaming/incremental_import/_titles.py`` (+ the
-command-title helper from ``importer.py``): derive a thread title or description
-from raw CC session lines — the ``custom-title`` / ``ai-title`` rows CC writes,
+Derive a thread title or description from raw CC session lines — the
+``custom-title`` / ``ai-title`` rows CC writes,
 else the first non-XML line of the first user message (or a bare slash-command's
 name). Pure helpers; no store access, so they stay separately testable.
 """

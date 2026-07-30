@@ -85,6 +85,16 @@ def _unknown_payload_text(payload: dict) -> str:
         return ""
 
 
+def _pr_ref(p: dict) -> str:
+    """``owner/name#4`` (or ``#4`` when the repo went unrecorded) for a ``pr_link``
+    payload; empty when it names no number."""
+    number = p.get("number")
+    if number is None or not str(number).strip():
+        return ""
+    repo = p.get("repo")
+    return f"{repo}#{number}" if repo else f"#{number}"
+
+
 def _attachment_raw(p: dict) -> Optional[dict]:
     """The raw Claude Code attachment preserved on an attachment context_summary
     event (``payload.provider_data.line.attachment``), or None when the event
@@ -502,6 +512,11 @@ def _assistant_block(
         # divider); one legible line here instead of an [unknown] JSON dump.
         to = p.get("to")
         return {"type": "text", "content": f"[model → {to}]"} if to else None
+    if et == "pr_link":
+        # Which PR the session was on. One line, once — the harness announces it
+        # every turn but the import collapses those to a single event.
+        ref = _pr_ref(p)
+        return {"type": "text", "content": f"[pull request {ref}]"} if ref else None
     if et in _SKIP_TYPES:
         return None  # lifecycle / duplicate-summary noise — deliberately hidden
     # Any other unrecognized type: surface it rather than silently dropping it.
@@ -1581,6 +1596,14 @@ def _structured_event(
             return None
         return ("model_switch", {"type": "model_switch", "kind": "user",
                                  "from_model": None, "to_model": to})
+    if et == "pr_link":
+        # Which pull request this session was on — provenance the viewer can link
+        # out to, so it carries the url the string path has no use for.
+        ref = _pr_ref(p)
+        if not ref:
+            return None
+        return ("assistant", {"type": "pr_link", "ref": ref, "repo": p.get("repo"),
+                              "number": str(p.get("number")), "url": p.get("url")})
     if et == "message":
         # A preserved non-standard-role turn — shown under its own role (genuine
         # content, not machinery, so not gated behind include_tools).

@@ -232,328 +232,6 @@ export interface DiskUsage {
   external: string[]
 }
 
-// --- retrieval health -------------------------------------------------------
-// Latency is reported as percentiles, never as an average: the distribution has a
-// long tail (a cold process, a browse walk over a deep pool), and a mean over it
-// describes no search anyone actually ran.
-
-export interface LatencyBand {
-  n: number
-  p50: number
-  p90: number
-  p99?: number
-}
-
-/** How the window is sliced. `hour` for short windows, `day` beyond three days. */
-export type Bucket = 'hour' | 'day'
-
-/** One bucket of served searches. `at` is its UTC start — `2026-07-26` for a day,
- *  `2026-07-26T14` for an hour. `warm`/`cold` are separate because a process's
- *  first search runs an order of magnitude slower than its thousandth; `unknown`
- *  is the window that predates the stage probe, kept apart rather than assumed.
- *  A bucket with no searches carries only `at` and `n: 0` — the span is dense, so
- *  a quiet stretch draws as a gap rather than closing up. */
-export interface ServedBucket {
-  at: string
-  n: number
-  warm?: LatencyBand
-  cold?: LatencyBand
-  unknown?: LatencyBand
-}
-
-/** One front door's traffic. `mcp-http` is the shared always-on server, which
- *  warms at startup; `mcp-stdio` and `cli` are one process per call and pay that
- *  load inside their first (and only) search, so they are near-entirely cold by
- *  construction. `mcp` is unattributed — rows written before the surfaces
- *  declared themselves, not a fourth door. */
-export interface SurfaceRow {
-  surface: string
-  n: number
-  n_cold: number
-  p50: number
-  p90: number
-}
-
-export interface Served {
-  hours: number
-  bucket: Bucket
-  n: number
-  n_unknown_regime: number
-  buckets: ServedBucket[]
-  warm: LatencyBand
-  /** Warm first-page searches with an ordinary limit — what asking a question
-   *  costs. Kept apart from `warm_bulk` (pagination sweeps, wide exports) so the
-   *  headline median measures the question, not the window's workload mix. */
-  warm_interactive: LatencyBand
-  warm_bulk: LatencyBand
-  cold: LatencyBand
-  by_surface: SurfaceRow[]
-}
-
-export interface StageRow {
-  stage: string
-  n: number
-  p50: number
-  p90: number
-}
-
-export interface Stages {
-  n: number
-  /** Rows the stage probe never touched — included, but not provably warm. */
-  n_unproven: number
-  stages: StageRow[]
-}
-
-/** Sparse, unlike `Served.buckets`: this is read as a table, and an empty row is
- *  noise where an empty chart point is information. */
-export interface Restarts {
-  n: number
-  bucket: Bucket
-  buckets: { at: string; n: number }[]
-  /** Which daemon restarted. Several warm independently, so the total says how
-   *  much warming the box did and only this says how often one service bounced. */
-  by_surface: { surface: string; n: number }[]
-  p50_ms: number
-  total_s: number
-}
-
-export interface BenchPoint {
-  at: string
-  commit: string | null
-  p50: number
-  p95: number
-  p99: number
-  n_queries: number
-  tuning: boolean
-}
-
-export interface RetrievalReport {
-  home: string
-  hours: number
-  bucket: Bucket
-  at: string
-  served: Served | null
-  stages: Stages | null
-  restarts: Restarts | null
-  /** Keyed by query set. Two query sets are two populations of query and are
-   *  never drawn as one line. */
-  bench: Record<string, BenchPoint[]> | null
-}
-
-// --- the search lab's inventory --------------------------------------------
-// What the bench has to measure with, as opposed to what it measured. Every row
-// is read off the lab's own registries, so this describes the box rather than a
-// catalog somebody kept up to date.
-
-/** A walked subtree. `truncated` means the walk hit its file budget, so `bytes`
- *  is a floor rather than the size — render it as such, never as the total. */
-export interface DirSize {
-  bytes?: number
-  files?: number
-  truncated?: boolean
-}
-
-/** A built corpus home. `built: false` is a real row — an unbuilt corpus is what
- *  "available, not installed" looks like, and dropping it would make it
- *  indistinguishable from a corpus nobody defined. */
-export interface CorpusHome extends DirSize {
-  label: string
-  path: string
-  built: boolean
-  snapshot_id: string | null
-  counts: { events?: number; threads?: number; vectors?: number; kg_events?: number }
-  embedding_space: string | null
-  created_at: string | null
-  /** Doc count off the harness's build marker, for homes that are built but never
-   *  stamped as a snapshot (the haystack corpora). */
-  build?: { docs: number | null; embedded: boolean }
-  /** Set on a root holding many small homes (one per question). */
-  homes?: number | null
-}
-
-export interface DatasetDownload extends DirSize {
-  path: string | null
-  present: boolean
-}
-
-export interface Dataset {
-  name: string
-  family: string
-  harness: string
-  download: DatasetDownload
-  homes: CorpusHome[]
-  /** Published baselines the harness already carries — the scale a measured
-   *  number is read against. Shape differs by family. */
-  reference: Record<string, unknown>
-  /** Benchmark rows that run on this dataset. */
-  on_bench: string[]
-  source?: string
-  license?: string
-}
-
-export interface BenchRun {
-  at: string | null
-  elapsed_s: number | null
-  commit: string | null
-  code_id: string | null
-  measures: Record<string, number | null>
-}
-
-/** `missing` (no corpus on this box) outranks the rest: the row cannot run at
- *  all, so calling it stale would suggest a re-run is what it needs. `fresh` is
- *  the bench's own skip test — the ledger's numbers still describe what a run
- *  right now would measure. */
-export type BenchState = 'missing' | 'fresh' | 'stale' | 'never-run'
-
-export interface Benchmark {
-  name: string
-  argv: string[]
-  corpus_home: string | null
-  corpus_id: string | null
-  corpus_built: boolean
-  build_hint: string
-  cost_min: number
-  est_min: number
-  fresh: boolean
-  state: BenchState
-  measure_keys: string[]
-  code_id: string
-  last: BenchRun | null
-}
-
-/** Nearest-rank percentiles, in milliseconds. Nearest-rank rather than
- *  interpolated: at a few hundred queries the p99 is one sample either way, and
- *  interpolating invents a latency no search actually took. */
-export interface Percentiles {
-  p50: number
-  p95: number
-  p99: number
-}
-
-/** What a run **cost**, as against what it scored.
- *
- *  Both come off the same searches, and only together say whether a
- *  configuration that scores better is one worth shipping — a pass that lifts
- *  nDCG and doubles p99 is a trade, not a win. Read as a lead rather than a
- *  benchmark: one sample per query under whatever conditions the run had. */
-export interface RunPerformance {
-  /** Searches timed. */
-  queries?: number | null
-  /** Wall-clock of the scored loop — not the whole process. The difference
-   *  against the run's `elapsed_s` is setup: ingest, embed, model load. */
-  scoring_s?: number | null
-  qps?: number | null
-  mean_ms?: number | null
-  max_ms?: number | null
-  total?: Percentiles
-  /** Per-stage latency. The two pool arms run concurrently, so `fts_ms` and
-   *  `semantic_ms` cover overlapping wall-clock and can sum past the total; only
-   *  the shape stages sum. */
-  stages?: Record<string, Percentiles>
-  /** Searches that carried a stage breakdown. Below `queries` when a pool-cache
-   *  hit sat the arms out — those did no retrieval rather than doing it fast. */
-  staged?: number | null
-  /** Searches that paid a model load inside them — the cold-model tail. */
-  cold?: number | null
-  pool_p50?: number | null
-  corpus_docs?: number | null
-  arms?: string[] | null
-}
-
-/** One scored query, as the run recorded it.
- *
- *  The aggregate says the row scored 0.494; this says which queries it failed.
- *  `rank` is the 1-based position of the first gold document, or null when none
- *  came back at all — "ranked 40th" is a ranking problem and "never retrieved"
- *  is a recall one, and a score of 0.0 reports them identically. */
-export interface QueryRow {
-  qid: string
-  query: string
-  latency_ms: number | null
-  rank: number | null
-  n_gold: number | null
-  found: number | null
-  measures: Record<string, number | null>
-  /** The stratum the harness knows this query by — a category, a difficulty
-   *  tier — so a failure reads as belonging to a kind. */
-  group?: string
-  /** Present only in a comparison: the same query at the other run. */
-  before?: { measures: Record<string, number | null>; rank: number | null; latency_ms: number | null }
-  /** Movement in the leading measure against the compared run. */
-  moved?: number
-}
-
-export interface RunQueries {
-  run_id: string
-  /** The run this was joined against, when the rows carry `before`/`moved`. */
-  compared_to: string | null
-  order: 'worst' | 'moved'
-  /** The metric these rows are read on — the first the harness listed. */
-  lead: string | null
-  total: number
-  /** Queries whose gold document never came back at all. */
-  misses: number
-  returned: number
-  rows: QueryRow[]
-}
-
-/** One row of the benchmark ledger — a run that happened, rather than the state
- *  a row is in. Everything the run recorded, plus the three facts establishing it
- *  takes the present: `id`, `on_bench`, `code_current`. */
-export interface BenchRunRecord {
-  /** Content hash of the record — a link's handle on it. The ledger is
-   *  append-only, so it survives the file growing underneath. */
-  id: string
-  at: string
-  row: string
-  status: 'ok' | 'failed' | 'skipped'
-  code_id: string | null
-  corpus_id: string | null
-  commit: string | null
-  elapsed_s: number | null
-  measures: Record<string, number | null>
-  argv: string[]
-  /** What the run cost. Absent on runs recorded before the harnesses reported
-   *  one, and on failures — which is a different thing from a run that was fast. */
-  performance?: RunPerformance | null
-  /** Whether this run's per-query detail is still on disk. The store is capped,
-   *  so an old run keeps its numbers and loses its detail. */
-  has_queries?: boolean
-  /** Historical: rows the ledger carries that the manifest no longer names. */
-  tier?: string | null
-  /** Whether this run's row is still a row the bench would run. */
-  on_bench: boolean
-  /** The newest successful run of its row — what the summary above reports. */
-  current: boolean
-  /** Whether it was measured under the ranking code now in the working tree.
-   *  null for a row off the bench: there is no current code id for a harness the
-   *  manifest no longer names, and false would invent one. */
-  code_current: boolean | null
-  measure_keys: string[]
-}
-
-export interface BenchRuns {
-  code_id: string
-  /** Records in the ledger, which `runs` may have been truncated from. */
-  total: number
-  returned: number
-  runs: BenchRunRecord[]
-}
-
-export interface LabInventory {
-  cache_root: string
-  cache: DirSize
-  /** The content hash of the ranking and scoring source as it sits in the working
-   *  tree. A row measured under a different one is stale by definition. */
-  code_id: string
-  families: Record<string, string>
-  benchmarks: Benchmark[]
-  datasets: Dataset[]
-}
-
-// ── the drop zone (account-export upload) ───────────────────────────────────
-// One bundle in `<home>/dumps/`. `bytes` is null for a directory (an export
-// unpacked by hand) — the server doesn't walk a tree to size it.
 export interface DropEntry {
   name: string
   bytes: number | null
@@ -727,6 +405,9 @@ export type Block =
   // `safeguard_notice` is the human-readable reason paired with a fallback.
   | { type: 'model_switch'; kind: 'user' | 'fallback'; from_model: string | null; to_model: string | null }
   | { type: 'safeguard_notice'; text: string }
+  // The pull request this session was working on, as its harness recorded it. One
+  // per PR however often the harness re-announced it; `url` links out to the forge.
+  | { type: 'pr_link'; ref: string; repo: string | null; number: string; url: string | null }
   | { type: 'unknown'; event_type: string; text: string }
 
 // Per-message metadata for the info drawer. Every message carries `ts`; assistant
@@ -943,6 +624,18 @@ export interface ModelStats {
   top_sessions: ModelStatsSession[]
 }
 
+/** One manual page in the index: how it is addressed and what it is about. */
+export interface DocPage {
+  slug: string
+  title: string
+  summary: string
+}
+
+/** One manual page, as its markdown source — rendered here, not on the server. */
+export interface Doc extends DocPage {
+  markdown: string
+}
+
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url)
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
@@ -1079,29 +772,9 @@ export const api = {
   // path tail, not a query param — the server decodes it back.
   modelStats: (model: string) =>
     getJSON<ModelStats>('/api/stats/model/' + encodeURIComponent(model)),
-  // How search itself is doing — read off the retrieval ledgers, not the index,
-  // so it keeps answering while a rebuild has the corpus unavailable. The window
-  // is hours because the useful ones are short: a regression that lands at noon
-  // is invisible in a 14-day median for a week. A dev page: the report is the
-  // search lab's, so an install without the lab answers 404 and the view says so.
-  retrieval: (hours = 14 * 24) => getJSON<RetrievalReport>(`/api/retrieval?hours=${hours}`),
-  // What the bench has on hand: benchmark rows and whether each can run, and the
-  // corpora on disk and what they hold. A dev page like `retrieval` and for the
-  // same reason — the inventory is the search lab's, and an install has no lab to
-  // inventory, so it answers 404.
-  searchLab: () => getJSON<LabInventory>('/api/search-lab'),
-  // Every run the bench ever recorded here, newest first — the ledger, not the
-  // newest-per-row summary `searchLab` carries. Its own call because the
-  // inventory is a filesystem walk served from a cache, and a run that finished
-  // a second ago has to show up in the history now.
-  searchLabRuns: (row?: string) =>
-    getJSON<BenchRuns>('/api/search-lab/runs' + (row ? `?row=${encodeURIComponent(row)}` : '')),
-  // One run's per-query detail, worst first — or, with `vs`, the queries that
-  // moved against another run, biggest regression first. Off the run's own
-  // sidecar, so this costs one file open and the runs list costs none.
-  searchLabRunQueries: (id: string, vs?: string) =>
-    getJSON<RunQueries>(
-      `/api/search-lab/runs/${encodeURIComponent(id)}/queries` +
-        (vs ? `?vs=${encodeURIComponent(vs)}` : ''),
-    ),
+  // The manual the package ships (`thread-archive docs` prints the same pages).
+  // Slugs are filenames without the extension, so they need no encoding beyond
+  // what any path segment gets.
+  docs: () => getJSON<{ pages: DocPage[] }>('/api/docs').then((d) => d.pages),
+  doc: (slug: string) => getJSON<Doc>('/api/docs/' + encodeURIComponent(slug)),
 }

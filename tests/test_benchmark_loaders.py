@@ -223,16 +223,43 @@ def test_beam_indexes_both_roles(tmp_path: Path) -> None:
 
 def test_beam_drops_abstention_and_goldless_questions(tmp_path: Path) -> None:
     # Abstention questions are deliberately unanswerable from the conversation
-    # and carry no source ids, so there is nothing to retrieve. Five questions
-    # across the 500K and 1M tiers are missing the field entirely.
+    # and carry no source ids, so there is nothing to retrieve. Some questions
+    # are missing the field entirely.
     path = _beam_parquet(tmp_path / "t.parquet", {
         "abstention": [{"question": "unanswerable?", "ideal_response": "no info"}],
-        "event_ordering": [{"question": "no ids?", "source_chat_ids": None},
-                           {"question": "real?", "source_chat_ids": [1]}],
+        "information_extraction": [{"question": "no ids?", "source_chat_ids": None},
+                                   {"question": "real?", "source_chat_ids": [1]}],
     }, _chat(4))
     (_gid, _corpus, queries), = haystack_eval.beam_groups(path, "100K")
 
     assert [q["text"] for q in queries] == ["real?"]
+
+
+def test_beam_skips_the_categories_that_are_not_retrieval_questions(tmp_path: Path) -> None:
+    # summarization matches the whole corpus by construction and its gold outruns
+    # any top-k window; event_ordering asks for a sequencing over a broad topic.
+    # Scoring either as retrieval reports a ranking failure for a task retrieval
+    # was never doing — which is why they are skipped rather than weighted down.
+    path = _beam_parquet(tmp_path / "t.parquet", {
+        "summarization": [{"question": "summarize it all", "source_chat_ids": [1, 2, 3]}],
+        "event_ordering": [{"question": "in what order?", "source_chat_ids": [1, 2]}],
+        "temporal_reasoning": [{"question": "how many weeks?", "source_chat_ids": [1]}],
+    }, _chat(4))
+    (_gid, _corpus, queries), = haystack_eval.beam_groups(path, "100K")
+
+    assert [q["category"] for q in queries] == ["temporal_reasoning"]
+
+
+def test_beam_keeps_instruction_following(tmp_path: Path) -> None:
+    """It scores low and stays in: a broad question whose answer is one message is
+    retrieval doing its job, and dropping a row for being hard measures nothing."""
+    path = _beam_parquet(tmp_path / "t.parquet", {
+        "instruction_following": [{"question": "which libraries?",
+                                   "source_chat_ids": [1]}],
+    }, _chat(4))
+    (_gid, _corpus, queries), = haystack_eval.beam_groups(path, "100K")
+
+    assert [q["category"] for q in queries] == ["instruction_following"]
 
 
 def test_beam_clips_gold_to_ids_that_resolve(tmp_path: Path) -> None:
@@ -248,15 +275,16 @@ def test_beam_clips_gold_to_ids_that_resolve(tmp_path: Path) -> None:
 
 
 def test_beam_group_ids_carry_the_tier(tmp_path: Path) -> None:
-    # The per-corpus home is keyed on the group id, so two tiers sharing a
-    # conversation id would otherwise collide on one cached build.
+    # The per-corpus home is keyed on the group id, so the tier belongs in it: a
+    # conversation id is unique only within a tier, and BEAM ships the same ids
+    # across all three.
     path = _beam_parquet(tmp_path / "t.parquet",
-                         {"summarization": [{"question": "q",
-                                             "source_chat_ids": [1]}]},
+                         {"knowledge_update": [{"question": "q",
+                                                "source_chat_ids": [1]}]},
                          _chat(4))
-    ids = {gid for gid, _c, _q in haystack_eval.beam_groups(path, "1M")}
+    ids = {gid for gid, _c, _q in haystack_eval.beam_groups(path, "100K")}
 
-    assert ids == {"1M:c1"}
+    assert ids == {"100K:c1"}
 
 
 # ── PerLTQA ──────────────────────────────────────────────────────────────────

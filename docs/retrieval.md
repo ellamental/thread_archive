@@ -9,23 +9,21 @@ verbs for a terminal (see [cli.md](cli.md)), and read through the
 - Full-text and semantic search, fused and re-ranked, filterable by time,
   source, tool, and content type; an empty query browses recent activity.
 - Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP
-  client) can search and read your entire history mid-conversation.
+  client) can search and read your entire history mid-conversation. Their MCP
+  descriptions are compact on purpose — an agent pays for them in every session
+  whether or not it searches — and `thread_help('search'|'read')` serves the
+  full manual to the caller that wants it.
 - The same two tools are CLI verbs — `thread-archive search "auth flow" --since
   30d`, `thread-archive read <id>` — one implementation behind both, so what
   you get at a prompt is what your agent gets.
 - Search is the access layer over the archive, not the archive itself — an
   agent typically fires several searches, reformulates, and reads around a hit,
   and the archive underneath guarantees the conversation is *there* to find.
-  Quality is measured against public benchmarks somebody else labeled, read
-  beside the baseline their own leaderboard publishes — a deliberate run on a
-  ranking change, and a gate at release time that holds those numbers to a
-  checked-in bar, but not a CI row; what rides CI is a probe that the search
-  arms still load at all. No protocol that labels this archive's own corpus
-  certifies that search is good, and nothing gates on one. The numbers, the
-  protocol, and its limits live in [search-quality.md](search-quality.md). Your
-  install reports whether search is *degraded* (`thread-archive status`, the
-  viewer's health page) rather than a score — a metric with no baseline beside
-  it isn't something you can act on.
+  Quality is measured against public benchmarks somebody else labeled and gated
+  against those numbers at release; your install reports whether search is
+  *degraded* (`thread-archive status`, the viewer's health page) rather than a
+  score. [search-quality.md](search-quality.md) has the numbers and what they
+  license.
 
 ## Indexed by code, not just by words
 

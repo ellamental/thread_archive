@@ -205,16 +205,48 @@ def source_enabled(cfg: dict, source_name: str) -> bool:
     return enabled if isinstance(enabled, bool) else False
 
 
+def dev_mode(cfg: dict) -> bool:
+    """Whether this install is being *developed on* rather than merely run.
+
+    Two things turn on it. **Runtime telemetry** — the ledgers of served requests,
+    retrieval calls, ingest passes and load runs — records only here
+    (:mod:`.._ops.telemetry`): they are instruments for whoever maintains
+    thread-archive, nothing in the product reads them, and an install that is
+    merely run should not be accumulating a row per page someone opened. Fault
+    records are not part of that and never stop: an operator is owed the news that
+    conversations may not have been preserved.
+
+    Provider format drift is the second, and where the difference bites. A
+    provider that grows a new field, block type or line type costs the reader
+    nothing — the value is
+    preserved under the anchor event's ``annotations["unmodeled"]`` — so the
+    finding is a parser to-do for whoever maintains thread-archive, not a fault
+    the operator must act on. On a dev install that to-do is the whole point and
+    the warning fires the moment it lands; everywhere else it waits out a grace
+    window (:data:`.._importers._validation_ledger.ADDITIVE_GRACE_DAYS`), so a
+    routine addition that a release fixes in the meantime is never posted at
+    all. Drift that *loses* content ignores this switch entirely and warns
+    immediately either way.
+
+    ``"dev_mode": true`` in ``config.json``, strict ``True`` like
+    :func:`dev_panels` — a key holding the string ``"false"`` is not a switch.
+    """
+    if not getattr(cfg, "valid", True):
+        return False
+    return cfg.get("dev_mode") is True
+
+
 def dev_panels(cfg: dict) -> bool:
-    """Whether the viewer shows its dev panels.
+    """Whether the viewer links out to the dev panels.
 
-    Those are the pages whose subject is the machinery rather than the archive —
-    the retrieval report and the search lab. They are a maintainer's instruments,
-    so a viewer has them only when its operator asks: ``"dev_panels": true`` in
-    ``config.json``, and nothing else. The bundle carries the pages either way;
-    this is what mounts them (see :mod:`thread_archive._web.server`).
+    The panels themselves are a different app on a different server (``devweb/``,
+    ``python -m devweb``); this switch does not mount or gate them — nothing here
+    could. What it decides is whether the viewer's rail carries a link to them at
+    all, which for someone who came to read their conversations is one more
+    unexplained word in the navigation. So the link appears only when the
+    operator asks: ``"dev_panels": true`` in ``config.json``, and nothing else.
 
-    Strict ``True``, not truthiness — a viewer that showed them because the key
+    Strict ``True``, not truthiness — a rail that grew the link because the key
     held the string ``"false"`` would be a switch that only looks like one.
     """
     if not getattr(cfg, "valid", True):

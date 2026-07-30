@@ -28,9 +28,12 @@ import importlib.util
 import logging
 import os
 import sys
+import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any, Optional, Protocol
 
+from . import _probe
 from .model_slot import ModelSlot, defer_construction
 
 logger = logging.getLogger(__name__)
@@ -50,6 +53,22 @@ class SentenceEncoder(Protocol):
 # (~9 docs/s). 2048 chars keeps the gist of all but the longest code/tool dumps
 # (mean doc is ~300 chars) and runs ~7× faster with no hang.
 EMBEDDING_CHAR_CAP = 2048
+
+# Query vectors kept per embedder, most-recently-used last. A query embed is a
+# full forward pass (tens to hundreds of ms, and seconds when an indexing batch
+# holds the model's use-lock), and the same text re-embeds to the same vector for
+# the life of the model — so a repeated query is pure recomputation. Paging makes
+# that the common case rather than a coincidence: every page of a walk re-embeds
+# the identical string, and a caller comparing filters re-embeds one query per
+# variant.
+#
+# Only queries are cached. Documents are embedded once by the indexer and never
+# asked for again, so a cache there would hold bytes nothing reads.
+#
+# Sized to hold a working set of queries, not a history: entries are ~24 KB
+# (768 Python floats), so this is a few MB at full occupancy. Per-embedder via the
+# constructor; 0 turns the cache off.
+QUERY_CACHE_MAX = 256
 
 # How many documents one forward pass encodes while holding the model's use-lock.
 # The lock serializes passes on the shared model, so an indexing batch and a search
@@ -243,13 +262,22 @@ class Embedder:
         *,
         model: Optional[SentenceEncoder] = None,
         load: Optional[Callable[[], SentenceEncoder]] = None,
+        query_cache_max: int = QUERY_CACHE_MAX,
     ) -> None:
         self._name = name
+        self._query_cache_max = max(0, query_cache_max)
         # The ``[embeddings]`` extra is a precondition for the loader this class
         # supplies itself, not for one it was handed.
         self._needs_extra = load is None
         self._slot: ModelSlot[SentenceEncoder] = ModelSlot(
             load or self._construct, self._degrade, model=model)
+        # Keyed by (space, capped text), so a process whose configured model changes
+        # under it can never be served a vector from the space it left — the key
+        # stops matching rather than the cache needing to notice.
+        self._query_cache: "OrderedDict[tuple[str, str], list[float]]" = OrderedDict()
+        self._query_cache_lock = threading.Lock()
+        self._query_hits = 0
+        self._query_misses = 0
 
     @property
     def name(self) -> str:
@@ -339,12 +367,59 @@ class Embedder:
             return None
         return out
 
+    def query_cache_stats(self) -> dict:
+        """How the query-vector cache is doing: ``{entries, hits, misses}``.
+
+        Reported for the same reason the exact-set memo reports its own: a cache
+        that never hits is indistinguishable from a working one at the call site,
+        and costs memory to be useless."""
+        with self._query_cache_lock:
+            return {"entries": len(self._query_cache),
+                    "hits": self._query_hits, "misses": self._query_misses}
+
     def embed_query(self, text: str) -> Optional[list[float]]:
-        """Embed a search query (nomic ``search_query:`` prefix). None on any failure."""
+        """Embed a search query (nomic ``search_query:`` prefix). None on any failure.
+
+        Memoized per embedder (:data:`QUERY_CACHE_MAX`): the same text embeds to the
+        same vector for as long as one model is loaded, so a repeated query — every
+        page of a walk, every filter variant of one ask — reuses the first pass
+        instead of paying another.
+
+        Only a *successful* embed is cached. ``None`` is the degrade path (models
+        off, load failed, or a deferred-construction process that hasn't warmed
+        yet), and every one of those is a condition that resolves; caching it would
+        pin a transient state for the life of the process.
+
+        Hands out a copy. The vector travels into arithmetic the caller owns, and a
+        shared list is one in-place normalize away from poisoning the entry for
+        every later query with the same text."""
         if not text or not text.strip():
             return None
-        vecs = self._encode([f"search_query: {text[:EMBEDDING_CHAR_CAP]}"])
-        return vecs[0] if vecs else None
+        key = (self.space_key(), text[:EMBEDDING_CHAR_CAP])
+        with self._query_cache_lock:
+            hit = self._query_cache.get(key)
+            if hit is not None:
+                self._query_cache.move_to_end(key)
+                self._query_hits += 1
+                # Flagged rather than left to be inferred from a near-zero
+                # ``embed_ms``: on an arm that ran, "reused a vector" and "never
+                # embedded" are the same number and opposite facts.
+                _probe.flag("embed_cached")
+                return list(hit)
+            self._query_misses += 1
+        # Encoded outside the lock: a forward pass can take seconds under an
+        # indexing batch, and holding the cache lock across it would serialize
+        # every other query behind one miss — turning a cache into a queue.
+        vecs = self._encode([f"search_query: {key[1]}"])
+        if not vecs:
+            return None
+        if self._query_cache_max:
+            with self._query_cache_lock:
+                self._query_cache[key] = vecs[0]
+                self._query_cache.move_to_end(key)
+                while len(self._query_cache) > self._query_cache_max:
+                    self._query_cache.popitem(last=False)
+        return list(vecs[0])
 
     def embed_documents(self, texts: list[str]) -> Optional[list[list[float]]]:
         """Embed indexed content (nomic ``search_document:`` prefix), in input order. None
@@ -381,6 +456,11 @@ def warm() -> bool:
 def embed_query(text: str) -> Optional[list[float]]:
     """Embed a search query with the process embedder. None on any failure."""
     return _DEFAULT.embed_query(text)
+
+
+def query_cache_stats() -> dict:
+    """The process embedder's query-vector cache: ``{entries, hits, misses}``."""
+    return _DEFAULT.query_cache_stats()
 
 
 def embed_documents(texts: list[str]) -> Optional[list[list[float]]]:

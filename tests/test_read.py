@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from thread_archive._retrieval import read_thread, resolve_thread_ref
 from thread_archive._store import (
     Event,
@@ -613,6 +615,7 @@ def test_resolve_via_import_state_watermark(archive_home) -> None:
         assert resolve_thread_ref(s, f"proj:{cont_uuid}") == tid  # exact watermark
 
 
+@pytest.mark.viewer
 def test_resolvers_agree_across_surfaces(archive_home) -> None:
     """The MCP reader and the web viewer's archive-link answer alike for the same
     session id — whether it lives in Thread.source_id or only in ImportState."""

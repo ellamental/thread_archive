@@ -27,18 +27,18 @@ directory walks, fingerprint stats, the targets it skipped — and on a source w
 many files and few changes that difference is the entire cost.
 
 Append-only JSONL, advisory, fail-soft — a ledger write must never break the
-ingest it describes. ``THREAD_ARCHIVE_INGEST_LOG=0`` disables it. Rotation
-retains every segment (see :mod:`.._ops.ledger`).
+ingest it describes. Recorded only on an install being developed on
+(:mod:`.._ops.telemetry`); ``THREAD_ARCHIVE_INGEST_LOG`` overrides either way.
+Rotation retains every segment (see :mod:`.._ops.ledger`).
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from .._ops import ledger
+from .._ops import ledger, telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +50,17 @@ def max_bytes() -> int:
     return ledger.env_max_bytes("THREAD_ARCHIVE_INGEST_MAX_BYTES", 16 * 1024 * 1024)
 
 
-def _enabled() -> bool:
-    return os.environ.get("THREAD_ARCHIVE_INGEST_LOG", "1").strip().lower() not in (
-        "0", "false", "no", "off",
-    )
+def enabled(home=None) -> bool:
+    """Whether this install records what ingest cost.
+
+    Off unless the install is being developed on (:mod:`.._ops.telemetry`);
+    ``THREAD_ARCHIVE_INGEST_LOG`` overrides in either direction.
+
+    Every writer here tests its "nothing to say" condition *before* asking this,
+    so the poll loop's common case — a pass that fingerprint-skipped every target —
+    still costs one attribute read rather than a config file.
+    """
+    return telemetry.recording("THREAD_ARCHIVE_INGEST_LOG", home)
 
 
 def record_pass(
@@ -75,10 +82,10 @@ def record_pass(
     them is only whether the pass's timings describe a clean import or a failing
     one, since work that fails slowly skews every percentile computed here.
     """
-    if not _enabled():
-        return
     try:
         if probe is None or not probe.ran:
+            return
+        if not enabled(home):
             return
         record: dict[str, Any] = {
             "at": datetime.now(timezone.utc).isoformat(),
@@ -99,6 +106,66 @@ def record_pass(
         ledger.append(home / LEDGER_FILE, record, max_bytes=max_bytes())
     except Exception:  # noqa: BLE001 — advisory; the poll loop must survive
         logger.debug("could not record ingest pass", exc_info=True)
+
+
+def record_idle(
+    *,
+    home,
+    passes: int,
+    total_ms: float,
+    max_ms: float,
+    window_s: float,
+    checked: int,
+    load1_avg: Optional[float] = None,
+) -> None:
+    """Append one rollup of the passes that found nothing to do. Never raises.
+
+    A pass that fingerprint-skips every target writes no ``ingest-pass`` row, and
+    that is right: the loop spends nearly all of its life finding nothing, and a
+    row each would bury every row that matters. But it leaves the loop's *floor*
+    unrecorded — the directory walks and fingerprint stats paid on every poll
+    whether or not anything changed. That cost is real and it scales with the
+    number of watched files rather than with activity, so the quiet half of the
+    loop needs retention of its own: ``health.json``'s per-source counters are
+    cumulative since process start and therefore erased by every restart.
+
+    So: one row per window, not per pass — ``passes`` of them cost ``total_ms``
+    between them, the worst taking ``max_ms``, over ``checked`` targets. Rate per
+    pass is the number to read (``total_ms / passes``); the window length is here
+    so a reader can tell a busy interval from a sleepy one rather than assuming a
+    poll cadence that config controls.
+
+    ``max_ms`` because the mean hides the case worth catching: a loop that is
+    usually instant and occasionally stalls for seconds on a cold directory
+    averages out to healthy.
+
+    ``load1_avg`` is the machine averaged across the window's passes, and without
+    it the rest of the row cannot be read. A pass costs what it costs partly
+    because of how many files it has to stat and partly because of what else the
+    box was doing, and those want opposite responses: the first is the loop
+    getting expensive, the second is an afternoon. Sampled per pass rather than
+    once at flush, because a spot reading at the end of five minutes describes the
+    end of five minutes.
+    """
+    try:
+        if passes <= 0:
+            return
+        if not enabled(home):
+            return
+        record: dict[str, Any] = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "kind": "idle",
+            "passes": passes,
+            "total_ms": round(total_ms, 1),
+            "max_ms": round(max_ms, 1),
+            "window_s": round(window_s, 1),
+            "checked": checked,
+        }
+        if load1_avg is not None:
+            record["load1_avg"] = round(load1_avg, 2)
+        ledger.append(home / LEDGER_FILE, record, max_bytes=max_bytes())
+    except Exception:  # noqa: BLE001 — advisory; the poll loop must survive
+        logger.debug("could not record idle rollup", exc_info=True)
 
 
 def _percentile(xs: list[float], q: float) -> float:
@@ -123,7 +190,8 @@ def summarize(home, *, hours: int = 24) -> dict[str, Any]:
     Maintenance and embed rows are summarized beside the source rows rather than
     mixed into them: they are the loop's other two jobs, and folding them into a
     source's totals would attribute upkeep to whichever provider happened to
-    trigger it."""
+    trigger it. The same for idle rollups, which are the loop's *fourth* job and
+    the one nothing else reports: what it costs to keep finding nothing."""
     from datetime import timedelta
 
     from .._importers._probe import STAGES
@@ -135,6 +203,9 @@ def summarize(home, *, hours: int = 24) -> dict[str, Any]:
     maintenance: list[float] = []
     embed: list[float] = []
     embedded = 0
+    idle_passes = 0
+    idle_ms = 0.0
+    idle_max_ms = 0.0
 
     for row in ledger.iter_rows(home / LEDGER_FILE):
         if row.get("at", "") < cutoff:
@@ -151,6 +222,11 @@ def summarize(home, *, hours: int = 24) -> dict[str, Any]:
         if kind == "embed":
             embed.append(float(row.get("ms") or 0.0))
             embedded += int(row.get("embedded") or 0)
+            continue
+        if kind == "idle":
+            idle_passes += int(row.get("passes") or 0)
+            idle_ms += float(row.get("total_ms") or 0.0)
+            idle_max_ms = max(idle_max_ms, float(row.get("max_ms") or 0.0))
             continue
         if kind != "ingest-pass":
             continue
@@ -186,6 +262,13 @@ def summarize(home, *, hours: int = 24) -> dict[str, Any]:
         "embed": {"passes": len(embed), "embedded": embedded,
                   "total_s": round(sum(embed) / 1000.0, 1),
                   "p95_ms": round(_percentile(embed, 0.95), 1)},
+        # The loop's floor. ``per_pass_ms`` is the number to watch: totals grow
+        # with how long the daemon has been up, and the per-pass cost grows with
+        # how many files it has to look at — only the second is a regression.
+        "idle": {"passes": idle_passes,
+                 "total_s": round(idle_ms / 1000.0, 1),
+                 "max_ms": round(idle_max_ms, 1),
+                 "per_pass_ms": round(idle_ms / idle_passes, 1) if idle_passes else 0.0},
         "retained_bytes": ledger.total_bytes(home / LEDGER_FILE),
     }
 
@@ -196,7 +279,7 @@ def record_maintenance(*, home, timings: dict[str, float], counts: dict) -> None
     The health record carries the same split but only for the *last* pass, so a
     rebalance that has been getting slower for a week is invisible there. Here it
     is a series."""
-    if not _enabled():
+    if not enabled(home):
         return
     try:
         record: dict[str, Any] = {
@@ -219,10 +302,10 @@ def record_embed(*, home, embedded: int, elapsed_ms: float, detail_ms: dict[str,
     embed nothing per pass. Recorded on every pass that embedded something, plus
     every pass that found a backlog it could not clear, since a drain falling
     behind is exactly the row a later question needs."""
-    if not _enabled():
-        return
     try:
         if not embedded and not pending:
+            return
+        if not enabled(home):
             return
         record: dict[str, Any] = {
             "at": datetime.now(timezone.utc).isoformat(),

@@ -1,0 +1,64 @@
+{
+ "accepted_at": "2026-07-30T22:10:10+00:00",
+ "datasets": {
+  "scifact": {
+   "sha256": "f8e83ead351f71d8",
+   "files": 3,
+   "bytes": 8321686,
+   "upstream": "public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip \u2014 versionless: the URL is the only handle BEIR publishes"
+  },
+  "nfcorpus": {
+   "sha256": "42af7e4184842093",
+   "files": 3,
+   "bytes": 6940402,
+   "upstream": "public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip \u2014 versionless: the URL is the only handle BEIR publishes"
+  },
+  "trec-covid": {
+   "sha256": "1fb6569283605f97",
+   "files": 3,
+   "bytes": 222367448,
+   "upstream": "public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/trec-covid.zip \u2014 versionless: the URL is the only handle BEIR publishes"
+  },
+  "locomo": {
+   "sha256": "3c8a30aa5c129d49",
+   "files": 1,
+   "bytes": 2805274,
+   "upstream": "github.com/snap-research/locomo (clone into locomo/repo)",
+   "revision": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376"
+  },
+  "longmemeval": {
+   "sha256": "b77159804812bd6b",
+   "files": 1,
+   "bytes": 277383467,
+   "upstream": "huggingface.co/datasets/xiaowu0162/longmemeval-cleaned (longmemeval_s_cleaned.json)",
+   "revision": "98d7416c24c778c2fee6e6f3006e7a073259d48f"
+  },
+  "beam": {
+   "sha256": "5aa1acda36c3473d",
+   "files": 1,
+   "bytes": 5429768,
+   "upstream": "huggingface.co/datasets/Mohammadta/BEAM (data/100K-00000-of-00001.parquet)",
+   "revision": "3205395e897e7318c7b094ef4e6047b9b82dbb03"
+  },
+  "perltqa": {
+   "sha256": "b8b733829df23418",
+   "files": 2,
+   "bytes": 20278184,
+   "upstream": "github.com/Elvin-Yiming-Du/PerLTQA (Dataset/en)",
+   "revision": "8d9e19868e239740ef701e603ec205cd581f221b"
+  },
+  "cdr": {
+   "sha256": "e4e296eac67279e3",
+   "files": 3,
+   "bytes": 23672762,
+   "upstream": "github.com/l-yohai/CDR-Benchmark",
+   "revision": "b9954dddf0c94c0aae784cc422a5424b92e4c689"
+  },
+  "mtrag": {
+   "sha256": "132c5b98416ad251",
+   "files": 20,
+   "bytes": 449106164,
+   "upstream": "github.com/IBM/mt-rag-benchmark (passage-level corpora + retrieval_tasks) \u2014 revision not established: the fetched layout does not correspond to the repository's own paths"
+  }
+ }
+}

@@ -25,7 +25,7 @@ root), but the suite is sandboxed off *every* machine location, so the ledger
 resolves into a tmpdir here just as the archive home does. That is the isolation
 working. The gate is answerable only once the bench has run at the code under
 test anyway, so it runs as a command from the release preflight
-(``python -m search_lab gate``, see ``docs/releasing.md``) — the same shape
+(``python -m search_lab gate``, see ``docs/internal/releasing.md``) — the same shape
 ci.toml's ``retrieval-gate`` row already takes.
 """
 
@@ -250,6 +250,20 @@ def test_a_known_row_that_is_merely_unselected_is_not_reported_as_dropped(tmp_pa
     assert [v.row for v in verdicts] == [whole[0].name]
 
 
+def test_the_other_tiers_baselined_rows_are_not_reported_as_dropped(tmp_path) -> None:
+    """The baseline holds the quick tier's rows, so a full-tier gate meets names
+    its own manifest does not contain. That is a depth it is not running, not a
+    rename — reporting it as one would leave the unused tier permanently red."""
+    _ledger(tmp_path, [])
+    full = benchmark.manifest()
+    known = {r.name for r in full} | {r.quick().name for r in full}
+    sampled = next(r for r in full if r.quick() is not r)
+    verdicts = quality_gate.check({"rows": {sampled.quick().name: _entry()}},
+                                  full, known=known, home=tmp_path)
+    assert not any(v.state == "unknown-row" for v in verdicts)
+    assert not any(v.failed for v in verdicts)
+
+
 def test_the_gate_reads_the_rows_latest_successful_run(tmp_path) -> None:
     """A failed row carries no numbers, so it must not shadow the last run that
     did — otherwise one broken pass makes a healthy row read as unmeasured."""
@@ -282,6 +296,39 @@ def test_update_carries_an_explicit_band_forward(tmp_path) -> None:
     previous = {"rows": {row.name: {"tolerance": 0.05}}}
     built = quality_gate.build_baseline([row], home=tmp_path, previous=previous)
     assert built["rows"][row.name]["tolerance"] == 0.05
+
+
+def test_updating_one_tier_leaves_the_other_tiers_accepted_numbers_alone(tmp_path) -> None:
+    """Both depths keep their accepted numbers in the one file. An update at one
+    of them that dropped the other's rows would ungate them — which reads green,
+    because an ungated row never fails."""
+    full = benchmark.manifest()
+    sampled = next(r for r in full if r.quick() is not r)
+    known = {r.name for r in full} | {r.quick().name for r in full}
+    quick_rows = [r.quick() for r in full]
+    _ledger(tmp_path, [{"row": sampled.quick().name,
+                        **_record(code_id=sampled.quick().code_id())}])
+    previous = {"rows": {sampled.name: _entry()}}
+
+    built = quality_gate.build_baseline(quick_rows, home=tmp_path,
+                                        previous=previous, known=known)
+
+    assert sampled.quick().name in built["rows"], "the measured quick row"
+    assert sampled.name in built["rows"], "the full tier's row, carried forward"
+
+
+def test_an_update_drops_rows_no_tier_runs_any_more(tmp_path) -> None:
+    """Carrying entries forward must not resurrect orphans: a row nothing runs is
+    an accepted number checked against nothing, which is what `unknown-row`
+    exists to catch."""
+    row = benchmark.manifest()[0]
+    _ledger(tmp_path, [{"row": row.name, **_record(code_id=row.code_id())}])
+    previous = {"rows": {"gone[lexical]": _entry()}}
+
+    built = quality_gate.build_baseline([row], home=tmp_path, previous=previous,
+                                        known={row.name})
+
+    assert "gone[lexical]" not in built["rows"]
 
 
 def test_an_accepted_row_records_what_it_was_measured_on(tmp_path) -> None:

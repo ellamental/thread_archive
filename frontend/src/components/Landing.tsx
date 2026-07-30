@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { api, type ThreadListItem } from '../api'
 import { SearchBox } from './SearchBox'
 

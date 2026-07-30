@@ -121,13 +121,30 @@ def store_bytes(raw: bytes, media_type: Optional[str], *, d: Optional[Path] = No
     return digest
 
 
-def blob_file(blob_hash: str, media_type: Optional[str] = None, *, d: Optional[Path] = None) -> Optional[Path]:
+def blob_file(
+    blob_hash: str,
+    media_type: Optional[str] = None,
+    *,
+    ext: Optional[str] = None,
+    d: Optional[Path] = None,
+) -> Optional[Path]:
     """The on-disk file for ``blob_hash``, or None when absent (or the hash is
     malformed — callers pass payload data here, so refuse garbage rather than
-    globbing with it)."""
+    globbing with it).
+
+    ``ext`` pins the answer to one extension instead of taking whichever twin the
+    glob reaches first. Identity is the hash, but the *extension* is what a
+    served response's Content-Type is read off, and one content can be stored
+    under several — the same bytes declared ``image/png`` in one message and
+    ``image/svg+xml`` in another are two files. A caller that already told
+    somebody which form it was handing over (a URL carries the extension) must
+    resolve that form or none, so the type it promised is the type it serves."""
     if not isinstance(blob_hash, str) or not _HASH_RE.match(blob_hash):
         return None
     bucket = blobs_dir(d) / blob_hash[:2]
+    if ext is not None:
+        candidate = bucket / f"{blob_hash}{ext}"
+        return candidate if candidate.is_file() else None
     if media_type:
         candidate = bucket / f"{blob_hash}{ext_for_media_type(media_type)}"
         if candidate.exists():

@@ -27,11 +27,10 @@ export default defineConfig({
   webServer: {
     command:
       'npx tsc --noEmit && npx vite build --outDir .e2e-dist && npx vite preview --outDir .e2e-dist --host 127.0.0.1 --port 4174 --strictPort',
-    // The dev panels are mounted only for a viewer whose operator asked for
-    // them, and in a served viewer that answer comes from the archive's config
-    // — which a static preview has no server to read. This build stamps the
-    // shell itself (see vite.config.ts), so the browser suite can drive
-    // `/retrieval` and `/lab` the way an operator running with them on does.
+    // Whether the rail links out to the dev panels comes from the archive's
+    // config in a served viewer — which a static preview has no server to read.
+    // This build stamps the shell itself (see vite.config.ts), so the browser
+    // suite can drive the link the way an operator who asked for it sees it.
     env: { ARCHIVE_DEV_PANELS: '1' },
     url: 'http://127.0.0.1:4174',
     reuseExistingServer: !process.env.CI,

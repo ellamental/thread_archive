@@ -28,7 +28,11 @@ corpus and the cache key is the store's validity token, which moves with
 ingest — so :func:`get` serves the cached graph (stale is fine for a
 community prior) and refreshes in a background single-flight thread;
 until the first build lands it returns ``None`` and the coherence boost
-no-ops. ``get(block=True)`` builds inline (eval, warm pass, tests).
+no-ops. ``get(block=True)`` builds inline against the current token (eval, tests);
+:func:`warm` is the starting-server door, which serves the persisted graph and
+builds only when there is none. :func:`rebuild_floor_s` bounds how often the
+*machine* rebuilds, across processes — the token moves with every ingest pass, so
+without it each of several concurrent processes rebuilds the same partition.
 
 **The cache outlives the process** (:mod:`.graph_cache`). Held only in memory, it
 starts empty at every restart, and until the first build lands the re-rank stands
@@ -130,13 +134,12 @@ _CACHE: dict = {}
 # guarded separately below.
 _REFRESHING: set[int] = set()
 _REFRESH_LOCK = threading.Lock()
-# One build at a time per engine, whoever asked. The two entry points — the warm
-# pass building inline and the search path kicking a background refresh — otherwise
-# run the identical build concurrently, which is exactly what happens at startup:
-# the warm pass is ~15s into its build when the first search finds an empty cache.
-# The loser waits for the winner's result instead of duplicating it, which costs it
-# nothing (it was going to wait out a build either way) and halves the CPU and the
-# peak memory of a corpus-wide Leiden partition.
+# One build at a time per engine, whoever asked. The entry points — a background
+# refresh, an eval's inline build, a warm pass that found nothing on disk — otherwise
+# run the identical build concurrently. The loser waits for the winner's result
+# instead of duplicating it, which costs it nothing (it was going to wait out a build
+# either way) and halves the CPU and the peak memory of a corpus-wide Leiden
+# partition. Within one process only: `rebuild_floor_s` is the cross-process half.
 _BUILDING: set[int] = set()
 _BUILD_LOCKS: dict[int, threading.Lock] = {}
 _BUILD_GUARD = threading.Lock()
@@ -145,6 +148,78 @@ _BUILD_GUARD = threading.Lock()
 # without the gate every search during continuous ingest re-probes and rebuilds.
 _REFRESH_COOLDOWN_S = 60.0
 _checked_at: dict = {}  # {engine id: monotonic ts of the last staleness probe}
+
+_REBUILD_FLOOR_ENV = "THREAD_ARCHIVE_GRAPH_REBUILD_FLOOR_S"
+
+
+def rebuild_floor_s() -> float:
+    """How recently *any* process must have persisted a graph for this one to skip a
+    rebuild, from ``THREAD_ARCHIVE_GRAPH_REBUILD_FLOOR_S`` (``0`` disables the gate).
+
+    :data:`_REFRESH_COOLDOWN_S` bounds how often one process *probes*; this bounds
+    how often the machine pays a *build*, which is the expensive half and the one no
+    per-process guard can see. Both are needed because the validity token moves with
+    every ingest pass: token staleness alone asks for a rebuild continuously, and
+    several processes each holding their own copy of that judgement rebuild the same
+    partition over and over — worst at startup, where restarts arrive in bursts and
+    every fresh process finds a token that has moved.
+
+    What the coherence re-rank needs is *a* recent community prior, not the current
+    one. It is a mid-list orderer over a corpus that grows ~1%/day, and
+    :func:`.graph_cache.max_age_s` already puts a week of staleness inside the
+    envelope; a quarter hour is two orders of magnitude inside it. A build is never
+    gated when there is nothing on disk to serve instead.
+    """
+    raw = os.environ.get(_REBUILD_FLOOR_ENV)
+    if raw is None:
+        return 900.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 900.0
+
+
+def _rebuild_redundant() -> bool:
+    """Whether a persisted graph is recent enough that building would repeat work
+    another process just did.
+
+    ``False`` whenever there is nothing on disk, so the first build on a fresh
+    archive is never gated — the floor suppresses duplicate work, never the only
+    copy of it.
+    """
+    floor = rebuild_floor_s()
+    if floor <= 0.0:
+        return False
+    from . import graph_cache
+
+    age = graph_cache.newest_age_s()
+    return age is not None and age < floor
+
+
+def _refresh_if_stale(key: int) -> None:
+    """Probe the store's validity token and kick a background rebuild when the
+    cached graph sits behind it — at most once per :data:`_REFRESH_COOLDOWN_S`, and
+    never when :func:`_rebuild_redundant` says the machine already has a recent one.
+
+    Shared by :func:`get` and :func:`warm` so a serving process ages its graph the
+    same way however it came by it."""
+    now = time.monotonic()
+    if now - _checked_at.get(key, 0.0) < _REFRESH_COOLDOWN_S:
+        return
+    _checked_at[key] = now
+    cached = _CACHE.get(key)
+    if cached is None:
+        return
+    stale = True
+    try:
+        from .vectors import _validity_token
+
+        with get_session() as s:
+            stale = cached[0] != _validity_token(s)
+    except Exception:  # noqa: BLE001 — a staleness probe must never break search
+        stale = False
+    if stale and not _rebuild_redundant():
+        _refresh_async(key)
 
 
 def reset_cache() -> None:
@@ -251,7 +326,8 @@ def get(*, block: bool = False) -> Optional[CorpusGraph]:
     count scan) and the rebuild fire at most once per :data:`_REFRESH_COOLDOWN_S`,
     so continuous ingest can't make every search re-probe. Returns ``None`` until
     the first build lands (the coherence boost simply no-ops until then).
-    ``block=True`` builds inline (warm pass, eval, tests)."""
+    ``block=True`` builds inline and requires the current token (eval, tests) — a
+    starting server wants :func:`warm` instead."""
     if block:
         return build()
     from .._store import get_engine
@@ -268,20 +344,38 @@ def get(*, block: bool = False) -> Optional[CorpusGraph]:
             _refresh_async(key)  # nothing to serve yet — get the first build going
             return None
         _CACHE[key] = cached
-    now = time.monotonic()
-    if now - _checked_at.get(key, 0.0) >= _REFRESH_COOLDOWN_S:
-        _checked_at[key] = now
-        stale = True
-        try:
-            from .vectors import _validity_token
-
-            with get_session() as s:
-                stale = cached[0] != _validity_token(s)
-        except Exception:  # noqa: BLE001 — a staleness probe must never break search
-            stale = False
-        if stale:
-            _refresh_async(key)
+    _refresh_if_stale(key)
     return cached[1]
+
+
+def warm() -> Optional[CorpusGraph]:
+    """Make this process's coherence re-rank live, as cheaply as it can be made live
+    — the warm pass's graph stage.
+
+    Serves the persisted graph when there is one, stale, exactly as :func:`get`
+    serves it and for the same reason: what is on offer is not a fresher graph but a
+    re-rank that stands down for the next several seconds, ordering the same query
+    differently with nothing in the output to say so. Builds inline only when there
+    is nothing on disk to serve at all — a first run, or a build-shape change that
+    invalidated every file.
+
+    Distinct from ``get(block=True)`` because the two callers want opposite things
+    from the same graph. An eval asks for the graph of the snapshot it is scoring and
+    must not inherit whatever a previous process left on disk, so it pays the build.
+    A starting server asks only to stop being useless, and paying a corpus-wide
+    Leiden partition to answer that is the most expensive way to get an answer it
+    already had — the load is tens of MB off disk against seconds of compute.
+    """
+    from .._store import get_engine
+
+    key = id(get_engine())
+    if _CACHE.get(key) is None:
+        entry = _disk_entry()
+        if entry is None:
+            return build()  # nothing to serve: this process pays the first build
+        _CACHE[key] = entry
+    _refresh_if_stale(key)
+    return _CACHE[key][1]
 
 
 def is_refreshing() -> bool:
@@ -290,9 +384,9 @@ def is_refreshing() -> bool:
     search running beside one is not competing for nothing.
 
     Reads the build state rather than the background-thread guard: an inline build
-    (the warm pass) competes with a concurrent search exactly as much as a
-    backgrounded one does, and a contention signal that only sees one of them
-    under-reports the case with the worst timing — startup."""
+    competes with a concurrent search exactly as much as a backgrounded one does, and
+    a contention signal that only sees one of them under-reports the case with the
+    worst timing — startup."""
     return bool(_BUILDING)
 
 
@@ -347,11 +441,41 @@ def build(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[CorpusGraph]:
             return entry[1]
         with _BUILD_GUARD:
             _BUILDING.add(key)
+        # Timed around the real build only — every early return above served a
+        # cache (memory, or another process's on-disk entry) and rebuilt nothing.
+        _t0 = time.perf_counter()
+        graph = None
         try:
-            return _build_graph(key, token, knn, min_sim)
+            graph = _build_graph(key, token, knn, min_sim)
+            return graph
         finally:
             with _BUILD_GUARD:
                 _BUILDING.discard(key)
+            _record_graph_refresh(_t0, graph)
+
+
+def _record_graph_refresh(started: float, graph: Optional[CorpusGraph]) -> None:
+    """Log the build to the usage ledger — its cost, and the corpus size that
+    explains the cost. Fail-soft: the graph is best-effort and its telemetry is
+    more so."""
+    try:
+        from . import _contention
+        from .usage import record_refresh
+
+        detail = (
+            {"threads": len(graph.thread_ids), "edges": int(graph.edges),
+             "communities": len(graph.members)}
+            if graph is not None else None
+        )
+        record_refresh(
+            "graph",
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            failed=graph is None,
+            detail=detail,
+            context=_contention.sample(),
+        )
+    except Exception:  # noqa: BLE001 — advisory
+        logger.debug("corpus graph: could not record refresh", exc_info=True)
 
 
 def _build_lock(key: int) -> threading.Lock:

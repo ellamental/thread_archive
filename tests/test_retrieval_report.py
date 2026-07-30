@@ -11,9 +11,16 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
-from search_lab import retrieval_report as rr
-from search_lab import speed
-from thread_archive._retrieval.usage import LEDGER_FILE
+import pytest
+
+# The report reads the viewer's own request ledger, and the viewer is dev-only —
+# no wheel carries it (docs/web-viewer.md). search_lab is likewise repo-only.
+pytest.importorskip("thread_archive._web", reason="the viewer is dev-only (no wheel carries it)")
+
+from search_lab import retrieval_report as rr  # noqa: E402
+from search_lab import speed  # noqa: E402
+from thread_archive._retrieval.usage import LEDGER_FILE  # noqa: E402
+from thread_archive._web.metrics import LEDGER_FILE as WEB_LEDGER_FILE  # noqa: E402
 
 
 def _at(minutes_ago: float = 0) -> str:
@@ -44,6 +51,19 @@ def _warm_search(duration, **extra) -> dict:
 def _cold_search(duration, **extra) -> dict:
     """A search that loaded the model inside itself."""
     return _warm_search(duration, cold=True, embed_cold=True, **extra)
+
+
+def _web_write(home, records: list[dict]) -> None:
+    (home / WEB_LEDGER_FILE).write_text(
+        "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+
+def _web_search(duration, *, minutes_ago=0.0, status=200, **extra) -> dict:
+    """One ``/api/search`` request as the viewer's ledger records it — no query
+    text, and the probe's fields folded in flat, which is what lets this page read
+    the two ledgers as one population."""
+    return {"at": _at(minutes_ago), "path": "/api/search", "status": status,
+            "duration_ms": duration, "pool_size": 120, **extra}
 
 
 def _filled(section: dict) -> list[dict]:
@@ -163,20 +183,109 @@ def test_each_front_door_is_counted_apart(archive_home) -> None:
     assert rr.served(archive_home)["by_surface"][0]["surface"] == "mcp-http"
 
 
+def test_every_headline_number_is_available_per_door(archive_home) -> None:
+    """The doors are the page's headline, so each one carries the same cuts the
+    whole population does. A pooled median over doors this different is a mixture
+    nobody waited on: here the warmed server's question costs 200 ms and the
+    terminal's costs 9 s, and their average describes neither."""
+    _write(archive_home, [
+        _warm_search(200.0, surface="mcp-http"),
+        _warm_search(5000.0, surface="mcp-http", limit=50),
+        _cold_search(9000.0, surface="cli"),
+    ])
+    rows = {s["surface"]: s for s in rr.served(archive_home)["by_surface"]}
+    http = rows["mcp-http"]
+    assert http["warm_interactive"] == {"n": 1, "p50": 200.0, "p90": 200.0, "p99": 200.0}
+    assert http["warm_bulk"]["n"] == 1 and http["warm_bulk"]["p50"] == 5000.0
+    assert http["cold"]["n"] == 0
+    # A door with nothing warm reports an empty band rather than borrowing the
+    # pool's — its callers have never once had a warm process to ask.
+    assert rows["cli"]["warm_interactive"]["n"] == 0
+    assert rows["cli"]["cold"]["p50"] == 9000.0
+
+
+def test_a_window_counts_only_the_window(archive_home) -> None:
+    """The ledgers keep their whole history on purpose and the windows this page
+    asks for are hours to weeks, so the read is bounded by the window rather than by
+    the history behind it — walked backwards from now and stopped at the edge. A
+    row older than the cutoff is neither counted nor read."""
+    _write(archive_home, [
+        _warm_search(9000.0, minutes_ago=60 * 24 * 9),
+        _warm_search(200.0, minutes_ago=30),
+    ])
+    _web_write(archive_home, [
+        _web_search(4000.0, minutes_ago=60 * 24 * 9),
+        _web_search(500.0, minutes_ago=30),
+    ])
+    out = rr.served(archive_home, hours=24)
+    assert out["n"] == 2
+    assert out["warm"]["p50"] == 500.0 and out["warm"]["p90"] == 500.0
+
+
+def test_the_viewer_is_a_door_like_any_other(archive_home) -> None:
+    """Its searches live in their own ledger so that evals mined from observed
+    traffic never learn from a human clicking around. Latency is not that question:
+    the viewer drives the same engine, and a page about doors that read only one
+    file would report the busiest surface on the box as silent."""
+    _write(archive_home, [_warm_search(200.0, surface="mcp-http")])
+    _web_write(archive_home, [
+        _web_search(500.0, limit=40, page=1),
+        _web_search(700.0, limit=40, page=1),
+        {"at": _at(1), "path": "/api/status", "status": 200, "duration_ms": 3.0},
+    ])
+    rows = {s["surface"]: s for s in rr.served(archive_home)["by_surface"]}
+    assert rows[rr.WEB]["n"] == 2
+    assert rows[rr.WEB]["warm_interactive"]["p50"] == 700.0
+    # A page load is not a search, however often it is served.
+    assert rr.served(archive_home)["n"] == 3
+
+
+def test_a_page_of_the_viewers_results_is_one_question_not_a_sweep(
+        archive_home) -> None:
+    """The boundary between a question and a sweep is a door's own first screen.
+    The viewer cannot paint fewer than its page size, so asking for exactly that is
+    the cheapest thing it ever does — while the same width from an agent that
+    defaults to ten is a corpus walk. One number for both would file every search
+    the viewer has ever run as bulk."""
+    _write(archive_home, [_warm_search(5000.0, surface="mcp-http",
+                                       limit=rr.WEB_INTERACTIVE_LIMIT)])
+    _web_write(archive_home, [
+        _web_search(500.0, limit=rr.WEB_INTERACTIVE_LIMIT, page=1),
+        _web_search(4000.0, limit=rr.WEB_INTERACTIVE_LIMIT, page=6),
+    ])
+    rows = {s["surface"]: s for s in rr.served(archive_home)["by_surface"]}
+    assert rows[rr.WEB]["warm_interactive"]["n"] == 1
+    assert rows[rr.WEB]["warm_bulk"]["p50"] == 4000.0
+    assert rows["mcp-http"]["warm_interactive"]["n"] == 0
+
+
+def test_a_request_the_viewer_refused_never_reached_the_engine(archive_home) -> None:
+    """A 4xx is a rejection, and its fast refusal would flatter every percentile it
+    landed in. A 5xx is a search that failed slowly, which is the most interesting
+    latency there is — it stays, for the same reason the tool ledger keeps its
+    failures."""
+    _web_write(archive_home, [
+        _web_search(2.0, status=400),
+        _web_search(30000.0, status=500),
+    ])
+    out = rr.served(archive_home)
+    assert out["n"] == 1 and out["warm"]["p50"] == 30000.0
+
+
 def test_a_row_from_before_the_doors_were_named_is_not_assigned_to_one(
         archive_home) -> None:
     """Every row predating the surface field looks like this, and resolving it to a
     door would invent an attribution — the exact error on the regime side, in the
     other column."""
     _write(archive_home, [_warm_search(200.0)])
-    assert rr.served(archive_home)["by_surface"] == [
-        {"surface": rr.UNATTRIBUTED, "n": 1, "n_cold": 0, "p50": 200.0, "p90": 200.0}]
+    doors = rr.served(archive_home)["by_surface"]
+    assert [(d["surface"], d["n"]) for d in doors] == [(rr.UNATTRIBUTED, 1)]
 
 
 def test_restarts_are_attributed_to_the_daemon_that_paid_them(archive_home) -> None:
     """Several daemons warm independently and bounce for unrelated reasons, so the
     total answers how much warming the box did — not how often the service being
-    read restarted."""
+    read restarted, nor what a start costs *it*."""
     _write(archive_home, [
         {"at": _at(10), "kind": "warm", "duration_ms": 22000.0, "surface": "mcp-http"},
         {"at": _at(10), "kind": "warm", "duration_ms": 21000.0, "surface": "web"},
@@ -184,8 +293,39 @@ def test_restarts_are_attributed_to_the_daemon_that_paid_them(archive_home) -> N
     ])
     out = rr.restarts(archive_home, hours=24)
     assert out["n"] == 3
-    assert out["by_surface"] == [{"surface": "mcp-http", "n": 2},
-                                 {"surface": "web", "n": 1}]
+    assert out["by_surface"] == [
+        {"surface": "mcp-http", "n": 2, "p50_ms": 22000.0},
+        {"surface": "web", "n": 1, "p50_ms": 21000.0},
+    ]
+
+
+def test_rebuilds_are_split_by_what_was_rebuilt(archive_home) -> None:
+    """The matrix and the graph rebuild on unrelated triggers and unrelated
+    schedules — one on ingest moving the store's validity token, the other on a
+    stale partition — so a total over both tracks neither."""
+    _write(archive_home, [
+        {"at": _at(10), "kind": "refresh", "what": "matrix", "duration_ms": 4000.0},
+        {"at": _at(12), "kind": "refresh", "what": "graph", "duration_ms": 9000.0},
+        {"at": _at(20), "kind": "refresh", "what": "matrix", "duration_ms": 6000.0,
+         "failed": True},
+    ])
+    out = rr.rebuilds(archive_home, hours=24)
+    assert out["n"] == 3
+    matrix, graph = out["by_what"]
+    assert (matrix["what"], matrix["n"], matrix["failed"]) == ("matrix", 2, 1)
+    assert matrix["max_ms"] == 6000.0 and matrix["total_s"] == 10.0
+    assert (graph["what"], graph["n"]) == ("graph", 1)
+
+
+def test_rebuilds_do_not_leak_into_the_served_distribution(archive_home) -> None:
+    """A refresh is work between requests, not a request. Counting one as served
+    latency would put a multi-second rebuild in a percentile no agent waited on."""
+    _write(archive_home, [
+        {"at": _at(10), "kind": "search", "query": "q", "duration_ms": 40.0},
+        {"at": _at(11), "kind": "refresh", "what": "graph", "duration_ms": 9000.0},
+    ])
+    out = rr.served(archive_home, hours=24)
+    assert out["n"] == 1
 
 
 def test_a_failed_search_still_counts_toward_the_distribution(archive_home) -> None:

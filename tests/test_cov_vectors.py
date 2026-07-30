@@ -536,6 +536,78 @@ def test_embed_query_prefixes_caps_and_short_circuits(monkeypatch) -> None:
     assert len(model.seen) == 2  # a blank query never reaches the model
 
 
+def test_a_repeated_query_reuses_its_vector(monkeypatch) -> None:
+    """The same query text embeds to the same vector for as long as one model is
+    loaded, so a repeat must not pay a second forward pass. Paging is what makes
+    this the common case: every page of a walk re-embeds one identical string."""
+    _models_on(monkeypatch)
+    model = _ScriptedModel(width=2)
+    e = embed.Embedder(model=model)
+
+    first = e.embed_query("a repeated ask")
+    for _ in range(5):
+        assert e.embed_query("a repeated ask") == first
+    assert len(model.seen) == 1, "a cached query went back to the model"
+    assert e.query_cache_stats() == {"entries": 1, "hits": 5, "misses": 1}
+
+    e.embed_query("a different ask")
+    assert len(model.seen) == 2, "a distinct query must still reach the model"
+
+
+def test_a_cache_hit_tells_the_probe_it_happened(monkeypatch) -> None:
+    """The cache makes ``embed_ms`` ~0 on an arm that ran, which is the same number
+    an arm that never embedded reports. The embedder states the difference at the
+    only place that knows it."""
+    from thread_archive._retrieval import _probe
+
+    _models_on(monkeypatch)
+    e = embed.Embedder(model=_ScriptedModel(width=2))
+
+    with _probe.install() as miss:
+        e.embed_query("first time")
+    assert miss.embed_cached is False, "a miss claimed a cache hit"
+
+    with _probe.install() as hit:
+        e.embed_query("first time")
+    assert hit.embed_cached is True
+
+
+def test_the_query_cache_hands_out_copies(monkeypatch) -> None:
+    """The vector travels into arithmetic the caller owns. A shared list would let
+    one caller's in-place normalize poison the entry for every later query."""
+    _models_on(monkeypatch)
+    e = embed.Embedder(model=_ScriptedModel(width=2))
+
+    got = e.embed_query("mutate me")
+    got[0] = 999.0
+    assert e.embed_query("mutate me") == [1.0, 1.0], "a caller edited the cached vector"
+
+
+def test_the_query_cache_evicts_and_never_caches_a_failure(monkeypatch) -> None:
+    """Bounded, least-recently-used first — and a ``None`` is never stored. Every
+    way an embed returns None (models off, load failed, deferred construction) is a
+    condition that resolves, so caching one would pin a transient state for the
+    life of the process."""
+    _models_on(monkeypatch)
+    model = _ScriptedModel(width=2)
+    e = embed.Embedder(model=model, query_cache_max=2)
+
+    e.embed_query("one")
+    e.embed_query("two")
+    e.embed_query("one")            # refreshes 'one', so 'two' is now the oldest
+    e.embed_query("three")          # evicts 'two'
+    assert e.query_cache_stats()["entries"] == 2
+    seen = len(model.seen)
+    e.embed_query("one")
+    assert len(model.seen) == seen, "the recently-used entry was evicted"
+    e.embed_query("two")
+    assert len(model.seen) == seen + 1, "the least-recently-used entry survived"
+
+    broken = embed.Embedder(load=_boom)
+    assert broken.embed_query("never cached") is None
+    assert broken.query_cache_stats()["entries"] == 0
+
+
 def test_embed_documents_prefixes_caps_and_empties(monkeypatch) -> None:
     _models_on(monkeypatch)
     model = _ScriptedModel(width=1)
@@ -878,7 +950,7 @@ def test_save_sidecar_defaults_to_the_process_embedding_space(archive_home, tmp_
 def test_save_sidecar_ignores_and_sweeps_stray_builds(archive_home, tmp_path) -> None:
     """Concurrent/dead savers' build files must not break a save: each saver
     builds under its own pid-unique name, a stale stray (a crashed build —
-    the shape that used to collide on CREATE TABLE) is swept by age, and a
+    the shape that would collide on CREATE TABLE) is swept by age, and a
     fresh stray (a live concurrent build) is left alone."""
     import sqlite3
     import time

@@ -148,8 +148,8 @@ def test_rollback_does_not_write_truth(archive_home) -> None:
 def test_id_highwater_survives_delete(archive_home) -> None:
     """AUTOINCREMENT keeps the id high-water across a DELETE, so a writer that inserts
     during reindex's truncated window can never recycle a historical id. DELETE-then-
-    insert is the minimal reproduction of that window — the regression for the
-    id-collision cascade (a live watcher minting ids while reindex had emptied events).
+    insert is the minimal reproduction of that window, and of the id-collision
+    cascade it prevents: a live watcher minting ids while reindex has emptied events.
     """
     init_db()
     with get_session() as s:
@@ -365,8 +365,8 @@ def _event_ids(path) -> set[int]:
 
 def test_rebalance_crash_then_twin_merges_without_loss(archive_home, monkeypatch) -> None:
     """A sweep killed mid-move leaves the manifest already at the new depth; a flat
-    twin created by a racing writer is MERGED home by the next sweep — the failure
-    that used to clobber a thread's whole history with its tail."""
+    twin created by a racing writer is MERGED home by the next sweep. Anything less
+    clobbers a thread's whole history with its tail."""
     monkeypatch.setenv("THREAD_ARCHIVE_SHARDFLAT_MAX", "4")
     d = jsonl_log.log_dir()
     _seed_flat_threads(d, 6)

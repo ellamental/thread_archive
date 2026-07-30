@@ -3,13 +3,16 @@
 The public API is exactly four things: the retrieval tools
 (``thread_search`` / ``thread_read`` — served to agents by ``archive-mcp`` and
 to a person by the ``thread-archive search`` / ``thread-archive read`` verbs),
-the on-disk truth format (docs/format.md), the provider plugin API
-(``thread_archive.provider``, docs/providers.md), and the web viewer's URLs
-(docs/web-viewer.md). Everything else — the rest of the
-``thread_archive`` CLI, the ``_api`` coordination layer, every underscore-prefixed
-module — is private support machinery. These tests make
+the ``thread-archive`` CLI (docs/cli.md), the on-disk truth format
+(docs/format.md), and the provider plugin API (``thread_archive.provider``,
+docs/providers.md). Everything else — the ``_api`` coordination layer, every
+underscore-prefixed module — is private support machinery. These tests make
 widening the surface a deliberate act (edit the pinned sets here) instead of
 a naming accident.
+
+The viewer's URLs are pinned here too, but as a promise to this machine's own
+family rather than a public one: the viewer is dev-only and ships in no wheel,
+so that test stands down where it isn't (docs/web-viewer.md).
 """
 
 from __future__ import annotations
@@ -18,9 +21,11 @@ import argparse
 import inspect
 from pathlib import Path
 
+import pytest
+
 import thread_archive
 from thread_archive import _tools, cli
-from thread_archive._web import route
+from thread_archive._viewer import viewer_available
 from thread_archive.cli import (
     _LEGACY_VERBS,
     _SECTIONS,
@@ -33,36 +38,39 @@ from thread_archive.cli import (
 # here is an API commitment — it must survive until a deliberate deprecation.
 PUBLIC_API = ["__version__"]
 
-# The modules allowed to live at a public (non-underscore) name. `cli` is the
-# entry point; `provider` is the plugin API — the one surface archive commits to
-# keeping stable, because a provider defined outside the package is written
-# against it and cannot follow the private tree's churn. Installer machinery (the
+# The modules allowed to live at a public (non-underscore) name. `cli` is what
+# the console script resolves to — the *command* is public surface, its Python
+# names are not; `provider` is the plugin API, whose Python names are the
+# commitment, because a provider defined outside the package is written
+# against them and cannot follow the private tree's churn. Installer machinery (the
 # family manifest writer) lives in host/, outside the package — it needs a repo
 # checkout and is never shipped.
 PUBLIC_MODULES = {"cli", "provider"}
 
 # The command tree: each listed root command mapped to the actions under it
-# (empty for a leaf). Most of the CLI is private tooling, but its verbs are wired
-# into the LaunchAgent plists, lab's cron script, the /ci skill, and the
-# monitor's heartbeat contract — this pin makes renaming one a deliberate act
-# that updates those in the same change, not a compatibility promise to anyone
-# external.
-# `search` and `read` are the exception: they are the retrieval tools with a
-# terminal in front of them (one implementation in thread_archive/_tools.py,
-# served over MCP and here), so they carry the same public promise the tools do
-# and there is nothing to keep out. What stays out is a *second implementation* —
-# `web` is an opener, not a read surface: it hands the cohosted viewer's URL to a
-# browser and returns nothing itself.
+# (empty for a leaf). The tree is public surface — the verbs are wired into the
+# LaunchAgent plists, lab's cron script, the /ci skill, and the monitor's
+# heartbeat contract, and named by operators and scripts this repo never sees.
+# Adding an entry is free; deleting one is a break, paid for by leaving the old
+# spelling resolving (`_LEGACY_VERBS`, exercised below). Either way this pin
+# makes the move deliberate.
+# `search` and `read` carry a second promise on top: they are the retrieval
+# tools with a terminal in front of them (one implementation in
+# thread_archive/_tools.py, served over MCP and here), so their *output* is
+# contract too, where every other verb's is free to change. What stays out is a
+# *second implementation* — `web` is an opener, not a read surface: it hands the
+# cohosted viewer's URL to a browser and returns nothing itself.
 CLI_TREE = {
     "search": set(),
     "read": set(),
     "web": set(),
     "watch": set(),
     "source": {"list", "import", "import-account", "mirror", "coverage", "loads",
-               "ingest", "fix"},
+               "ingest", "fix", "recheck"},
     "index": {"rebuild", "migrate", "embed", "verify", "repair"},
     "backup": {"run", "nightly", "drill", "restore"},
     "status": set(),
+    "docs": set(),
     "setup": set(),
     "service": {"install", "uninstall", "restart", "status"},
     "self-update": set(),
@@ -103,11 +111,16 @@ def _root() -> argparse._SubParsersAction:
 
 def test_cli_tree_is_exactly_the_pinned_shape() -> None:
     sub = _root()
+    # `web` is the one conditional verb: the viewer is dev-only and ships in no
+    # wheel, so an install's tree is this one minus that verb. Subtracted rather
+    # than dropped from CLI_TREE, so the pin still documents the whole surface
+    # and still reds if `web` goes missing from a checkout.
+    expected = set(CLI_TREE) - (set() if viewer_available() else {"web"})
     # Iterating the root map yields only the listed commands — the legacy
     # spellings resolve but are deliberately not part of the surface.
-    assert set(sub.choices) == set(CLI_TREE)
-    for name, actions in CLI_TREE.items():
-        assert set(_subcommands_of(sub.choices[name])) == actions, name
+    assert set(sub.choices) == expected
+    for name in expected:
+        assert set(_subcommands_of(sub.choices[name])) == CLI_TREE[name], name
 
 
 def test_every_command_appears_in_exactly_one_help_section() -> None:
@@ -142,6 +155,7 @@ def test_pre_group_spellings_still_resolve() -> None:
     assert parser.parse_args(_normalize(["backup", "nightly", "/d"])).func is cli.cmd_nightly
 
 
+@pytest.mark.viewer
 def test_committed_web_endpoints_are_served(archive_home) -> None:
     """Each committed endpoint resolves to a handler of its own.
 
@@ -150,6 +164,8 @@ def test_committed_web_endpoints_are_served(archive_home) -> None:
     break it, here) is the deliberate act. The responses themselves are
     behaviour, tested in test_web.py; this only pins that the URLs exist.
     """
+    from thread_archive._web import route
+
     assert route("GET", "/api/not-a-real-endpoint", {})[0] == 404  # the fallthrough
     for path in PUBLIC_WEB_ENDPOINTS:
         assert route("GET", path, {})[0] != 404, path
@@ -169,6 +185,10 @@ def test_retrieval_tools_expose_no_extension_region_surface() -> None:
         params = inspect.signature(tool).parameters
         assert "topic_id" not in params, tool.__name__
         assert "topic" not in (tool.__doc__ or "").lower(), tool.__name__
+    # The docstring is the manual thread_help serves; the wire descriptions are
+    # what every session is handed. Both ship, so both are held to it.
+    for description in (_tools.SEARCH_DESCRIPTION, _tools.READ_DESCRIPTION):
+        assert "topic" not in description.lower()
 
     verbs = next(
         a for a in build_parser()._actions if isinstance(a, argparse._SubParsersAction)

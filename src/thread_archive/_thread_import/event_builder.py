@@ -63,8 +63,7 @@ def compute_dedup_key(provider_message_id: str, event_type: str, payload: dict) 
     Form: ``{provider_message_id|content_anchor}:{event_type}:{block}:{content_hash}``.
     The key is NOT prefixed with the thread id: dedup is thread-scoped by the
     ``WHERE thread_id = ...`` clause in the importer, so the prefix would be
-    redundant — and every stored key is bare (``denamespace_dedup_keys``
-    normalizes any prefixed stragglers); keep this bare.
+    redundant. Keep this bare.
     Same id + same content → same key (idempotent). Same id + edited content →
     different key (both versions kept). Events with no provider id fall back to a
     content anchor so they still dedup on content+type+position.
@@ -693,6 +692,20 @@ class DefaultEventBuilder:
                 payload={
                     "data": first_block.get("data", {}),
                     "tool_use_id": first_block.get("tool_use_id"),
+                },
+                stream_id=stream_id,
+                occurred_at=occurred_at,
+            )]
+        elif block_type == "pr_link":
+            # Deliberately timestamp-free: a harness re-emits the marker every turn
+            # the link is live, and the dedup key is computed over this payload —
+            # so one PR association is one event however often it was announced.
+            return [ThreadEvent(
+                event_type="pr_link",
+                payload={
+                    "repo": first_block.get("repo"),
+                    "number": first_block.get("number"),
+                    "url": first_block.get("url"),
                 },
                 stream_id=stream_id,
                 occurred_at=occurred_at,

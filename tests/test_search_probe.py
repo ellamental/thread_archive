@@ -71,6 +71,49 @@ def test_substages_are_gated_per_arm() -> None:
         assert name not in rec
 
 
+def test_the_set_outcomes_ride_along_only_when_the_stage_ran() -> None:
+    """``set_ms`` alone cannot see the memo working — the same duration is a cheap
+    answer on a small corpus and a defeated memo on a large one. The outcome
+    counters are what separate them, and like every other signal here their
+    presence carries it: a search that never resolved a set says nothing."""
+    probe = _probe.SearchProbe()
+    probe.fts_ms = 10.0
+    rec = probe.as_record()
+    for name in _probe.SET_OUTCOMES:
+        assert name not in rec
+
+    probe.set_ms = 850.0
+    probe.set_scans = 1
+    rec = probe.as_record()
+    assert rec["set_ms"] == 850.0 and rec["set_scans"] == 1
+    assert "set_deltas" not in rec and "set_hits" not in rec
+
+
+def test_set_outcomes_tally_because_one_search_can_resolve_two_sets() -> None:
+    """The thread tally and the saturated-pool count are two set queries under one
+    probe, and they need not agree — one can be handed a memoized answer while the
+    other scans. Counters, so the record says both happened."""
+    with _probe.install() as probe:
+        _probe.bump("set_hits")
+        _probe.bump("set_scans")
+    rec = probe.as_record()
+    assert rec["set_hits"] == 1 and rec["set_scans"] == 1
+
+
+def test_a_reused_query_vector_is_stated_not_inferred() -> None:
+    """An ``embed_ms`` of ~0 on an arm that ran is ambiguous: the vector came from
+    the cache, or the arm never embedded. The flag is what tells them apart, and it
+    is meaningless on an arm that sat out."""
+    probe = _probe.SearchProbe()
+    probe.fts_ms = 10.0
+    probe.embed_cached = True
+    assert "embed_cached" not in probe.as_record(), "claimed a cache hit with no arm"
+
+    probe.semantic_ms = 4.0
+    rec = probe.as_record()
+    assert rec["embed_cached"] is True and rec["embed_ms"] == 0.0
+
+
 def test_bump_tallies_and_survives_an_unknown_counter() -> None:
     # The fail-soft contract the timing points rely on: a counter name that isn't a
     # slot is a bug in the caller, never a broken search.

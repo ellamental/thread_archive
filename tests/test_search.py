@@ -294,6 +294,39 @@ def test_quality_signal_rendered(archive_home) -> None:
     assert "quality=weak" in weak and "0/1" in weak and "(semantic)" in weak
 
 
+def test_a_struggling_search_offers_next_moves(archive_home) -> None:
+    """The tools ship a compact description and keep their manual behind
+    ``thread_help``, so the alternatives are not sitting in a caller's context by
+    default. A search that found nothing — or found only guesses — hands over the
+    ones that would plausibly change *this* result, and nothing else."""
+    from thread_archive._retrieval import format_results
+
+    # A single token could be living inside longer words; the infix scan is the
+    # retry that finds it, and the one no index can do.
+    single = format_results([], "p4")
+    assert single.startswith('No results for "p4".')
+    assert "match='substring'" in single
+    assert "thread_help('search')" in single
+
+    # A filename-shaped query gets the code axis, which answers the other question.
+    assert "path='rank.py'" in format_results([], "rank.py")
+    assert "path='src/rank.py'" in format_results([], "src/rank.py")
+
+    # A phrase has no substring story to tell, so it is not offered one.
+    wordy = format_results([], "no such phrase here")
+    assert "match='substring'" not in wordy and "path=" not in wordy
+    assert "thread_help('search')" in wordy
+
+    # Weak hits are the same wall reached from the other side: rows came back, but
+    # no query term is in the best of them.
+    _seed_corpus(archive_home)
+    weak = format_results(search("authenticated"), "authenticated")
+    assert "quality=weak" in weak and "thread_help('search')" in weak
+    # A good answer is left alone — no advice on a search that worked.
+    strong = format_results(search("authentication login"), "authentication login")
+    assert "thread_help" not in strong
+
+
 # --- output modes -----------------------------------------------------------
 
 def test_output_count_and_linkable(archive_home) -> None:

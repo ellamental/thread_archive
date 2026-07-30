@@ -351,6 +351,12 @@ class ClaudeCodeParser(ProviderParser):
             return self._parse_queue_operation(line, session_id)
         if line_type == "progress":
             return self._parse_progress_message(line, session_id)
+        if line_type == "pr-link":
+            # A pr-link naming no PR is not a PR association — fall through to
+            # verbatim preservation rather than dropping the line on the floor.
+            pr = self._parse_pr_link(line, session_id)
+            if pr is not None:
+                return pr
 
         # Any other (unrecognized or future) line kind is preserved verbatim
         # rather than dropped — nothing vanishes without a trace, not even a line
@@ -1009,6 +1015,57 @@ class ClaudeCodeParser(ProviderParser):
             "is_active_path": True,
             "is_visually_hidden": True,
             "provider_data": {"line_type": "queue-operation"},
+        }
+
+    def _parse_pr_link(
+        self,
+        line: Dict[str, Any],
+        session_id: Optional[str],
+    ) -> Optional[NormalizedMessage]:
+        """Parse a pr-link line: the pull request this session is working on.
+
+        Claude Code re-emits the marker on every turn the link is live, so all of
+        them describe one association. The identity here is the PR itself
+        (``provider_message_id``) and the payload carries no timestamp, so the
+        repeats collapse to a single event under the ordinary content dedup — a
+        session that opened one PR reads as one association, not as forty.
+
+        Provenance, not chatter: this is the same class of fact as a commit an
+        event's output shows being created, and it folds into the same
+        ``event_git_refs`` projection, behind ``thread_search(pr=...)``.
+        """
+        repo = line.get("prRepository")
+        number = line.get("prNumber")
+        url = line.get("prUrl")
+        # The number is what the lookup keys on; a line without one describes no
+        # PR we could find again, so it goes down the verbatim path instead.
+        if number is None or not str(number).strip():
+            return None
+        timestamp = line.get("timestamp")
+        created_at = _parse_iso_timestamp(timestamp)
+        message_order = _timestamp_to_order(timestamp) if timestamp else 0
+        ref = f"{repo}#{number}" if repo else f"#{number}"
+
+        return {
+            "source_provider": self.PROVIDER_NAME,
+            "provider_message_id": f"pr-{ref}",
+            "provider_conversation_id": session_id or line.get("sessionId", ""),
+            "content_hash": self.hash_message(f"pr-{ref}", "system", ref, None),
+            "role": "system",
+            "content_text": f"[pull request {ref}]",
+            "content_blocks": [cast(ContentBlock, {
+                "type": "pr_link",
+                "repo": repo,
+                "number": number,
+                "url": url,
+                "seq": 0,
+            })],
+            "created_at": created_at,
+            "updated_at": None,
+            "message_order": message_order,
+            "is_active_path": True,
+            "is_visually_hidden": True,
+            "provider_data": {"line_type": "pr-link"},
         }
 
     def _parse_progress_message(

@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router'
 import { api, type SourceCount } from '../api'
 
 type SearchBoxVariant = 'compact' | 'hero' | 'page'

@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 
 import pytest
@@ -57,10 +58,10 @@ def _ledger(archive_home) -> list[dict]:
     return [r for r in rows if r.get("kind") in ("search", "read")]
 
 
-def test_mcp_registers_two_tools() -> None:
+def test_mcp_registers_its_tools() -> None:
     tools = asyncio.run(mcp.list_tools())
     names = {t.name for t in tools}
-    assert names == {"thread_search", "thread_read"}
+    assert names == {"thread_search", "thread_read", "thread_help"}
     # the schema is derived from the typed signature
     by_name = {t.name: t for t in tools}
     search_props = by_name["thread_search"].inputSchema["properties"]
@@ -74,8 +75,71 @@ def test_mcp_registers_two_tools() -> None:
     # summary is bool | str: true/'toc' = TOC, 'short'/'indexed' = stored summaries
     summary_types = {v["type"] for v in read_props["summary"]["anyOf"]}
     assert summary_types == {"boolean", "string"}
-    # both tools carry a description (docstring)
+    # every tool carries a description
     assert all(t.description for t in tools)
+
+
+# ── what the tools cost just to be listed ────────────────────────────────────
+# A tool description is charged to the context of every session that lists the
+# tools, whether or not one is ever called. So the wire descriptions are compact
+# and the long form is thread_help's to serve on demand. Two properties keep that
+# split honest: the compact form still names every parameter, and it stays small.
+
+#: Parameters the wire description deliberately does not name, findable only
+#: through the manual. A back-compat alias for an argument the description already
+#: describes is not a capability a caller can fail to discover.
+HELP_ONLY_PARAMS = {"thread_read": {"user_only"}}
+
+#: What all the descriptions together may cost, in characters — roughly a quarter
+#: of that in tokens, paid by every agent in every session. Set close to what they
+#: currently cost, because the point is that a new paragraph here is a recurring
+#: bill: adding one should be a deliberate act rather than something a docstring
+#: habit does by accident.
+DESCRIPTION_BUDGET = 4200
+
+
+def test_wire_descriptions_name_every_parameter() -> None:
+    """A filter nobody can discover may as well not exist. The compact description
+    may leave out a parameter's *grammar* — that is what thread_help is for — but
+    not its name. This is the assertion that makes trimming safe, and the one that
+    reds when a new parameter lands with only the manual updated."""
+    for tool in asyncio.run(mcp.list_tools()):
+        described = tool.description or ""
+        allowed = HELP_ONLY_PARAMS.get(tool.name, set())
+        missing = {p for p in tool.inputSchema["properties"] if p not in described}
+        assert not (missing - allowed), (
+            f"{tool.name}: parameter(s) {sorted(missing - allowed)} appear in no "
+            f"description, so no caller can find them")
+        assert not (allowed - missing), (
+            f"{tool.name}: stale HELP_ONLY_PARAMS entry — the description names "
+            f"{sorted(allowed - missing)} after all")
+
+
+def test_wire_descriptions_stay_within_budget() -> None:
+    """The standing tax, ratcheted."""
+    tools = asyncio.run(mcp.list_tools())
+    total = sum(len(t.description or "") for t in tools)
+    assert total <= DESCRIPTION_BUDGET, (
+        f"listing the tools costs {total} chars (~{total // 4} tokens) in every "
+        f"session, called or not; the budget is {DESCRIPTION_BUDGET}. Long-form "
+        f"detail belongs in the tool's docstring, which thread_help serves on "
+        f"demand and only to the caller that asks.")
+
+
+def test_thread_help_serves_the_long_form() -> None:
+    """The manual is the tool's own docstring, so it cannot drift from the code it
+    documents, and it carries what the wire description dropped."""
+    manual = _tools.thread_help("search")
+    # an agent reads the qualified name in its tool list; both spellings work
+    assert manual == _tools.thread_help("thread_search")
+    assert len(manual) > len(_tools.SEARCH_DESCRIPTION)
+    assert "code axis" in manual and "startswith" in manual
+    # user_only is help-only (see HELP_ONLY_PARAMS) — this is where it is findable
+    assert "user_only" in _tools.thread_help("read")
+    # an unusable topic is answered rather than raised: the caller is a model, and
+    # an exception is a failed tool call it has to guess its way out of
+    assert "no manual for 'nope'" in _tools.thread_help("nope")
+    assert "no manual for ''" in _tools.thread_help("")
 
 
 def test_mcp_tools_query_the_archive(archive_home) -> None:
@@ -275,7 +339,7 @@ def test_mcp_search_prepends_degradation_notice(archive_home) -> None:
     out = thread_search("hello")
     assert out.startswith("note: claude-code import is degraded")
     assert "since 2026-07-12" in out
-    assert "thread-archive source fix claude-code" in out
+    assert "thread-archive source recheck claude-code" in out
     assert "hello mcp" in out  # the notice prepends; results still render
 
     # a healthy verdict clears it
@@ -352,6 +416,42 @@ def test_plan_http_warms_and_serves_streamable() -> None:
     server.apply_settings(plan)
     assert mcp.settings.host == "localhost" and mcp.settings.port == 9999
     assert mcp.settings.stateless_http is True and mcp.settings.json_response is True
+
+
+def test_loopback_bind_serves_behind_a_rebinding_allowlist() -> None:
+    """A loopback bind validates Host and Origin.
+
+    DNS-rebinding defense: a page that points its own domain at 127.0.0.1 reaches
+    this port through the victim's browser, and the browser still sends that
+    domain as Host. The allow-list is what makes that request unservable.
+    """
+    settings = server.transport_security(ServePlan(host="127.0.0.1", port=8788))
+    assert settings.enable_dns_rebinding_protection is True
+    # Both forms of each loopback name: the SDK's port wildcard, and the bare
+    # entry for a client that sent no port.
+    for name in server.LOOPBACK_HOSTS:
+        assert name in settings.allowed_hosts and f"{name}:*" in settings.allowed_hosts
+        assert f"http://{name}:*" in settings.allowed_origins
+    assert not any("evil" in h for h in settings.allowed_hosts)
+
+
+def test_apply_settings_builds_the_allowlist_from_the_planned_host(monkeypatch) -> None:
+    """The allow-list follows the bind the command line asked for.
+
+    The SDK derives its own from the host handed to the FastMCP constructor, and
+    this server is constructed at import — before any command line has been read.
+    Left to that, a deliberate non-loopback bind would serve behind a
+    loopback-only allow-list and refuse every request it accepted.
+    """
+    monkeypatch.setenv("THREAD_ARCHIVE_MCP_NONLOCAL", "1")
+    exposed = server.plan_serve(["--http", "--host", "1.2.3.4"])
+    server.apply_settings(exposed)
+    # Deliberately exposed: this server cannot know the names it is legitimately
+    # reached by, so the check comes off rather than refusing every real client.
+    assert mcp.settings.transport_security.enable_dns_rebinding_protection is False
+
+    server.apply_settings(server.plan_serve(["--http", "--host", "127.0.0.1"]))
+    assert mcp.settings.transport_security.enable_dns_rebinding_protection is True
 
 
 def test_plan_http_refuses_nonloopback_host_without_optin(monkeypatch, capsys) -> None:
@@ -443,7 +543,8 @@ def test_stdio_server_answers_a_real_client_over_the_module_entry(archive_home) 
             proc.stderr.close()
     replies = {d["id"]: d for d in (json.loads(ln) for ln in lines if ln.strip())}
     assert replies[1]["result"]["serverInfo"]["name"] == "thread-archive"
-    assert {t["name"] for t in replies[2]["result"]["tools"]} == {"thread_search", "thread_read"}
+    assert {t["name"] for t in replies[2]["result"]["tools"]} == {
+        "thread_search", "thread_read", "thread_help"}
     assert "hello mcp" in json.dumps(replies[3]["result"])
 
 
@@ -487,11 +588,30 @@ def test_http_server_serves_the_shared_streamable_transport(archive_home) -> Non
 
         # Stateless: each request stands alone, no session handshake to carry.
         listed = _call({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-        assert {t["name"] for t in listed["result"]["tools"]} == {"thread_search", "thread_read"}
+        assert {t["name"] for t in listed["result"]["tools"]} == {
+            "thread_search", "thread_read", "thread_help"}
         called = _call({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                         "params": {"name": "thread_read",
                                    "arguments": {"thread_id": ta.search("hello")[0]["thread_id"]}}})
         assert "hello mcp" in json.dumps(called["result"])
+
+        # DNS rebinding, on the real transport: a page on any domain can resolve
+        # that domain to 127.0.0.1 and reach this port through the victim's
+        # browser — which still sends the attacking domain as Host. The whole
+        # archive is behind this port with no auth, so the request must not be
+        # served. Asserted against a running server rather than the settings
+        # object: what matters is that the transport enforces it.
+        rebound = urllib.request.Request(
+            f"http://127.0.0.1:{port}/mcp",
+            data=json.dumps({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}).encode(),
+            headers={"Content-Type": "application/json",
+                     "Accept": "application/json, text/event-stream",
+                     "Host": "archive.evil.example.com"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(rebound, timeout=30)
+        assert caught.value.code in (400, 421, 403)
+        caught.value.close()  # the error response holds the socket open
     finally:
         proc.terminate()
         proc.wait(timeout=30)

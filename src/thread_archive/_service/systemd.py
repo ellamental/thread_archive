@@ -88,8 +88,24 @@ def _systemd_path(bin_dir: Path) -> str:
     return f"{bin_dir}:/usr/local/bin:/usr/bin:/bin"
 
 
+def _no_newlines(value: str, what: str) -> str:
+    """``value``, or a refusal if it would end the unit-file line it goes on.
+
+    A unit file is parsed line by line and a newline ends a directive whatever
+    quoting surrounds it, so a value carrying one does not become an awkward
+    argument — it becomes the *next directive*, chosen by whoever supplied the
+    value. The paths and ports here come from the operator's own command line, so
+    this is a guard against a mistake rather than an adversary; it refuses at
+    render time either way, because the alternative is a unit that installs
+    cleanly and runs something else."""
+    if "\n" in value or "\r" in value:
+        raise ValueError(f"{what} may not contain a newline: {value!r}")
+    return value
+
+
 def _q(arg: str) -> str:
     """Quote one ExecStart argument for systemd (only when it needs it)."""
+    _no_newlines(arg, "a service argument")
     if arg and not any(c.isspace() for c in arg) and '"' not in arg and "\\" not in arg:
         return arg
     return '"' + arg.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -102,6 +118,8 @@ def _exec(argv: list[str]) -> str:
 def _env_line(key: str, value: str) -> str:
     # Quote the whole assignment when the value carries whitespace so systemd
     # keeps it as one token.
+    _no_newlines(key, "an environment name")
+    _no_newlines(value, "an environment value")
     if any(c.isspace() for c in value):
         return f'Environment="{key}={value}"'
     return f"Environment={key}={value}"
@@ -116,7 +134,7 @@ def _service_unit(spec: AgentSpec) -> str:
     lines += ["", "[Service]"]
     lines.append("Type=oneshot" if spec.schedule is not None else "Type=simple")
     lines.append(f"ExecStart={_exec(spec.argv)}")
-    lines.append(f"WorkingDirectory={spec.working_dir}")
+    lines.append(f"WorkingDirectory={_no_newlines(str(spec.working_dir), 'the working directory')}")
     lines.append(_env_line("PATH", _systemd_path(spec.bin_dir)))
     for key, value in spec.env.items():
         lines.append(_env_line(key, value))
@@ -129,8 +147,8 @@ def _service_unit(spec: AgentSpec) -> str:
     if spec.io_idle:
         lines.append("IOSchedulingClass=idle")
     lines.append(f"LimitNOFILE={spec.nofile}")
-    lines.append(f"StandardOutput=append:{spec.log_stdout}")
-    lines.append(f"StandardError=append:{spec.log_stderr}")
+    lines.append(f"StandardOutput=append:{_no_newlines(str(spec.log_stdout), 'a log path')}")
+    lines.append(f"StandardError=append:{_no_newlines(str(spec.log_stderr), 'a log path')}")
     if spec.run_at_load:
         # A resident agent that should come up at login. A scheduled service is
         # timer-activated instead and carries no [Install].
@@ -171,9 +189,10 @@ def _units(spec: AgentSpec) -> dict[str, str]:
 
 def watcher_units(
     entry: Path, log_dir: Path, *, home: Optional[str] = None, web: bool = True,
-    web_port: int = 8787,
+    web_port: int = 8787, has_viewer: Optional[bool] = None,
 ) -> dict[str, str]:
-    return _units(watcher_spec(entry, log_dir, home=home, web=web, web_port=web_port))
+    return _units(watcher_spec(entry, log_dir, home=home, web=web, web_port=web_port,
+                               has_viewer=has_viewer))
 
 
 def mcp_units(

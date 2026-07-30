@@ -1,6 +1,6 @@
 """Per-import stage-timing probe — opt-in, fail-soft, zero-cost when unused.
 
-Ingest's cost has always been reported as one number per source per poll: the
+Ingest's cost is otherwise one number per source per poll: the
 watcher charges a watcher's whole ``poll()`` to that source's cumulative ``ms``.
 That number says *which source* the loop spends its life in and nothing else,
 which is the wrong grain for every question worth asking of it. A source whose ms

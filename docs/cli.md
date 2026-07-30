@@ -16,7 +16,7 @@ thread-archive search [query]   # the thread_search tool: filters by time, sourc
 thread-archive read <id>        # the thread_read tool: replay a thread (--mode user|chat|full|last|ends,
                                 #   --summary files, --around-event <id> to open a search hit);
                                 #   takes a ULID, a legacy integer id, or a provider session uuid
-thread-archive web              # open the cohosted viewer (the watcher serves it)
+thread-archive web              # open the cohosted viewer (clone only; the watcher serves it)
 
 # ingest
 thread-archive watch            # watch local AI-tool stores and import incrementally
@@ -27,6 +27,10 @@ thread-archive source mirror    # mirror raw harness stores into <home>/source-m
                                 #   (verbatim, gzip; nothing ever deleted)
 thread-archive source coverage  # capture-coverage check: source stores reconciled against the archive
 thread-archive source loads     # load progress: the in-flight load and recent runs, by phase
+thread-archive source ingest    # what ingest cost over a window (--hours, default 24): per
+                                #   source, and where the time went by stage
+thread-archive source recheck <provider>  # re-read what a drifted import consumed; close the
+                                #   ledger records the current parser handles
 thread-archive source fix <provider>  # scaffold an override patch for a drifted import
 
 # the index — everything rebuildable from the JSONL truth
@@ -61,16 +65,39 @@ thread-archive self-update      # packaged installs only: install the newest rel
 thread-archive uninstall        # remove this machine's archive machinery — agents, MCP wiring, manifest,
                                 #   heartbeat, install record; the conversations are never touched
                                 #   (--dry-run reports, --yes skips the confirmation)
+
+# the manual
+thread-archive docs             # list the pages this install carries
+thread-archive docs <page>      # print one, as markdown (`cli` or `cli.md`; --path names the file)
 ```
 
-Every pre-group spelling still resolves — `reindex`, `nightly <dest>`,
-`daemon install`, `backup <dest>` and the rest run exactly what they always did.
-They are listed nowhere: what keeps working is a machine already wired to them,
-not a second documented way to type a verb.
+Ungrouped spellings resolve too — `reindex`, `nightly <dest>`, `daemon install`,
+`backup <dest>` and the rest run what their grouped forms run. They are listed
+nowhere: what they exist for is a machine already wired to them, not a second
+documented way to type a verb.
 
-`search` and `read` are supported surface — the same implementation
-`archive-mcp` serves, so a query typed here and the same query asked
-mid-conversation return the same answer. Everything else in the CLI is private
-operational tooling (see [stability.md](stability.md)): the process seam the
-service agents, cron, and operators use. The third door onto the same archive is
-the web viewer, cohosted by `thread-archive watch --web`.
+**Every verb here is supported surface** (see [stability.md](stability.md)):
+the CLI is the process seam the service agents, cron, operator scripts and
+fingers drive, and a machine already wired to a verb cannot follow a rename.
+What a verb is called and what flags it takes is the contract; what it *prints*
+is not, except where a flag names a machine-readable shape
+(`search --output linkable`).
+
+`search` and `read` carry a second promise on top: they are the same
+implementation `archive-mcp` serves, so a query typed here and the same query
+asked mid-conversation return the same answer.
+
+`docs` reads this directory — the pages ship as package data inside the wheel,
+so an install answers for itself with no clone and no network. Same pages the
+viewer serves at `/docs`. Only this directory: `docs/internal/` is written for
+whoever works on the repo, ships in no wheel, and is listed by neither reader.
+
+The web viewer is a third door onto the same archive, cohosted by
+`thread-archive watch --web` — but it is dev-only and ships in no wheel, so
+`web` and `watch --web` are registered only in a clone. An install's `--help`
+does not list them, which is why the listing above may show fewer verbs than
+yours ([web-viewer.md](web-viewer.md)).
+
+The maintainer's instruments — the retrieval report, telemetry, the search lab —
+are not a verb here at all. They are their own app on their own server, run with
+`python -m devweb` from a clone ([internal/devweb.md](internal/devweb.md)).

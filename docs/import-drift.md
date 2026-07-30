@@ -14,10 +14,29 @@ answer is a support tier plus a repair loop, not a promise nobody can keep:
   check produce per-source *degradation verdicts* (`thread-archive source coverage` prints
   them; the MCP search notice prepends a one-liner naming the remedy the next
   time you search, which is the moment you care).
+- **Loud in proportion.** Drift that only *adds* — a field, block type, line
+  kind or role the parser preserves without modeling — costs the reader nothing,
+  so the health page holds its warning for two weeks from the finding's first
+  sighting, which is time for a release or a patch to close it before anyone is
+  asked to look. Drift that loses content warns the day it lands. So does
+  everything, additive or not, on an install that sets `"dev_mode": true` in
+  `config.json` — there the to-do is the point. Held records stay in the ledger
+  and in `thread-archive source coverage`, which prints how many it is holding:
+  the ask is deferred, never the evidence.
 - **Preservation doesn't wait for the fix.** A degraded source's recently
   active raw files are snapshotted into `dumps/drift/<source>/` — bounded,
   incremental, never auto-deleted — so a fix that comes months later can still
   recover everything the provider has since pruned.
+- **`thread-archive source recheck <provider>` is the first move.** It re-reads
+  exactly the files the ledgers named, through the parser as it stands now.
+  Content the old parser missed lands, and records that come back clean are
+  *closed* — which is what retires the verdict, since a ledger is append-only and
+  a repair must never erase the drift it repaired. Closing is by re-read, not by
+  assertion: the stamp is taken before the re-parse, so findings the re-parse
+  itself records stay open and the source stays degraded. Run it after any
+  upgrade that claims a parser fix — that is a repair with no patch involved, and
+  otherwise nothing retires a verdict your upgrade already fixed. If the findings
+  come back, the drift is live and the patch loop below is next.
 - **The user's own agent writes the fix.** `thread-archive source fix <provider>`
   scaffolds an override patch under `<home>/plugins/` (module, tests, collected
   samples, drift evidence, per-provider quirk notes, and a `PROTOCOL.md`

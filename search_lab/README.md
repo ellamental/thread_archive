@@ -63,9 +63,11 @@ already measured at this configuration — see "Running the whole bench".)
 | 0 | `tests/test_search_quality.py` + `tests/test_search_recall_shape.py` + `tests/test_reality_mechanisms.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding model | minutes | touching the model arm |
 | 2 | CI arm-liveness probes (`retrieval_eval.py --probes-only`) | live archive | ~a minute (it loads both models) | every commit, on the maintainer's local CI |
+| 2 | CI latency gate (`latency_smoke.py`) | live archive, the slowest recorded calls | ~a minute | every commit, on the maintainer's local CI |
 | 3 | `latency_replay.py` (speed over real traffic), `--behavior` | the live archive | minutes | evaluating a deliberate ranking change |
-| 4 | `python -m search_lab benchmark`; `pytest -m beir` | seven external IR / conversational-memory benchmarks | minutes once the corpora are built; about a day of CPU to build them all the first time | the quality claim — calibrating against published baselines |
-| gate | `python -m search_lab gate --run` | tier 4's recorded numbers vs the checked-in accepted ones | whatever tier 4 costs, plus milliseconds | cutting a release |
+| 4 | `python -m search_lab benchmark --quick`; `pytest -m beir` | seven external IR / conversational-memory benchmarks, sampled where a row is too large to score whole | under 20 min once the corpora are built | detecting damage on published labels — what a release is gated on |
+| 4 | `python -m search_lab benchmark` | the same seven, every judged query | about an hour, most of it PerLTQA; about a day of CPU to build the corpora the first time | the quality claim — calibrating against published baselines |
+| gate | `python -m search_lab gate --run --quick` | tier 4's recorded numbers vs the checked-in accepted ones | whatever the quick tier costs, plus milliseconds | cutting a release |
 
 Tiers 0–3 **detect damage**; tier 4 is the only one that supports a positive
 quality claim, and only about the components in general (see "What a number here
@@ -82,7 +84,8 @@ home a benchmark builds into, which arms it pins, whether a cached build still
 describes the corpus asked for), `snapshot.py` (freeze a corpus — also a command:
 `python search_lab/snapshot.py <dir>`), `speed.py` (the latency measurement core), `run_meta.py` (the commit and
 configuration every ledger stamps its rows with), `bench_runs.py` (the run
-ledger), `retrieval_report.py` (the latency series off the ledgers,
+ledger), `dataset_pins.py` (what each corpus *is*, as a content hash — see "The
+corpora are pinned"), `retrieval_report.py` (the latency series off the ledgers,
 `python search_lab/retrieval_report.py`), and `inventory.py` (what is on this box
 — which rows can run and which corpora are built; `python search_lab/inventory.py`,
 and the viewer's `/lab` dev page). The harnesses reach them by bare sibling import
@@ -100,20 +103,29 @@ everywhere, coherence included), and the same warm-before-scoring rule.
 ## Running the whole bench
 
 ```
-python -m search_lab benchmark                  # the full set — the release bar
-python -m search_lab benchmark --quick          # the quick check — minutes
+python -m search_lab benchmark --quick          # the quick tier — the release bar, under 20 min
+python -m search_lab benchmark                  # the full tier — every query, about an hour
 python -m search_lab benchmark --only locomo    # just the rows whose name matches
 python -m search_lab benchmark --list           # the plan: what runs, what is fresh
 ```
 
-**Two depths, and they are for different questions.**
+**Two depths, and that is the whole taxonomy.** There is no third: a row is either
+scored whole or scored at its declared `quick_sample`.
 
-The **full** set scores every judged query of every dataset. It is what a release
-is cut against and the only depth a quality claim may cite.
+The **quick** tier (`--quick`) is what a release is gated on. It samples the three
+arms too large to sit in a preflight — `cdr[vectors]` at 1,583 queries and
+PerLTQA's two at 8,588 each — and scores every query on the other nine rows, all
+seven datasets either way. The sizing rule is in `benchmark.py`: no row much past
+`QUICK_ROW_BUDGET_MIN` minutes, the set inside `QUICK_SET_BUDGET_MIN`, sampling
+only where a row does not already fit. A row that fits is scored whole and keeps
+one continuous history across both depths.
 
-The **quick** check (`--quick`) scores a deterministic sample on the rows heavy
-enough to need one and every query on the rest — same seven datasets, minutes
-instead of hours. What makes it trustworthy is the sampler
+The **full** tier scores every judged query on every row and samples nothing. It is
+the depth a published number would have to come from, and it costs about an hour —
+most of that PerLTQA — so it is run deliberately rather than routinely. Nothing
+gates on it; a green quick gate is what "releasable" means here.
+
+What makes the sampling trustworthy is the sampler
 (`eval_core.sample_queries`): the draw is a hash of each query's own id, so it is
 deterministic (two runs of identical code score identically, which the whole
 freshness-and-delta machinery depends on), independent of file order, and
@@ -129,12 +141,14 @@ same size, because the cap took one person's entire profile block.
 Two rules follow, and the runner prints both:
 
 - **A sampled row is a different measurement**, not a cheaper look at the same
-  one, so it records under its own name (`perltqa[lexical]~800`) and never mixes
-  into the full run's history. Rows cheap enough to score whole keep one name and
-  one continuous series across both depths.
+  one, so it records the sample size in its own name
+  (`perltqa[lexical]~1500`) and never mixes with a measurement over a different
+  query set. Rows cheap enough to score whole keep one name and one continuous
+  series across both depths.
 - **Resolution is 1/n.** At a sample of 100 a row cannot read a delta finer than
-  0.01. Use the quick check to catch damage; re-run the full set before claiming
-  a change helped.
+  0.01. That is enough to gate a release on — damage detection is what a gate is
+  for — and not enough to publish a number from; re-run the full tier before
+  claiming a change helped.
 
 Sampling cuts query time and nothing else — a corpus that has never been built
 pays the same ingest and embed either way.
@@ -216,6 +230,17 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   the live archive, not a snapshot; `--baseline` sets the reference, and the
   timeseries is tagged `query_set=observed` so it never averages with rows from
   another population.
+- **`latency_smoke.py`** — the same measurement as a *gate*, run unattended by the
+  CI sweeper on every commit (`latency-gate` in `ci.toml`). Replays the slowest
+  recorded calls against a baseline of its own (`query_set=smoke`), reds when they
+  got materially slower, and confirms a breach with a second pass before failing —
+  it shares a machine with everything else the sweep is doing, so one bad window is
+  the likeliest reading of one bad number. Loose on purpose (2× on those queries'
+  own recorded timings): it is here to catch the order-of-magnitude regression that
+  no other row can see, not to police drift. Seeds its own baseline on first run;
+  `--seed` re-establishes it when the archive has genuinely grown into a slower
+  shape. `latency_replay.py` remains the instrument you point at a change —
+  this is the tripwire that notices when nobody did.
 - **`beir_eval.py`** / **`cdr_eval.py`** / **`mtrag_eval.py`** /
   **`haystack_eval.py`** / **`perltqa_eval.py`** — the external
   yardsticks: the real pipeline over public benchmarks, beside their published
@@ -271,9 +296,9 @@ archive (BEIR and the lab build throwaway homes and never touch it).
 
 "Take a baseline" before touching ranking means capturing numbers that stay
 comparable after the change. The instruments are not interchangeable, and the
-split is sharper than it used to be: **everything runnable against this archive
-detects damage. Only the public benchmarks support a positive claim, and only
-about the components in general.**
+split is sharp: **everything runnable against this archive detects damage. Only
+the public benchmarks support a positive claim, and only about the components in
+general.**
 
 **The one-command read.** `python -m search_lab benchmark` scores every
 published-baseline row whose corpus is on this box and prints each beside the
@@ -282,15 +307,70 @@ skipped and reported from the ledger, so the second pass costs only what an edit
 actually invalidated. That is the before-and-after pair a ranking change is judged
 on.
 
+## The corpora are pinned
+
+Every comparison the bench makes assumes the corpus held still, and no upstream
+here guarantees that: BEIR is a plain zip URL, three of the datasets are a `git
+clone`, and two are Hugging Face files. So the guarantee is local, and it is a
+content hash of the files each harness actually reads.
+
+```
+python -m search_lab pins            # what is on disk vs what is accepted
+python -m search_lab pins --update   # accept what is on disk as the pin
+```
+
+The accepted hashes live in `dataset-pins.json`, checked in beside the baseline
+and for the same reason: a number is only auditable next to a statement of what
+it was measured on. **A content hash is a stronger pin than a revision** — a
+revision only binds a re-fetch, while the hash binds the file however it got
+there, including a force-pushed branch, a half-extracted zip, or a local edit.
+
+It does two jobs with the one hash. Each harness calls `verify()` before it
+builds, so a corpus that moved fails the run where it moved rather than being
+scored (*prevention*). And it supplies `corpus_id` for the per-question haystacks
+— `locomo`, `longmemeval` and `beam` build one home per question, so they have no
+snapshot manifest to read, and the hash is the only corpus identity they have.
+Without it the scored query count is their whole guard, and a dataset that changes
+content at a constant count reads as a ranking movement (*detection*).
+
+**The revision is what makes this reproducible rather than merely checkable.** A
+hash alone can only say *no*: a fresh box that fetches different bytes learns that
+it did, with no way to obtain the right ones. So each source also records the
+upstream revision producing exactly these bytes, and the documented fetch commands
+use it — `resolve/<sha>` rather than `resolve/main`, a `checkout` after the clone.
+**A revision is written down only once fetching it has been confirmed to reproduce
+the pinned hash** — a clean clone at that commit, a Hugging Face LFS `oid`, a
+GitHub blob sha, none of which need the corpus downloaded again. An unconfirmed
+revision is worse than none: it reads as provenance while sending the next person
+to bytes nobody compared.
+
+Two sources carry no revision, and each says why in its `upstream` string rather
+than leaving a blank that reads as an oversight. The three BEIR sets are
+**detection only** — BEIR publishes a zip at a fixed URL with no version in the
+path and no digest beside it, so there is no handle to record, and a drift there
+means the corpus is gone rather than re-fetchable. MTRAG's revision is not
+established: the fetched layout does not correspond to the repository's own paths.
+
+An unpinned dataset verifies as a no-op and is listed as unpinned: which corpora
+a box has is a fact about the box, and accepting a pin is a verb somebody types.
+Verifying all nine costs milliseconds — per-file digests are memoized on
+`(size, mtime_ns)` in the lab's state root, so the ~1 GB is read once.
+
 ## The release gate
 
 `benchmark` measures; `gate` decides whether what it measured is releasable.
 
 ```
-python -m search_lab gate --run          # measure what is stale, then compare
-python -m search_lab gate --update       # accept the current numbers as the bar
-python -m search_lab gate --allow-stale  # read the ledger mid-tuning, not a release check
+python -m search_lab gate --run --quick     # the release gate: measure what is stale, then compare
+python -m search_lab gate --quick --update  # accept the current numbers as the bar
+python -m search_lab gate --allow-stale     # read the ledger mid-tuning, not a release check
 ```
+
+**A release is gated on the quick tier**, and the flag travels: `--run` hands the
+bench the same tier the comparison will read, because a gate that scored one depth
+and compared the other would report every row as never measured. Both depths keep
+their accepted numbers in the one baseline file under their own row names, and an
+`--update` at one leaves the other's alone.
 
 The two are split because they answer different questions. The bench prints each
 row against **the last run at a different configuration** — the number a knob
@@ -314,8 +394,8 @@ different fix:
   Not a worse measurement of the same thing; a measurement of something else.
 
 A manifest row with no accepted numbers is **ungated** — reported, never fatal.
-Which corpora a box has built is a fact about the box, and a gate demanding all
-sixteen rows would be unrunnable anywhere but the machine that built them.
+Which corpora a box has built is a fact about the box, and a gate demanding every
+row would be unrunnable anywhere but the machine that built them.
 
 **The band is two cases wide, in the row's own units.** Scoring is deterministic,
 so it is not there for noise — it is there because a row of `n` queries cannot
@@ -334,6 +414,8 @@ happens.
 retrieval components did not get worse on corpora somebody else labeled. It is
 not a claim about this archive — see "What a number here is worth". The gate
 raises the stakes of the measurement; it does not change what the measurement is.
+And it licenses that at the quick tier's resolution: damage detection, which is
+what a gate is for. A number worth publishing comes from the full tier.
 
 The baseline's *integrity* is pinned in the fast suite (`tests/test_search_gate.py`,
 every pytest pass): every baselined row is still a row the bench runs, every entry

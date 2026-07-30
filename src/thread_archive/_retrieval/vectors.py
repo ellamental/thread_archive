@@ -141,9 +141,9 @@ _write_version = 0
 # newest, not-yet-repacked vectors), probes the store's validity token at most once
 # per cooldown, and does the refresh — usually just the small delta read, occasionally
 # a full base rebuild — only in a single-flight background thread. Continuous ingest
-# moves the token every few minutes; the old inline rebuild put that multi-second cost
-# on whichever query raced the new token, and, unguarded, let a burst of concurrent
-# queries all rebuild the same ~GB pack at once. A writer that can't wait out the
+# moves the token every few minutes, so an inline rebuild would put that multi-second
+# cost on whichever query raced the new token, and unguarded would let a burst of
+# concurrent queries all rebuild the same ~GB pack at once. A writer that can't wait out the
 # cooldown calls ``reset_matrix_cache`` for immediate local effect — a stale window
 # only ever costs a ranking slot.
 _MATRIX_REFRESH_COOLDOWN_S = 60.0
@@ -158,7 +158,7 @@ _PACK_STALE_AGE_S = 3600
 
 # The pack is a base + delta: a large on-disk base pack (mmap) plus the vectors
 # written since it was built, held in RAM. Continuous ingest moves the store token
-# every few minutes, but a single new vector no longer invalidates the ~GB base — it
+# every few minutes, but a single new vector does not invalidate the ~GB base — it
 # lands in the delta, a cheap read. A fresh base (the full scan + np.vstack + write) is
 # packed only when the delta grows past this many rows, so the expensive rebuild
 # happens once per this-many new vectors, not once per new vector.
@@ -426,12 +426,45 @@ def is_available() -> bool:
         return False
 
 
+#: The embed drain's pending-doc select rides this (see ``index_events_local``, and
+#: the reasoning on the matching declaration in :mod:`.._store.models`). Retrofitted
+#: here rather than left to a reindex: ``create_all`` does not add indexes to a table
+#: that already exists, and the drain runs every poll — it should not spend the
+#: interim scanning the whole shadow for one batch.
+_PENDING_INDEX = "idx_events_fts_pending"
+_CREATE_PENDING_INDEX = (
+    f"CREATE INDEX IF NOT EXISTS {_PENDING_INDEX} "
+    "ON events_fts (event_id DESC, content_type DESC)"
+)
+
+
+def _ensure_pending_index(s) -> None:
+    """Create the drain's covering index when it is missing. Fail-soft, and probed
+    with a read first: this runs on every :func:`ensure_index`, and issuing the DDL
+    unconditionally would open a write transaction against the store on paths that
+    only ever read it."""
+    try:
+        present = s.execute(
+            sa_text("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = :n"),
+            {"n": _PENDING_INDEX},
+        ).scalar()
+        if present:
+            return
+        s.execute(sa_text(_CREATE_PENDING_INDEX))
+        s.commit()
+        logger.info("vectors: built %s for the embed drain", _PENDING_INDEX)
+    except Exception:  # noqa: BLE001 — an index is an optimization; the drain runs without it
+        logger.debug("vectors: could not create %s", _PENDING_INDEX, exc_info=True)
+
+
 def ensure_index() -> bool:
     """Create the ``event_vectors`` table if absent; migrate a pre-chunking table
-    (no ``chunk`` column) in place, existing vectors becoming chunk 0. Idempotent."""
+    (no ``chunk`` column) in place, existing vectors becoming chunk 0; retrofit the
+    embed drain's ``events_fts`` index. Idempotent."""
     if not is_available():
         return False
     with get_session() as s:
+        _ensure_pending_index(s)
         exists = s.execute(
             sa_text("SELECT 1 FROM sqlite_master WHERE name = :n"), {"n": "event_vectors"}
         ).scalar()
@@ -601,21 +634,29 @@ def index_events_local(
     # The SQL mirrors _chunk()'s count — min(MAX_CHUNKS, ceil(len/CHUNK_CHARS)) —
     # over the same concatenated content; if the two formulas diverge the cohost
     # loops on the same docs forever, so change them together.
+    # The count comes from a correlated subquery rather than a joined aggregate: the
+    # aggregate form is one GROUP BY over all of ``event_vectors``, which SQLite
+    # materializes in full before the first candidate is looked at, while this form is
+    # a primary-key probe per candidate — and a candidate list the LIMIT can cut short.
     missing = ("" if rebuild else
-               " HAVING coalesce(v.nv, 0) < min(:mx, "
-               "(length(group_concat(f.content, ' ')) + :cc - 1) / :cc)")
+               " HAVING (SELECT count(*) FROM event_vectors v"
+               "         WHERE v.event_id = f.event_id AND v.content_type = f.content_type)"
+               "        < min(:mx, (length(group_concat(f.content, ' ')) + :cc - 1) / :cc)")
     order = "DESC" if newest_first else "ASC"
     limit = " LIMIT :cap" if max_events else ""
+    # ``content_type`` rides the ORDER BY beside ``event_id`` so the sort matches the
+    # group key column for column, which is the condition for SQLite to answer both
+    # from one index walk (``idx_events_fts_pending``) and stop at the LIMIT. Ordering
+    # on ``event_id`` alone reads identically and costs a sort of every pending doc in
+    # the corpus before returning one batch. It also makes the drain order total: docs
+    # sharing an event id have a defined position rather than the store's.
     sql = sa_text(
         "SELECT f.event_id AS eid, f.content_type AS ct, group_concat(f.content, ' ') AS content "
         "FROM events_fts f "
-        "LEFT JOIN (SELECT event_id, content_type, count(*) AS nv FROM event_vectors "
-        "           GROUP BY event_id, content_type) v "
-        "  ON v.event_id = f.event_id AND v.content_type = f.content_type "
         "WHERE f.content_type IN ('user', 'text', 'title') "
         "AND f.content IS NOT NULL AND f.content != ''"
         f" GROUP BY f.event_id, f.content_type{missing}"
-        f" ORDER BY f.event_id {order}" + limit
+        f" ORDER BY f.event_id {order}, f.content_type {order}" + limit
     )
     params: dict = {} if rebuild else {"mx": MAX_CHUNKS, "cc": CHUNK_CHARS}
     if max_events:
@@ -914,7 +955,37 @@ def _refresh_matrix(key: tuple, cts: tuple[str, ...]) -> None:
         token = _validity_token(s)
     if cached is not None and cached[0] == token:
         return  # still fresh — nothing to rebuild
-    _store_matrix_entry(key, _build_matrix_entry(cts))
+    # Timed from here, not from function entry: the freshness check above is the
+    # common case and costs a token read, and folding it in would report a
+    # rebuild that never happened.
+    _t0 = time.perf_counter()
+    rows = 0
+    failed = True
+    try:
+        entry = _build_matrix_entry(cts)
+        rows = len(entry[1])  # the id array — one row per packed vector
+        _store_matrix_entry(key, entry)
+        failed = False
+    finally:
+        _record_matrix_refresh(_t0, rows, failed=failed)
+
+
+def _record_matrix_refresh(started: float, rows: int, *, failed: bool) -> None:
+    """Log the rebuild to the usage ledger. Fail-soft: a background rebuild's
+    telemetry must never be what takes the process down."""
+    try:
+        from . import _contention
+        from .usage import record_refresh
+
+        record_refresh(
+            "matrix",
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            failed=failed,
+            detail={"rows": rows} if rows else None,
+            context=_contention.sample(),
+        )
+    except Exception:  # noqa: BLE001 — advisory
+        logger.debug("vectors: could not record matrix refresh", exc_info=True)
 
 
 def _refresh_matrix_async(key: tuple, cts: tuple[str, ...]) -> None:
@@ -980,14 +1051,13 @@ def reset_matrix_cache() -> None:
 def _time_rows(ts_arr, since: Optional[str], until: Optional[str]):
     """Row positions inside a time window, straight off the pack's timestamps.
 
-    The scope this serves used to arrive as ``allowed_ids`` from a query over
-    ``events``, and that query was the single most expensive thing a time-scoped
-    search did — not because it was badly planned but because of what it had to
-    materialize: ``since='180d'`` selects 3.6M event ids to mask a pack holding
-    275k vectors, so 93% of the ids fetched name rows the matrix does not contain.
-    The pack already knows every row's date; the window is a comparison over an
-    array it has in hand, and it costs under a millisecond regardless of how wide
-    the window is.
+    Deriving the same scope as ``allowed_ids`` from a query over ``events`` is the
+    single most expensive thing a time-scoped search can do — not for want of a good
+    plan but because of what it has to materialize: ``since='180d'`` selects 3.6M
+    event ids to mask a pack holding 275k vectors, so 93% of the ids fetched name
+    rows the matrix does not contain. The pack already knows every row's date; the
+    window is a comparison over an array it has in hand, and it costs under a
+    millisecond regardless of how wide the window is.
 
     Undated rows are excluded rather than ordered. They pack to empty bytes, which
     sorts below every real timestamp — so an ``until`` bound would otherwise sweep
@@ -1146,7 +1216,7 @@ def search(
     # A time bound is *not* in this list, and that is the point: the pack carries every
     # row's date, so a window is a comparison the KNN makes itself. Only the scopes
     # that need facts the pack does not hold — which thread, which source, which code
-    # path — still cost an id query, and a search scoped by time alone now costs none.
+    # path — cost an id query at all; a search scoped by time alone costs none.
     selective = (thread_id is not None or thread_ids is not None or bool(source)
                  or bool(path) or agents == "only")
     allowed_ids = None

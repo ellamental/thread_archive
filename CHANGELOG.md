@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.0.10 — 2026-07-30
+
+- Retrieval cost: warm passes serialize per machine and load the persisted graph rather than rebuild it (8.9s → 0.12s),
+  idle servers hold their pages resident, embeds are memoized, and the exact-set memo survives ingest (852 → 19ms).
+- The web viewer is dev-only and ships in no wheel; the dev panels are their own server (`python -m devweb` on :8789);
+  the wheel drops eleven one-shot repair scripts; the dev toolchain is a PEP 735 group (`pip install -e . --group dev`).
+- The manual ships in the wheel: `thread-archive docs <page>` and the viewer's `/docs` serve the same packaged pages.
+- Every benchmark corpus is pinned to a content hash and the upstream revision that reproduces it; the release gates on
+  the bench's quick tier (`gate --run --quick`, under 20 minutes); BEAM re-baselined to its scored 279 questions.
+- Runtime telemetry records only on a dev install (`"dev_mode": true`); fault records are not telemetry and still write.
+- Security pass: ZIP decompression ceilings, the MCP HTTP DNS-rebinding allow-list, `git` pinned off repository config.
+- MCP tool descriptions cost ~930 context tokens, not ~3,150 (long form via `thread_help`); `thread_search(pr=…)` lands.
+
 ## 0.0.9 — 2026-07-29
 
 - Releases ship by PR: `release/X.Y.Z` stabilizes off `dev` in a worktree, the operator merging to `main` is the

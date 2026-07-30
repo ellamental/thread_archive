@@ -69,6 +69,7 @@ sys.path.insert(0, str(_HERE.parent / "src"))
 # however this file was loaded: as a script, by path, or as search_lab.X.
 sys.path.insert(0, str(_HERE))
 
+import dataset_pins  # noqa: E402
 import eval_core  # noqa: E402
 import eval_home  # noqa: E402
 
@@ -222,7 +223,9 @@ def run(args) -> int:
         if not path.exists():
             raise SystemExit(
                 f"PerLTQA data not found at {path}; fetch Dataset/en/ from "
-                f"github.com/Elvin-Yiming-Du/PerLTQA into {root}")
+                f"github.com/Elvin-Yiming-Du/PerLTQA into {root}, at the pinned "
+                f"revision {dataset_pins.SOURCES['perltqa'].revision}")
+    dataset_pins.verify("perltqa")
 
     if args.fresh:
         home = Path(tempfile.mkdtemp(prefix="perltqa-home-"))
@@ -282,7 +285,7 @@ def run(args) -> int:
         else:
             _log("embedding corpus (real model) ...")
             t0 = time.monotonic()
-            res = api.embed()
+            res = eval_home.embed_corpus(home)
             _log(f"embedded {res.get('embedded')} events in {time.monotonic() - t0:.0f}s")
             marker["embedded"] = len(doc_of_thread)
             marker_path.write_text(json.dumps(marker), encoding="utf-8")
@@ -303,8 +306,7 @@ def run(args) -> int:
     for i, q in enumerate(queries):
         with _probe.install() as probe:
             s0 = time.monotonic()
-            hits = api.search(q["text"], limit=max(ks) * 2,
-                              content_types=["user"], group="none")
+            hits = api.search(q["text"], limit=max(ks) * 2, content_types=["user"])
             elapsed = time.monotonic() - s0
         latencies.append(elapsed)
         if probe.ran:

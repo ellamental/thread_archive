@@ -50,7 +50,7 @@ from .helpers import (
     one_thread_file,
     write_jsonl,
 )
-from .test_migrate_thread_ulids import make_legacy_home
+from .test_truth_migrate_v2 import make_legacy_home
 
 # coverage tag: cli
 
@@ -558,6 +558,7 @@ def test_watch_loop_runs_until_interrupted(archive_home, tmp_path, monkeypatch, 
 
 
 @pytest.mark.integration
+@pytest.mark.viewer
 def test_watch_web_cohosts_the_viewer_and_closes_it_on_interrupt(
     archive_home, tmp_path, monkeypatch, capsys
 ) -> None:
@@ -595,6 +596,7 @@ def test_watch_web_cohosts_the_viewer_and_closes_it_on_interrupt(
 
 
 @pytest.mark.integration
+@pytest.mark.viewer
 def test_watch_web_warms_the_retrieval_models_on_start(archive_home, tmp_path, monkeypatch) -> None:
     """The cohosting daemon warms retrieval before anyone can search it. The cold load
     is tens of seconds while the viewer's search box says only "searching…", so a first
@@ -628,6 +630,7 @@ def test_watch_web_warms_the_retrieval_models_on_start(archive_home, tmp_path, m
     assert defer_construction() is True
 
 
+@pytest.mark.viewer
 def test_watch_web_refuses_a_non_loopback_bind(archive_home, tmp_path, monkeypatch) -> None:
     """The cohosted viewer is unauthenticated full read, so a typo'd ``--web-host``
     must fail loudly before the loop starts rather than exposing the archive."""
@@ -718,6 +721,7 @@ def test_daemon_backup_install_passes_notify_url(tmp_path, monkeypatch, stub_bin
     assert plist["StartCalendarInterval"] == {"Hour": 4, "Minute": 0}
 
 
+@pytest.mark.viewer
 def test_daemon_watcher_install_with_web(tmp_path, monkeypatch, stub_bin, capsys) -> None:
     _darwin(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -731,6 +735,7 @@ def test_daemon_watcher_install_with_web(tmp_path, monkeypatch, stub_bin, capsys
     assert plist["EnvironmentVariables"]["THREAD_ARCHIVE_HOME"] == arc
 
 
+@pytest.mark.viewer
 def test_daemon_watcher_install_no_web(tmp_path, monkeypatch, stub_bin, capsys) -> None:
     _darwin(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -1386,7 +1391,11 @@ def test_coverage_report_names_validation_drift(capsys) -> None:
 
 
 def test_coverage_report_names_degraded_and_quarantined(capsys) -> None:
-    """One remedy line per degraded source, and any quarantined raw-store snapshots."""
+    """One remedy line per degraded source, and any quarantined raw-store snapshots.
+
+    The remedy is the verdict's own (`_ops.coverage.remedy_for`) rather than one
+    string for all four reasons: re-reading is the move wherever there are files to
+    re-read, and a source whose store went missing has none."""
     result = {
         "ok": True, "failed": [], "warnings": [],
         "sources": {}, "disabled": {}, "unwatched": {},
@@ -1400,8 +1409,8 @@ def test_coverage_report_names_degraded_and_quarantined(capsys) -> None:
     }
     assert cli.report_coverage(result) == 0
     out = capsys.readouterr().out
-    assert "degraded: grok (went_dark since 2026-07-10) — remedy: thread-archive source fix grok" in out
-    assert "degraded: chatgpt (capture_skips) — remedy: thread-archive source fix chatgpt" in out
+    assert "degraded: grok (went_dark since 2026-07-10) — remedy: thread-archive source coverage" in out
+    assert "degraded: chatgpt (capture_skips) — remedy: thread-archive source recheck chatgpt" in out
     assert "quarantined: cursor raw store snapshot → gen-3" in out
     assert "OK" in out
 
@@ -1759,11 +1768,40 @@ def test_status_says_nothing_about_silences_when_there_are_none(capsys) -> None:
     assert "silenced:" not in capsys.readouterr().out
 
 
+def test_status_names_the_ingest_faults_on_record(archive_home, capsys) -> None:
+    """The question a green daemon cannot answer about itself: was ingest ever
+    broken. The ``watch:`` line clears the moment a poll comes back green, while
+    the conversations a two-day fault dropped stay dropped — so the ledger's own
+    record is reported beside it, worst first and only the worst three."""
+    from thread_archive._ops import ingest_errors
+
+    ingest_errors.reset_tally()
+    for _ in range(10):  # rows land on powers of ten: this one records itself at 10
+        ingest_errors.record(["cursor: scan failed: database is locked"], home=archive_home)
+    ingest_errors.record(["codex: could not parse /tmp/session-1.jsonl"], home=archive_home)
+    ingest_errors.record(["grok: unreadable export /tmp/export-2.zip"], home=archive_home)
+    ingest_errors.record(["opencode: missing store /tmp/store-3"], home=archive_home)
+
+    assert cli.report_status(_status_base()) == 0
+    out = capsys.readouterr().out
+    # "at least", because the count is a floor — the 200 sightings after a fault
+    # last recorded itself at 1,000 are real and unwritten.
+    assert "faults:  at least 13 ingest error(s) on record across 4 distinct fault(s)" in out
+    assert "10x [cursor]" in out
+    assert out.count("1x [") == 2  # the other three tie at one; three rows printed in all
+
+
+def test_status_is_quiet_about_faults_on_an_install_that_had_none(archive_home, capsys) -> None:
+    assert cli.report_status(_status_base()) == 0
+    assert "faults:" not in capsys.readouterr().out
+
+
 # ── `web`: the opener ────────────────────────────────────────────────────────
 # Driven with $BROWSER pointed at a no-op command, so these run the real
 # `webbrowser` path — the URL is genuinely handed off — without a window opening
 # on whoever is running the suite.
 
+@pytest.mark.viewer
 def test_web_opens_the_viewer_url(monkeypatch, capsys, archive_home) -> None:
     monkeypatch.setenv("BROWSER", "true")
     assert cli.main(["web"]) == 0
@@ -1773,20 +1811,23 @@ def test_web_opens_the_viewer_url(monkeypatch, capsys, archive_home) -> None:
     assert not (archive_home / "config.json").exists()
 
 
-def test_web_dev_turns_the_dev_panels_on(monkeypatch, capsys, archive_home) -> None:
+@pytest.mark.viewer
+def test_web_dev_puts_the_dev_panel_link_in_the_rail(monkeypatch, capsys, archive_home) -> None:
     """The switch is a line in the config, not a URL: the server reads it for
-    every shell it serves, so the choice outlives this browser and this tab."""
+    every shell it serves, so the choice outlives this browser and this tab. It
+    does not start the panels' server — it decides whether the rail names it."""
     from thread_archive._config import load_config
 
     monkeypatch.setenv("BROWSER", "true")
     assert cli.main(["web", "dev", "--port", "9999"]) == 0
     assert load_config(home=archive_home)["dev_panels"] is True
     out = capsys.readouterr().out
-    assert "dev panels on" in out
+    assert "dev-panel link on" in out
     assert out.strip().endswith("http://127.0.0.1:9999")
 
 
-def test_web_no_dev_puts_them_away(monkeypatch, capsys, archive_home) -> None:
+@pytest.mark.viewer
+def test_web_no_dev_takes_the_link_back_out(monkeypatch, capsys, archive_home) -> None:
     from thread_archive._config import load_config, save_config
 
     monkeypatch.setenv("BROWSER", "true")
@@ -1797,9 +1838,10 @@ def test_web_no_dev_puts_them_away(monkeypatch, capsys, archive_home) -> None:
     assert cfg["dev_panels"] is False
     # The switch edits one line; everything else the operator has decided stays.
     assert cfg["sources"] == {"claude-code": {"enabled": False}}
-    assert "dev panels off" in capsys.readouterr().out
+    assert "dev-panel link off" in capsys.readouterr().out
 
 
+@pytest.mark.viewer
 def test_web_refuses_to_write_over_a_config_it_could_not_read(
     monkeypatch, capsys, archive_home
 ) -> None:
@@ -1819,6 +1861,18 @@ def test_web_refuses_to_write_over_a_config_it_could_not_read(
 def test_source_ingest_on_an_archive_that_recorded_nothing(archive_home, capsys) -> None:
     assert cli.main(["source", "ingest"]) == 0
     assert "no ingest recorded in the last 24h" in capsys.readouterr().out
+
+
+def test_source_ingest_says_when_the_ledger_is_the_reason_it_is_empty(
+    archive_home, monkeypatch, capsys
+) -> None:
+    """A quiet window and an install that writes no ledger render identically, and
+    only one of them is fixed by asking for a longer window."""
+    monkeypatch.setenv("THREAD_ARCHIVE_INGEST_LOG", "0")
+    assert cli.main(["source", "ingest"]) == 0
+    out = capsys.readouterr().out
+    assert "no ingest recorded in the last 24h" in out
+    assert '"dev_mode": true' in out
 
 
 def test_source_ingest_reports_sources_stages_and_upkeep(archive_home, capsys) -> None:

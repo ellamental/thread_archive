@@ -1,30 +1,24 @@
 """Per-file poll fingerprints that survive a restart: ``<home>/watch-fingerprints.json``.
 
 The file watchers skip an unchanged transcript on its ``(mtime_ns, size)``
-fingerprint, held in memory for the life of the process. That cache starts empty,
-so the first poll after every restart reads and digests **every** file in the
-archive to re-derive what it already knew — measured here at 1,983 files and
-1.4 GB per restart, and the watcher restarts on the order of twenty times a day
-(a deploy, an edit, a crash). The work is pure rediscovery: essentially none of
-those files changed.
+fingerprint. Held only in memory, that cache starts empty, so the first poll after
+every restart reads and digests **every** file in the archive to re-derive what it
+already knew — measured here at 1,983 files and 1.4 GB, against a watcher that
+restarts on the order of twenty times a day (a deploy, an edit, a crash). The work
+is pure rediscovery: essentially none of those files changed. Persisting the
+fingerprints across restarts is what removes it.
 
-Persisting the fingerprints removes that. What it also removes, if left alone, is
-a property nobody designed but everyone was relying on: because the cache died
-with the process, each restart happened to re-verify the whole corpus against its
-watermarks — a real integrity sweep, running by accident at whatever rate the
-daemon happened to bounce.
-
-So the sweep stays; it just becomes deliberate. A cache older than
-:func:`reverify_after_s` is ignored, which forces exactly the full pass a restart
-used to force — on a schedule chosen for it rather than one set by how often the
-process died. The default (6 hours) keeps several full verifications a day at a
-fraction of the cost.
+The full pass is worth keeping, just not once per bounce: re-reading every file
+against its watermark is a real integrity sweep. So it runs on a schedule of its
+own rather than on however often the process dies — a cache older than
+:func:`reverify_after_s` is ignored, which forces exactly that pass. The default
+(6 hours) keeps several full verifications a day at a fraction of the cost.
 
 Fail-safe in every direction: a missing, unreadable, corrupt, or stale cache
-yields no fingerprints, and no fingerprints means a full scan — the behavior
-before this file existed. It can lose work but never invent it: a fingerprint that
-is absent costs one re-read, while a fingerprint that is *wrong* would skip a real
-change, so nothing here is written that was not observed this run.
+yields no fingerprints, and no fingerprints means a full scan. It can lose work
+but never invent it: a fingerprint that is absent costs one re-read, while a
+fingerprint that is *wrong* would skip a real change, so nothing here is written
+that was not observed this run.
 
 Writes are throttled hard. The map is a few hundred KB and the loop polls every
 few seconds; saving per poll would spend more in writes than the reads it saves.
@@ -150,6 +144,42 @@ def clear(home=None) -> None:
     except OSError:
         pass
     _last_saved.clear()
+
+
+def forget(source: str, home=None) -> bool:
+    """Drop one source's persisted fingerprints; the next poll re-reads its files.
+
+    What a repair needs and a reset watermark alone cannot do. The watchers skip on
+    the fingerprint *before* the watermark is ever consulted, so a drifted file that
+    has since stopped changing is skipped by a poll no matter how thoroughly its
+    watermark was cleared — and the ledger-driven re-import
+    (:func:`thread_archive._repair.reimport_source`) would report a clean run having
+    re-read nothing. Whole-source rather than per-file: the cost is one re-verify
+    pass of that source, which is the pass :func:`reverify_after_s` forces anyway,
+    and it needs no reconstruction of provider-specific paths from source ids.
+
+    Returns whether anything was written. The other sources' entries are preserved.
+    """
+    try:
+        doc = _read(home)
+        raw = doc.get("sources")
+        sources: dict[str, Any] = raw if isinstance(raw, dict) else {}
+        if source not in sources:
+            return False
+        sources.pop(source)
+        path = _path(home)
+        # The stamp is left as it was: this drops what one source knows, and
+        # re-dating the document would silently extend every other source's cache.
+        payload = {"verified_at": doc.get("verified_at"), "sources": sources}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, path)
+        _last_saved.pop(source, None)
+        return True
+    except Exception:  # noqa: BLE001 — advisory; a repair must not break on it
+        logger.debug("watch: could not forget fingerprints for %s", source, exc_info=True)
+        return False
 
 
 def stamp_age_s(home=None) -> Optional[float]:

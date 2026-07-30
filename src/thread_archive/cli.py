@@ -5,7 +5,7 @@ constantly stays flat; everything else acts *on* something — a source, the
 index, a backup, a service agent — and lives under that noun::
 
     search read web watch status setup uninstall self-update
-    source   list import import-account mirror coverage loads fix
+    source   list import import-account mirror coverage loads fix recheck
     index    rebuild embed migrate verify repair
     backup   run nightly drill restore
     service  install uninstall restart status
@@ -16,36 +16,56 @@ spelling still resolves (``_LEGACY_VERBS``, and ``backup <dest>`` via
 :func:`_normalize`): the installed service manifests carry them, and a rename
 that strands a running agent is not a rename.
 
-Two kinds of verb live here.
+**The whole tree is public surface** (``docs/stability.md``). This is the
+process seam: the service manifests, lab's cron script, the /ci skill, the
+monitor's heartbeat contract and an operator's shell history all name these
+verbs, and none of them can follow a rename. What a verb is called and what
+flags it takes is the contract; what it *prints* is not, except where a flag
+names a machine-readable shape (``search --output linkable``). Adding a verb or
+a flag is free; taking one away means leaving the old spelling resolving.
+``tests/test_public_api.py`` pins the tree so either move is deliberate.
 
-**Retrieval — ``search`` and ``read`` — is supported surface.** They are the
-``thread_search`` / ``thread_read`` tools with a terminal in front of them: one
-implementation (:mod:`thread_archive._tools`), served to agents over MCP and to
-a person here, so what you get at a prompt is what the agent would have gotten,
-notes and all. Their flags mirror the tool parameters one for one.
+Search quality is not a verb here at all: the scoring surface is the repo-only
+``search_lab/``, which no install carries.
 
-**Every other verb is private operational tooling** — the process seam the
-service manager, cron, and operators use to run the private machinery. Search
-quality is not a verb here at all: the scoring surface is the repo-only
-``search_lab/``, which no install carries. Those verbs may change without
-external notice, but they are *wired into* the service manifests, lab's cron
-script, the /ci skill, and the monitor's heartbeat contract — renaming one means
-updating those in the same change (``tests/test_public_api.py`` pins the tree so
-the change is deliberate).
+**Retrieval — ``search`` and ``read`` — carries a second promise on top.** They
+are the ``thread_search`` / ``thread_read`` tools with a terminal in front of
+them: one implementation (:mod:`thread_archive._tools`), served to agents over
+MCP and to a person here, so what you get at a prompt is what the agent would
+have gotten, notes and all. Their flags mirror the tool parameters one for one,
+and unlike every other verb, their *output* is contract too.
 
 The web viewer is the same archive through a browser, cohosted by the always-on
 watcher (``thread-archive watch --web``); ``web`` is not a third read surface —
-it hands that viewer's URL to a browser and serves nothing itself.
+it hands that viewer's URL to a browser and serves nothing itself. It is
+dev-only and ships in no wheel, so ``web`` and ``watch --web`` are registered
+only where :mod:`thread_archive._web` exists — a checkout has them and an
+install does not.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from typing import Optional
+import time
+from contextlib import contextmanager
+from typing import Iterator, Optional
 
 from . import __version__
 from ._config import resolve_paths
+from ._viewer import viewer_available
+
+#: When this process entered the package, on the monotonic clock. Module import is
+#: the earliest moment the CLI controls — the console script and ``python -m``
+#: both land here — so it is what a terminal call's cost is measured from.
+#:
+#: It excludes interpreter startup ahead of this import, which no portable stdlib
+#: call can date, and that omission is the reason the number is a floor rather
+#: than the whole truth. Everything expensive is inside it: a CLI process pays the
+#: engine import, the archive open, and any model load on every single call, and
+#: those are the costs the MCP server pays once per lifetime and this one never
+#: stops paying.
+_ENTERED = time.monotonic()
 
 
 def _add_home_arg(p: argparse.ArgumentParser) -> None:
@@ -67,13 +87,14 @@ _SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("ingest", ("watch", "source")),
     ("upkeep", ("index", "backup", "status")),
     ("this machine", ("setup", "service", "self-update", "uninstall")),
+    ("the manual", ("docs",)),
 )
 
-# Pre-group spellings, mapped to where their verb lives now. These resolve but
+# Flat spellings, mapped to the grouped verb each resolves to. These resolve but
 # are listed nowhere: the point is that a machine already running them — the
 # launchd/systemd manifests, an operator's shell history, lab's cron script —
 # keeps running them, not that there are two documented ways to type a verb.
-# `backup` is the one that can't live here (it is a group name now); its old
+# `backup` is the one that can't live here, being a group name; its flat
 # `backup <dest>` form is handled in _normalize.
 _LEGACY_VERBS: dict[str, tuple[str, ...]] = {
     "providers": ("source", "list"),
@@ -97,9 +118,14 @@ _LEGACY_VERBS: dict[str, tuple[str, ...]] = {
 # The actions of the `backup` group, for _normalize's legacy check.
 _BACKUP_ACTIONS = frozenset({"run", "nightly", "drill", "restore", "-h", "--help"})
 
-_EPILOG = (
+_EPILOG_CORE = (
     "`search` and `read` are the archive-mcp tools at a terminal — same\n"
-    "implementation, same results. The web viewer is the third door, cohosted by\n"
+    "implementation, same results. `docs` prints the manual this install\n"
+    "carries — `docs` alone lists the pages.\n"
+)
+# Only a checkout has the viewer, so only a checkout's help mentions it.
+_EPILOG_VIEWER = (
+    "The web viewer is the third door, cohosted by\n"
     "`thread-archive watch --web` (`thread-archive web` opens it).\n"
 )
 
@@ -184,10 +210,18 @@ def _render_commands(sub: argparse._SubParsersAction) -> str:
     import textwrap
 
     blurbs = {a.dest: (a.help or "") for a in sub._choices_actions}
-    pad = max(len(n) for _, names in _SECTIONS for n in names)
+    # The map is registered ⊇ listed, not equality: `web` is registered only
+    # where the dev-only viewer exists, so a section name with no parser behind
+    # it is a verb this installation doesn't have, and it renders as nothing.
+    # (The other direction — a registered verb missing from _SECTIONS — is still
+    # a bug, and test_public_api reds on it.)
+    sections = [(title, [n for n in names if n in sub.choices]) for title, names in _SECTIONS]
+    pad = max(len(n) for _, names in sections for n in names)
     lead = 4 + pad + 2
     out = ["commands:"]
-    for title, names in _SECTIONS:
+    for title, names in sections:
+        if not names:
+            continue
         out.append(f"  {title}:")
         for name in names:
             wrapped = textwrap.wrap(blurbs.get(name, ""), 96 - lead) or [""]
@@ -252,6 +286,61 @@ def _self_throttle() -> None:
             pass
 
 
+@contextmanager
+def _served(tool_name: str) -> Iterator[None]:
+    """Record what the terminal cost around one tool call.
+
+    The MCP server has always measured its own serving layer; the CLI never has,
+    so every number the product publishes about a terminal call describes only the
+    part that runs after the process is already up. That omission is not small
+    here the way it is over MCP: a served MCP call reuses a warm process, and a
+    CLI call builds one — interpreter, engine import, archive open, sometimes a
+    model load — and then throws it away. An agent choosing between the two doors
+    is choosing mostly between those, and until this row existed the ledger said
+    they were the same.
+
+    Writes the same ``serve`` shape the MCP wrapper writes, marked
+    ``surface="cli"`` (an absent surface means MCP — see
+    :data:`.._retrieval.usage.UNATTRIBUTED`), so both doors land in one series and
+    a reader compares them without knowing which module wrote which row.
+
+    No floor, unlike the MCP wrapper: process construction is never noise, there
+    is at most one of these rows per process, and a floor would silently drop
+    exactly the fast-startup calls a comparison needs.
+
+    Fail-soft — a terminal command must not die for its own telemetry.
+    """
+    from . import _tools
+
+    with _tools.call_span() as span:
+        failed = False
+        try:
+            yield
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            try:
+                from ._retrieval import usage as _usage
+
+                served_ms = (time.monotonic() - _ENTERED) * 1000.0
+                tool_ms = span.get("tool_ms")
+                record: dict[str, object] = {
+                    "kind": "serve",
+                    "surface": "cli",
+                    "tool": tool_name,
+                    "served_ms": round(served_ms, 1),
+                }
+                if tool_ms is not None:
+                    record["tool_ms"] = round(tool_ms, 1)
+                    record["overhead_ms"] = round(served_ms - tool_ms, 1)
+                if failed:
+                    record["failed"] = True
+                _usage.record_serve(record)
+            except Exception:  # noqa: BLE001 — advisory
+                pass
+
+
 def cmd_search(args: argparse.Namespace) -> int:
     """``thread-archive search`` — the ``thread_search`` tool, rendered to stdout.
 
@@ -264,7 +353,7 @@ def cmd_search(args: argparse.Namespace) -> int:
 
     api.open_archive(args.home)
     try:
-        with _tools.serving("cli"):
+        with _tools.serving("cli"), _served("thread_search"):
             out = _tools.thread_search(
                 args.query,
                 limit=args.limit,
@@ -281,6 +370,7 @@ def cmd_search(args: argparse.Namespace) -> int:
                 path=args.path,
                 path_ops=args.path_ops,
                 commit=args.commit,
+                pr=args.pr,
                 repo=args.repo,
                 sort=args.sort,
                 output=args.output,
@@ -306,7 +396,7 @@ def cmd_read(args: argparse.Namespace) -> int:
     from . import _tools
 
     api.open_archive(args.home)
-    with _tools.serving("cli"):
+    with _tools.serving("cli"), _served("thread_read"):
         print(_tools.thread_read(
             args.id,
             limit=args.limit,
@@ -412,18 +502,61 @@ def cmd_import_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_docs(args: argparse.Namespace) -> int:
+    """Print the manual this installation carries: the index, or one page.
+
+    The pages are package data (:mod:`thread_archive._docs`), so this answers
+    offline from an install exactly as it does from a clone — which is the point
+    of shipping them. Markdown to stdout, verbatim: it reads fine in a terminal,
+    and a reader who wants it rendered can pipe it somewhere that renders. The
+    viewer's ``/docs`` pages are the same text through the same resolver.
+    """
+    import textwrap
+
+    from ._docs import docs_dir, find, pages
+
+    if args.page:
+        page = find(args.page)
+        if page is None:
+            known = ", ".join(p.slug for p in pages()) or "none"
+            print(f"no manual page named {args.page!r}\navailable: {known}", file=sys.stderr)
+            return 1
+        print(page.path if args.path else page.read().rstrip("\n"))
+        return 0
+
+    listing = pages()
+    if not listing:
+        print(
+            "this installation carries no manual — read it at\n"
+            "https://github.com/ellamental/thread_archive/tree/main/docs",
+            file=sys.stderr,
+        )
+        return 1
+    if args.path:
+        print(docs_dir())
+        return 0
+    print("the manual — `thread-archive docs <page>` prints one:\n")
+    pad = max(len(p.slug) for p in listing)
+    for p in listing:
+        blurb = f"{p.title} — {p.summary}" if p.summary else p.title
+        print(f"  {p.slug:<{pad}}  {textwrap.shorten(blurb, 96 - pad - 4)}")
+    return 0
+
+
 def cmd_web(args: argparse.Namespace) -> int:
     """Open the cohosted viewer in a browser — the URL, and nothing else.
 
     The viewer runs inside the always-on watcher process (``watch --web``), so
     there is one read URL over one SQLite engine and this verb only points at it.
 
-    ``web dev`` turns the dev panels on before opening it — the retrieval report
-    and the search lab, whose subject is the search pipeline rather than the
-    archive. That is a line in ``config.json`` (``"dev_panels": true``) which the
-    server stamps onto every shell it serves, so the choice outlives the browser
-    and the watcher both; ``web --no-dev`` puts it back. Nothing restarts: the
-    next page load reads the new line.
+    ``web dev`` puts a link to the dev panels in the viewer's rail before opening
+    it — the retrieval report, telemetry and the search lab, which are their own
+    app on their own server (``python -m devweb``). This switch does not start or
+    gate that server; it decides whether this viewer's navigation names it. The
+    answer is a line in ``config.json`` (``"dev_panels": true``) which the server
+    stamps onto every shell it serves, so the choice outlives the browser and the
+    watcher both; ``web --no-dev`` puts it back. Nothing restarts: the next page
+    load reads the new line.
     """
     import webbrowser
 
@@ -439,7 +572,7 @@ def cmd_web(args: argparse.Namespace) -> int:
             return 1
         cfg["dev_panels"] = args.mode == "dev"
         path = save_config(cfg, args.home)
-        print(f"dev panels {'on' if dev_panels(cfg) else 'off'} ({path})")
+        print(f"dev-panel link {'on' if dev_panels(cfg) else 'off'} ({path})")
 
     url = f"http://127.0.0.1:{args.port}"
     print(url)
@@ -504,9 +637,11 @@ def cmd_watch(args: argparse.Namespace) -> int:
     # engine) so there's a persistent URL — WAL lets the web reader run concurrent
     # with the watcher's writes (see store._base).
     httpd = None
-    if args.web:
+    # getattr, not attribute access: --web is registered only where the viewer
+    # exists, so on an install the flag — and the attribute — is simply absent.
+    if getattr(args, "web", False):
         from . import _tools
-        from ._retrieval import start_warm_models
+        from ._retrieval import start_keepalive, start_warm_models
         from ._web import serve_in_thread
 
         httpd = serve_in_thread(host=args.web_host, port=args.web_port)
@@ -527,6 +662,11 @@ def cmd_watch(args: argparse.Namespace) -> int:
         # reader happened to be looking at.
         _tools.set_default_surface("web")
         start_warm_models()
+        # And hold the pages down afterwards. The viewer idles far longer between
+        # searches than the MCP server does, so it is the likelier of the two to be
+        # evicted and pay the fault-in on exactly the query that forms someone's
+        # impression of the product.
+        start_keepalive()
 
     available = [w.source_name for w in watcher.available()]
     logging.getLogger("thread_archive._watcher").info(
@@ -673,6 +813,48 @@ def cmd_fix_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recheck(args: argparse.Namespace) -> int:
+    import logging
+
+    from . import _repair
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
+    )
+    try:
+        r = _repair.reimport_source(args.provider, home=args.home)
+    except ValueError as e:
+        print(e)
+        return 1
+
+    events = r["poll_events"] + r["snapshot_events"]
+    where = f"{r['files_reread']} file(s) from the live store"
+    if r["snapshot_replayed"]:
+        where += f", {r['snapshot_replayed']} from quarantine"
+    print(f"{args.provider}: re-read {where} — {events} event(s) recovered")
+    if r["unreachable"]:
+        # Named rather than folded into the totals: these are the records that will
+        # keep the source degraded until they age out, and the operator otherwise
+        # has no way to tell "nothing to do" from "nothing possible".
+        print(
+            f"unreachable: {r['unreachable']} ledgered file(s) the provider has "
+            "pruned with no quarantine copy — nothing can re-read them"
+        )
+    if r["still_drifting"]:
+        print(
+            f"still drifting: {len(r['still_drifting'])} file(s) recorded the same "
+            f"findings on re-read — the import is not fixed.\n"
+            f"  build a patch: thread-archive source fix {args.provider}"
+        )
+        return 1
+    closed = r["drift_closed"] + r["skips_closed"]
+    if closed:
+        print(f"repaired: {closed} ledger record(s) closed — {args.provider} re-parses clean")
+    else:
+        print(f"nothing open: no unrepaired drift or skip records for {args.provider}")
+    return 0
+
+
 def cmd_reindex(args: argparse.Namespace) -> int:
     from . import _api as api
 
@@ -814,10 +996,16 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     from ._config import resolve_paths
     from ._watcher import ingest_log
 
-    res = ingest_log.summarize(resolve_paths(args.home).home, hours=args.hours)
+    home = resolve_paths(args.home).home
+    res = ingest_log.summarize(home, hours=args.hours)
     sources = res["sources"]
     if not sources and not res["maintenance"]["passes"]:
+        # A quiet window and an install that writes no ledger look the same from
+        # here, and the second is not fixed by asking for a longer one.
         print(f"no ingest recorded in the last {res['hours']}h")
+        if not ingest_log.enabled(home):
+            print('  (ingest timings are recorded only on an install with '
+                  '"dev_mode": true in config.json)')
         return 0
 
     print(f"ingest, last {res['hours']}h")
@@ -1379,7 +1567,7 @@ def report_status(st: dict) -> int:
     # number only while an existing archive's history is still being walked.
     pending = st.get("code_pending", 0)
     print(f"code:    {st.get('code_files', 0)} files, {st.get('code_commits', 0)} "
-          f"commits, {st.get('code_paths_indexed', 0)} touches"
+          f"commits, {st.get('code_prs', 0)} PRs, {st.get('code_paths_indexed', 0)} touches"
           + (f" ({pending} events pending)" if pending else ""))
     _report_graph(st)
     if st.get("disk"):
@@ -1586,11 +1774,28 @@ def report_coverage(r: dict) -> int:
             f"validation drift: {dr['total']} ledger records, {dr['recent']} in last "
             f"{dr['days']:.0f}d ({dr['recent_findings']} findings) — validation-drift.jsonl"
         )
+    # What the warning is holding back. Printed here because this report is the
+    # surface someone reached for on purpose: a grace window nobody can see is
+    # indistinguishable from a check that stopped running.
+    if r.get("drift_held"):
+        print(
+            f"held: {r['drift_held']} drift record(s) report additions the parser "
+            f"preserved, first seen inside the last {dr['grace_days']:.0f}d — no "
+            "warning until they age out (\"dev_mode\": true in config.json warns now)"
+        )
+    # Closed records stay in the file and out of every degradation count, so
+    # "25 recent, all repaired" would otherwise render identically to "25 recent,
+    # nothing done" minus the verdict — with no way to tell which from the report.
+    resolved = sk.get("recent_resolved", 0) + dr.get("recent_resolved", 0)
+    if resolved:
+        print(f"repaired: {resolved} recent ledger record(s) closed by a re-import")
+    from ._ops.coverage import remedy_for
+
     for name, v in sorted((r.get("degraded") or {}).items()):
         since = f" since {str(v.get('since'))[:10]}" if v.get("since") else ""
         print(
             f"degraded: {name} ({v.get('reason')}{since}) — "
-            f"remedy: thread-archive source fix {name}"
+            f"remedy: {remedy_for(str(v.get('reason') or ''), name)}"
         )
     for name, gen in sorted((r.get("drift_snapshots") or {}).items()):
         print(f"quarantined: {name} raw store snapshot → {gen}")
@@ -1648,7 +1853,17 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     return run_uninstall(args)
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, has_viewer: Optional[bool] = None) -> argparse.ArgumentParser:
+    """The command tree. ``has_viewer`` defaults to probing this installation.
+
+    The viewer is dev-only and ships in no wheel, so the surface it backs — the
+    `web` verb, `watch --web`, `service install --no-web`, and the epilog line
+    pointing at it — is registered only where it exists. Resolved once and
+    threaded through, so one answer shapes the whole parser; passed explicitly
+    only by tests, which need the install-shaped tree this source tree can't be.
+    """
+    if has_viewer is None:
+        has_viewer = viewer_available()
     parser = argparse.ArgumentParser(
         prog="thread-archive",
         description="Serverless-native local archive for AI conversations (JSONL truth + SQLite index).",
@@ -1663,9 +1878,9 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch = _Dispatch()
     sub._name_parser_map = sub.choices = dispatch
 
-    # The noun groups. Their verbs are registered against these below, beside
-    # the flat verbs they used to sit with — see the module docstring for the
-    # shape of the tree and where each pre-group spelling went.
+    # The noun groups. Their verbs are registered against these below, beside the
+    # flat spellings that resolve to the same handlers (``_LEGACY_VERBS``) — see
+    # the module docstring for the shape of the tree.
     g_source = _group(
         sub, "source",
         "the provider stores this machine has: what they are, importing them, "
@@ -1801,9 +2016,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("--commit", default=None, metavar="SHA",
                           help="the loop back from git blame: the conversations this commit "
                                "is made of")
+    p_search.add_argument("--pr", default=None, metavar="REF",
+                          help="the conversations that worked on a pull request: a number "
+                               "(4), a repo-qualified ref (owner/name#4), or its URL")
     p_search.add_argument("--repo", default=None, metavar="PATH",
                           help="with --commit: the repository, when it isn't one the archive "
-                               "has seen sessions run in")
+                               "has seen sessions run in; with --pr: the repository name, to "
+                               "narrow a bare number")
     p_search.add_argument("--sort", default=None, metavar="ORDER",
                           help="'oldest' for chronological order (when was this first "
                                "discussed); the default is relevance")
@@ -1914,9 +2133,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument("--quiet", action="store_true",
                          help="suppress the live progress line (--once)")
     p_watch.add_argument("--interval", type=float, default=5.0, help="poll interval in seconds")
-    p_watch.add_argument("--web", action="store_true", help="cohost the web viewer (persistent URL)")
-    p_watch.add_argument("--web-host", default="127.0.0.1", help="cohosted viewer bind host (non-loopback refused unless THREAD_ARCHIVE_WEB_NONLOCAL=1)")
-    p_watch.add_argument("--web-port", type=int, default=8787, help="cohosted viewer bind port")
+    if has_viewer:
+        p_watch.add_argument("--web", action="store_true", help="cohost the web viewer (persistent URL)")
+        p_watch.add_argument("--web-host", default="127.0.0.1", help="cohosted viewer bind host (non-loopback refused unless THREAD_ARCHIVE_WEB_NONLOCAL=1)")
+        p_watch.add_argument("--web-port", type=int, default=8787, help="cohosted viewer bind port")
     p_watch.add_argument("--no-embed", dest="embed", action="store_false",
                          help="disable the live vector cohost (no semantic-index upkeep)")
     p_watch.add_argument("--embed-interval", type=float, default=300.0,
@@ -1925,27 +2145,30 @@ def build_parser() -> argparse.ArgumentParser:
                          help="max events embedded per cohost pass (default 512)")
     p_watch.set_defaults(func=cmd_watch)
 
-    # Opens the cohosted viewer; never serves it (see cmd_web).
-    p_web = sub.add_parser(
-        "web", help="open the cohosted web viewer in a browser (the watcher serves it)"
-    )
-    p_web.add_argument("--port", type=int, default=8787, help="viewer port (default 8787)")
-    # The switch is written to the archive's own config, so this verb needs to
-    # know which home it is opening.
-    _add_home_arg(p_web)
-    # `web dev` reads as a mode, not a flag, which is what it is — and leaves
-    # room for other dev pages to join the same switch. The default is None
-    # rather than False so a plain `web` opens the viewer without restating a
-    # preference already written down.
-    p_web.add_argument(
-        "mode", nargs="?", choices=["dev"], default=None,
-        help="'dev' turns on the dev panels (retrieval report, search lab)",
-    )
-    p_web.add_argument(
-        "--no-dev", dest="no_dev", action="store_true",
-        help="turn the dev panels back off",
-    )
-    p_web.set_defaults(func=cmd_web)
+    # Opens the cohosted viewer; never serves it (see cmd_web). Registered only
+    # where the viewer exists — an install that carries no `_web` must not
+    # advertise a verb whose whole job is pointing at a server nothing here can
+    # start (tests/test_package_artifact.py holds that line).
+    if has_viewer:
+        p_web = sub.add_parser(
+            "web", help="open the cohosted web viewer in a browser (the watcher serves it)"
+        )
+        p_web.add_argument("--port", type=int, default=8787, help="viewer port (default 8787)")
+        # The switch is written to the archive's own config, so this verb needs to
+        # know which home it is opening.
+        _add_home_arg(p_web)
+        # `web dev` reads as a mode, not a flag, which is what it is. The default
+        # is None rather than False so a plain `web` opens the viewer without
+        # restating a preference already written down.
+        p_web.add_argument(
+            "mode", nargs="?", choices=["dev"], default=None,
+            help="'dev' adds a rail link to the dev panels (python -m devweb)",
+        )
+        p_web.add_argument(
+            "--no-dev", dest="no_dev", action="store_true",
+            help="take the dev-panel link back out of the rail",
+        )
+        p_web.set_defaults(func=cmd_web)
 
     p_reindex = g_index.add_parser("rebuild", help="rebuild index.db from the JSONL truth directory")
     _add_home_arg(p_reindex)
@@ -2029,6 +2252,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="archive health / paths / counts")
     _add_home_arg(p_status)
     p_status.set_defaults(func=cmd_status)
+
+    # The manual, from the pages the wheel carries (thread_archive._docs).
+    # Unconditional, unlike `web`: the docs ship, so every install can run this.
+    p_docs = sub.add_parser(
+        "docs",
+        help="print the manual: no page lists them, a page prints it",
+        description="Print this installation's own documentation — the pages "
+                    "shipped inside the package, readable offline.",
+        epilog=(
+            "examples:\n"
+            "  thread-archive docs           # the index\n"
+            "  thread-archive docs install   # one page, as markdown\n"
+            "  thread-archive docs cli --path  # where that page is on disk\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_docs.add_argument("page", nargs="?", default=None,
+                        help="page to print (`cli` or `cli.md`); omitted, lists them")
+    p_docs.add_argument("--path", action="store_true",
+                        help="print where the page (or the manual) is on disk, not its text")
+    p_docs.set_defaults(func=cmd_docs)
 
     p_backup = g_backup.add_parser("run", help="mirror the JSONL truth dir to a backup destination")
     _add_home_arg(p_backup)
@@ -2176,6 +2420,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_fix.set_defaults(func=cmd_fix_import)
 
+    p_recheck = g_source.add_parser(
+        "recheck",
+        help="re-read what a drifted provider consumed, and close the records if "
+             "the current parser handles it",
+        description="Re-run the evidence behind a degradation verdict: re-read "
+                    "exactly the files the skip and drift ledgers named, through "
+                    "the parser as it stands now. Content the old parser missed "
+                    "lands; records that come back clean are closed, which is what "
+                    "retires the verdict. A fix that arrived by core release needs "
+                    "this and nothing else. If the findings come back, the drift is "
+                    "live and `source fix` is the next move.",
+    )
+    _add_home_arg(p_recheck)
+    p_recheck.add_argument(
+        "provider", help="the provider to re-read (`thread-archive source list` lists them)"
+    )
+    p_recheck.set_defaults(func=cmd_recheck)
+
     # The four lifecycle verbs share one flag set, so they are `action` choices
     # rather than four parsers — but they read and complete like any other
     # group's actions, and `_subcommands_of` lists them as such.
@@ -2219,13 +2481,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="--backup install only: POST {title, message} on any stage failure "
              "(lab's /api/notify shape)",
     )
-    p_daemon.add_argument(
-        "--no-web", dest="web", action="store_false",
-        help="watcher only: don't cohost the web viewer in the watcher process",
-    )
-    p_daemon.add_argument(
-        "--web-port", type=int, default=8787, help="cohosted viewer port (default 8787)"
-    )
+    if has_viewer:
+        p_daemon.add_argument(
+            "--no-web", dest="web", action="store_false",
+            help="watcher only: don't cohost the web viewer in the watcher process",
+        )
+        p_daemon.add_argument(
+            "--web-port", type=int, default=8787, help="cohosted viewer port (default 8787)"
+        )
+    else:
+        # No viewer to cohost, so the unit this writes carries no --web. Pinned as
+        # defaults rather than flags: cmd_daemon reads both unconditionally, and a
+        # parser that doesn't set them would raise AttributeError instead.
+        p_daemon.set_defaults(web=False, web_port=8787)
     from ._service import MCP_DEFAULT_HOST, MCP_DEFAULT_PORT
     p_daemon.add_argument(
         "--http-host", default=MCP_DEFAULT_HOST,
@@ -2245,7 +2513,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     _wire_legacy_aliases(sub, dispatch)
-    parser.epilog = _render_commands(sub) + "\n" + _EPILOG
+    epilog = _EPILOG_CORE + (_EPILOG_VIEWER if has_viewer else "")
+    parser.epilog = _render_commands(sub) + "\n" + epilog
     return parser
 
 

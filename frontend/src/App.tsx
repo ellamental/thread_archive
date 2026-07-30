@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Routes, Route, useLocation } from 'react-router-dom'
-import { devPanels } from './dev'
+import { Routes, Route, useLocation } from 'react-router'
 import { Sidebar } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
 import { SearchView } from './components/SearchView'
@@ -9,19 +8,13 @@ import { AllThreadsView } from './components/AllThreadsView'
 import { StatsView } from './components/StatsView'
 import { ModelStatsView } from './components/ModelStatsView'
 import { HealthView } from './components/HealthView'
-import { RetrievalView } from './components/RetrievalView'
-import { SearchLabView } from './components/SearchLabView'
-import { BenchRunView } from './components/BenchRunView'
 import { UploadView } from './components/UploadView'
+import { DocsView, DocView } from './components/DocsView'
 import { Landing } from './components/Landing'
 
 export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const { pathname } = useLocation()
-  // Read once per mount: the served shell decides it, so it cannot change
-  // without a page load.
-  const [dev] = useState(devPanels)
-
   const focusSearch = useCallback(() => {
     const visibleSearch = (selector: string) =>
       [...document.querySelectorAll<HTMLInputElement>(selector)].find(
@@ -91,17 +84,9 @@ export function App() {
             <Route path="/stats" element={<StatsView />} />
             <Route path="/stats/model/:model" element={<ModelStatsView />} />
             <Route path="/health" element={<HealthView />} />
-            {/* Dev panels: in the bundle always, mounted only for a viewer whose
-                operator asked for them (see src/dev.ts). Without that, these
-                addresses route nowhere, like any other path the app lacks. */}
-            {dev && (
-              <>
-                <Route path="/retrieval" element={<RetrievalView />} />
-                <Route path="/lab" element={<SearchLabView />} />
-                <Route path="/lab/run/:id" element={<BenchRunView />} />
-              </>
-            )}
             <Route path="/upload" element={<UploadView />} />
+            <Route path="/docs" element={<DocsView />} />
+            <Route path="/docs/:slug" element={<DocView />} />
             <Route path="/archive/:id" element={<ThreadView />} />
           </Routes>
         </div>

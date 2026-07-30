@@ -80,7 +80,7 @@ def test_a_stale_cache_forces_a_full_re_verify(archive_home, tmp_path, monkeypat
     _fresh_watcher(projects).poll()
 
     # Past the window, the cache is ignored and the file is read again — the
-    # integrity sweep a restart used to provide by accident.
+    # integrity sweep the re-verify window exists to schedule.
     monkeypatch.setenv("THREAD_ARCHIVE_FINGERPRINT_TTL_S", "0.000001")
     assert fingerprints.load("claude-code") == {}
 
@@ -88,7 +88,7 @@ def test_a_stale_cache_forces_a_full_re_verify(archive_home, tmp_path, monkeypat
 def test_persistence_can_be_turned_off(archive_home, tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("THREAD_ARCHIVE_FINGERPRINT_TTL_S", "0")
     fingerprints.save("claude-code", {"/a": (1, 2)}, force=True)
-    assert fingerprints.load("claude-code") == {}, "ttl=0 is the pre-persistence behavior"
+    assert fingerprints.load("claude-code") == {}, "ttl=0 means no persistence at all"
 
 
 def test_a_corrupt_cache_degrades_to_a_full_scan(archive_home) -> None:

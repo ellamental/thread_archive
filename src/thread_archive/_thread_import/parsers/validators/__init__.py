@@ -45,8 +45,10 @@ _BATCH_SAFE_VALIDATORS = (TypeValidator,)
 
 def validate_messages(messages, conversation_id, source_provider, *, strict=False, batch_safe=False):
     """Run the validators over one parsed/assembled conversation and return the
-    ValidationContext (``.errors`` / ``.warnings``). Pure — no I/O; the caller
-    decides what to do with the issues (we log them, never reject).
+    ValidationContext (``.errors`` / ``.warnings``, plus ``.additive`` /
+    ``.additive_only`` — which of the findings report preserved-but-unmodeled
+    additions rather than lost content). Pure — no I/O; the caller decides what
+    to do with the issues (we log them, never reject).
 
     An unknown provider falls back to a permissive default config, so the
     universal checks (unknown block types, missing content/timestamps) still run

@@ -228,6 +228,19 @@ class EventFts(Base):
         Index("idx_events_fts_event_id", "event_id"),
         Index("idx_events_fts_thread_id", "thread_id"),
         Index("idx_events_fts_tool_name", "tool_name"),
+        # The embed drain's pending-doc select groups this table by
+        # ``(event_id, content_type)`` and walks it newest-first, taking a batch off the
+        # top (``_retrieval.vectors.index_events_local``). Both halves of that matter:
+        # the pair is the group key, so an index over it means SQLite groups by walking
+        # rather than by building a temp b-tree over every indexed line in the corpus —
+        # and DESC on *both* columns is what lets the same walk satisfy the ORDER BY,
+        # which is what lets the LIMIT stop early. Ordered rather than plain because a
+        # sorted grouping the query then re-sorts is a full scan either way: the drain
+        # runs every poll and needs one batch, so the difference is work bounded by the
+        # batch against work bounded by the corpus. ``_retrieval.vectors.ensure_index``
+        # also creates this on demand — the drain is hot enough that waiting for a
+        # reindex to retrofit it is the wrong trade.
+        Index("idx_events_fts_pending", text("event_id DESC"), text("content_type DESC")),
         # The thread-meta docs (titles/summaries) are a ~1% slice of this table that
         # the maintenance sync reads in full every pass. Unindexed, finding them is a
         # scan of the whole shadow — every indexed line of every conversation — to
@@ -284,47 +297,70 @@ class EventPath(Base):
     )
 
 
-class EventCommit(Base):
-    """A commit an event's tool output shows being *created* — the other half of the
-    code axis, and what closes the loop from ``git blame`` to the conversation.
+class EventGitRef(Base):
+    """A git reference an event ties to a thread: a commit the session created, or a
+    pull request it declared it was working on. The other half of the code axis, and
+    what closes the loop from ``git blame`` — or from a PR — to the conversation.
 
-    A projection like :class:`EventPath`, folded by the same pass. Only
-    commit-creation output produces a row (see
-    :func:`thread_archive._retrieval._paths.extract_commits`): a session that ran
-    ``git log`` saw a hundred shas and authored none of them, so reading a sha is
-    deliberately not provenance.
+    One table for both kinds because they are one row — a ref, a repository, a
+    label, and when. What differs is the *lookup* built on top:
+    :func:`~thread_archive._retrieval.code.blame_commit` widens past the committing
+    session by intersecting the commit's authorship window with :class:`EventPath`,
+    and a pull request needs no such inference because the association was stated
+    outright. That asymmetry belongs to the query. Split storage bought a second
+    fold block and a second set of indexes for the same six columns, and would have
+    charged the same again for the next ref kind.
 
-    ``sha`` is stored exactly as git printed it — usually the 7-character
-    abbreviation — so lookups match on prefix in either direction. ``repo`` is the
-    thread's working directory, the best available guess at which repository the
-    commit landed in.
+    Both kinds are testimony, not inference. Only commit-*creation* output produces
+    a row (see :func:`thread_archive._retrieval._paths.extract_commits`): a session
+    that ran ``git log`` saw a hundred shas and authored none of them, so reading a
+    sha is deliberately not provenance. A ``pr_link`` event is the harness naming
+    the pull request outright.
+
+    ``kind`` is ``commit`` or ``pr``. ``ref`` is the sha exactly as git printed it
+    — usually the 7-character abbreviation, so lookups match on prefix in either
+    direction — or the PR number as text, so a lookup never turns on int-vs-str.
+    ``repo`` is deliberately a different kind of name per kind: a commit's is the
+    thread's working directory, the best available guess at where it landed, while a
+    PR's is the harness's ``owner/name`` spelling, because a path on this machine
+    says nothing about which remote hosts the pull request. ``label`` carries a
+    commit's subject, ``url`` a PR's address. ``event_id`` / ``thread_id`` are soft
+    references (no FK, like :class:`EventPath`) so the projection never constrains a
+    reindex's bulk reload.
     """
 
-    __tablename__ = "event_commits"
+    __tablename__ = "event_git_refs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     thread_id: Mapped[str] = mapped_column(Text)
-    sha: Mapped[str] = mapped_column(Text)
-    subject: Mapped[str | None] = mapped_column(Text, default=None)
+    kind: Mapped[str] = mapped_column(Text)
+    ref: Mapped[str] = mapped_column(Text)
     repo: Mapped[str | None] = mapped_column(Text, default=None)
+    label: Mapped[str | None] = mapped_column(Text, default=None)
+    url: Mapped[str | None] = mapped_column(Text, default=None)
     occurred_at: Mapped[str | None] = mapped_column(Text, default=None)
 
     __table_args__ = (
-        Index("idx_event_commits_sha", "sha"),
-        Index("idx_event_commits_thread", "thread_id"),
-        Index("idx_event_commits_event", "event_id"),
+        # ``kind`` leads both composites: it is in every query's WHERE clause, so
+        # leading with it keeps one index serving both kinds instead of each kind
+        # needing its own. The bare ref is what a caller types and cuts hardest;
+        # the repo composite serves the repo-qualified lookup without a scan.
+        Index("idx_event_git_refs_ref", "kind", "ref"),
+        Index("idx_event_git_refs_repo", "kind", "repo", "ref"),
+        Index("idx_event_git_refs_thread", "thread_id"),
+        Index("idx_event_git_refs_event", "event_id"),
     )
 
 
 class CodeCursor(Base):
     """The code-index watermark: the highest ``events.id`` already folded into
-    :class:`EventPath` / :class:`EventCommit`. A single row (``id = 1``).
+    :class:`EventPath` / :class:`EventGitRef`. A single row (``id = 1``).
 
     Same contract as :class:`MetricsCursor`, for the same reason — the fold is
     append-only over monotonic ids, so folding only ``id > through_event_id`` is
     exact. ``projection_version`` is what makes the extraction rules revisable: a
-    fold that finds a trailing version discards both projections and rebuilds,
+    fold that finds a trailing version discards every projection and rebuilds,
     because rows written under older rules cannot be added to by newer ones. A log
     that shrank below the cursor (a reindex rebuilt it) triggers the same rebuild.
     """
