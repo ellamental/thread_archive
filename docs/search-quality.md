@@ -19,18 +19,18 @@ pinned configuration everywhere on the bench.
 |---|---|---|---|---|---|
 | BEIR scifact | scientific-claim IR, abstracts | nDCG@10 | 0.579 | 0.709 | 0.665 BM25 / 0.68 dense |
 | BEIR nfcorpus | short medical documents | nDCG@10 | 0.291 | 0.356 | 0.325 BM25 / 0.33 dense |
-| CDR | conversational retrieval | nDCG@10 | — | 0.494 | 0.504 best-of-16 |
-| PerLTQA | personal-memory unit retrieval | nDCG@10 | 0.576 | 0.681 | none published |
+| CDR | conversational retrieval | nDCG@10 | — | 0.490 | 0.504 best-of-16 |
+| PerLTQA | personal-memory unit retrieval | nDCG@10 | 0.581 | 0.682 | none published |
 | LoCoMo | multi-session dialog, turn-level | recall@10 | 0.615 | 0.672 | 0.662 DRAGON |
 | LongMemEval-S | long-history QA, session-level | recall@10 | 0.941 | — | 0.710 BM25 / 0.823 Contriever |
-| BEAM 100K | long-conversation memory, message-level | recall@10 | 0.639 | 0.661 | none published |
+| BEAM 100K | long-conversation memory, message-level | recall@10 | 0.639 | 0.663 | none published |
 
 These are the numbers a release is held to, from
 `search_lab/quality-baseline.json`; `tests/test_docs.py` holds the table to
 them. A dash is an arm carrying no accepted number rather than one that fails —
 CDR and LongMemEval are gated on a single arm each. PerLTQA is scored on a
-deterministic 1,500-query sample of its 8,588, which is a different measurement
-from the full row and carries its own accepted numbers.
+deterministic 1,200-query sample of its 8,588 and CDR on 350 of its 1,583 — each a
+different measurement from its full row, carrying its own accepted numbers.
 
 **None of these corpora resemble an agent's session log**, so a strong number
 certifies the retrieval machinery, never archive-domain quality. Read every row
@@ -40,7 +40,7 @@ them — a number is a yardstick only if it means what the leaderboard beside it
 means.
 
 On the shipped default the fused stack meets or clears every comparable
-reference except CDR's, where it sits at 98%. Nothing is tuned against these
+reference except CDR's, where it sits at 97%. Nothing is tuned against these
 corpora. Three readings worth having:
 
 - **The lexical arm is the standing gap.** scifact at 0.579 trips the harness's

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **The quick tier's samples are sized for the box's slow days.** The bench shares
+  a working machine, and the same row has measured a factor of two apart across
+  runs — a sample fitted to a good day puts `QUICK_ROW_BUDGET_MIN` one busy
+  afternoon away from being blown. PerLTQA's two arms drop to 1,200 of 8,588 and
+  `cdr[vectors]` to 350 of 1,583, each landing near 3 minutes when the box is slow
+  and half that when it is not. New row names (`~1200`, `~350`), re-accepted
+  baselines, and the docs' table re-read from them.
+
 ## 0.0.10 — 2026-07-30
 
 - Retrieval cost: warm passes serialize per machine and load the persisted graph rather than rebuild it (8.9s → 0.12s),

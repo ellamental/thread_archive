@@ -60,9 +60,9 @@ from a different task.
 
 **PerLTQA is the row the quick tier exists for.** Its full 8,588-question set takes
 about 38 minutes across the lexical and vector arms — most of the full tier's whole
-cost — so the quick tier scores a deterministic hash sample of 1,500 per arm,
-preserving coverage across people and memory types while bringing the pair near 7
-minutes. The `~1500` row names make that measurement boundary explicit, and the
+cost — so the quick tier scores a deterministic hash sample of 1,200 per arm,
+preserving coverage across people and memory types while bringing the pair near 5
+minutes. The `~1200` row names make that measurement boundary explicit, and the
 full rows still owe every question.
 
 **BEAM is scored narrower than it ships**, and both deviations are stated where a

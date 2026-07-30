@@ -142,7 +142,7 @@ Two rules follow, and the runner prints both:
 
 - **A sampled row is a different measurement**, not a cheaper look at the same
   one, so it records the sample size in its own name
-  (`perltqa[lexical]~1500`) and never mixes with a measurement over a different
+  (`perltqa[lexical]~1200`) and never mixes with a measurement over a different
   query set. Rows cheap enough to score whole keep one name and one continuous
   series across both depths.
 - **Resolution is 1/n.** At a sample of 100 a row cannot read a delta finer than
