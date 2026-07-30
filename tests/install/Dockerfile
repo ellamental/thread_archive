@@ -24,14 +24,22 @@ RUN apt-get update \
 WORKDIR /app
 COPY --chown=tester:tester . /app
 
-# The test tools come from the wheel's own [dev] extra — a hand-pinned list
-# here drifts from pyproject the moment the suite grows a plugin dependency
-# (pytest's --strict-markers then kills collection inside the container while
-# the host suite stays green).
+# The wheel is installed alone; the test tools come from the `dev` dependency
+# group, read out of the copied /app/pyproject.toml. Still pyproject-sourced, so
+# a hand-pinned list here can't drift the moment the suite grows a plugin
+# dependency (pytest's --strict-markers would then kill collection inside the
+# container while the host suite stays green) — but sourced from the file rather
+# than from the artifact, because a group is not published metadata and no wheel
+# carries one. Two pip steps, not one: `--group` must not be handed the wheel, or
+# the group's own pytest pin would resolve against it.
+#
+# The pip upgrade is load-bearing, not hygiene: `--group` is PEP 735 and needs
+# pip >= 25.1, which is newer than the python:3.12-slim base ships.
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip build \
     && /opt/venv/bin/python -m build --wheel --outdir /tmp/dist /app \
-    && /opt/venv/bin/pip install "$(ls /tmp/dist/*.whl)[dev]"
+    && /opt/venv/bin/pip install "$(ls /tmp/dist/*.whl)" \
+    && /opt/venv/bin/pip install --group /app/pyproject.toml:dev
 
 # The suite runs unprivileged: root's CAP_DAC_OVERRIDE ignores permission
 # bits, so the chmod-based failure-injection tests (read-only dirs, unreadable

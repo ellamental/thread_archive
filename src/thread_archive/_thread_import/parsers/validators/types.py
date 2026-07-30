@@ -43,6 +43,14 @@ class TypeValidator(BaseValidator):
     - We want to preserve unknown data, not reject it
 
     This helps detect format changes in provider exports.
+
+    Every finding here is *additive* (``ValidationContext.additive``): the
+    subject is something the provider grew and the parser carried through
+    anyway — an unrecognised role or block type rides its message, an unmodeled
+    line kind is preserved verbatim, an unmodeled field's value lands under
+    ``annotations["unmodeled"]``. Nothing is lost, so these are a parser to-do
+    rather than a hole, and the drift surfaces are entitled to hold them for a
+    grace window that a lossy finding never gets.
     """
 
     def validate(
@@ -103,6 +111,7 @@ class TypeValidator(BaseValidator):
                 f"Unknown message role '{role}' from provider {self.config.provider_name} - "
                 f"possible format change or new feature",
                 ValidationSeverity.warning,
+                additive=True,
             )
 
         for block_type in sorted(unknown_block_types):
@@ -111,6 +120,7 @@ class TypeValidator(BaseValidator):
                 f"Unknown content block type '{block_type}' - "
                 f"possible format change or new feature",
                 ValidationSeverity.warning,
+                additive=True,
             )
 
         for line_type in sorted(unmodeled_line_types):
@@ -119,6 +129,7 @@ class TypeValidator(BaseValidator):
                 f"Unmodeled source line type '{line_type}' preserved verbatim - "
                 f"possible format change or new feature",
                 ValidationSeverity.warning,
+                additive=True,
             )
 
         for field_name in sorted(unknown_line_fields):
@@ -129,6 +140,7 @@ class TypeValidator(BaseValidator):
                 f"event's annotations['unmodeled'] until modeled or ledgered "
                 f"(field-level format drift)",
                 ValidationSeverity.warning,
+                additive=True,
             )
 
         for field_name in sorted(unknown_message_fields):
@@ -139,4 +151,5 @@ class TypeValidator(BaseValidator):
                 f"event's annotations['unmodeled'] until modeled or ledgered "
                 f"(field-level format drift)",
                 ValidationSeverity.warning,
+                additive=True,
             )

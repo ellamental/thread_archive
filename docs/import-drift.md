@@ -14,6 +14,15 @@ answer is a support tier plus a repair loop, not a promise nobody can keep:
   check produce per-source *degradation verdicts* (`thread-archive source coverage` prints
   them; the MCP search notice prepends a one-liner naming the remedy the next
   time you search, which is the moment you care).
+- **Loud in proportion.** Drift that only *adds* — a field, block type, line
+  kind or role the parser preserves without modeling — costs the reader nothing,
+  so the health page holds its warning for two weeks from the finding's first
+  sighting, which is time for a release or a patch to close it before anyone is
+  asked to look. Drift that loses content warns the day it lands. So does
+  everything, additive or not, on an install that sets `"dev_mode": true` in
+  `config.json` — there the to-do is the point. Held records stay in the ledger
+  and in `thread-archive source coverage`, which prints how many it is holding:
+  the ask is deferred, never the evidence.
 - **Preservation doesn't wait for the fix.** A degraded source's recently
   active raw files are snapshotted into `dumps/drift/<source>/` — bounded,
   incremental, never auto-deleted — so a fix that comes months later can still

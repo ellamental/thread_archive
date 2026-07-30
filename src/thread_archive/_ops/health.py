@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -61,6 +62,26 @@ def record_health(key: str, record: dict) -> None:
         import logging
 
         logging.getLogger(__name__).exception("could not record %s in health.json", key)
+
+
+def elapsed_s(started: float) -> float:
+    """Seconds since a :func:`time.monotonic` reading, for a health record's
+    ``duration_s``.
+
+    Every scheduled operation here records whether it worked and what it moved.
+    Wall time is the fact none of them can be read without: they run unattended,
+    their cost grows with the corpus, and they get slower for reasons an ``ok``
+    flag cannot show — a backup destination on a slower disk, a verify walking
+    more truth, a mirror with more files to stat. Without it "the nightly is
+    taking longer" is an impression, and the record that would settle it is the
+    one being written.
+
+    Monotonic, so a clock adjustment mid-operation cannot produce a negative or
+    wildly long duration in a record nobody would think to distrust. Rounded to a
+    tenth here rather than at each site, so two records are comparable and none
+    of them reports microseconds of an operation measured in minutes.
+    """
+    return round(time.monotonic() - started, 1)
 
 
 def clear_health(key: str) -> None:

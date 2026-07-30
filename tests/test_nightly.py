@@ -62,6 +62,29 @@ def test_nightly_green_run_records_everything(archive_home, tmp_path, monkeypatc
     assert beat["ok"] is True and beat["failed_stages"] == []
 
 
+def test_every_scheduled_stage_records_what_it_cost(archive_home, tmp_path):
+    """These run unattended and their cost grows with the corpus, so an ``ok``
+    flag alone leaves "the nightly is taking longer" as an impression with no
+    record that could settle it."""
+    _seed(archive_home)
+    res = ta.nightly(str(tmp_path / "mirror"))
+
+    health = _health(archive_home)
+    for key in ("backup_last", "verify_last", "restore_drill_last",
+                "coverage_last", "nightly_last"):
+        assert health[key]["duration_s"] >= 0.0, key
+
+    # The night's total, and where it went. A total that grew says only that the
+    # night got longer; the split says which stage did it.
+    assert res["duration_s"] >= 0.0
+    assert set(res["stage_s"]) == {
+        "source-mirror", "backup", "verify", "restore-drill", "coverage",
+    }
+    assert health["nightly_last"]["stage_s"] == res["stage_s"]
+    # The stage names are the ones failed_stages uses, so the two read together.
+    assert set(res["stage_s"]) >= set(res["failed_stages"])
+
+
 def test_nightly_coverage_stage_is_wired(archive_home, tmp_path, monkeypatch):
     # A failing stub over the coverage stage: on a sandboxed machine the real
     # check has no source to fail on, so a red one has to be injected to assert
@@ -77,6 +100,10 @@ def test_nightly_coverage_stage_is_wired(archive_home, tmp_path, monkeypatch):
     assert "coverage" in res["failed_stages"]
     assert res["coverage"]["failed"] == ["stub went dark"]
     assert _health(archive_home)["nightly_last"]["failed_stages"] == ["coverage"]
+    # A stage that fails is still costed. Its own health record may never be
+    # written — the raising case writes nothing at all — so the night's row is the
+    # only place a stage that ate the window can show up.
+    assert "coverage" in res["stage_s"]
 
 
 def test_nightly_source_mirror_stage_is_wired(archive_home, tmp_path, monkeypatch):

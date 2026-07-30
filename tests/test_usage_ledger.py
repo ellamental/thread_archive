@@ -203,12 +203,15 @@ def test_read_calls_on_an_archive_nobody_has_searched_is_empty(archive_home) -> 
     assert usage.read_calls(archive_home) == []
 
 
-def test_contention_sample_is_empty_on_an_idle_machine(archive_home) -> None:
+def test_contention_sample_reports_only_what_it_has_to_say(archive_home) -> None:
     from thread_archive._retrieval import _contention
 
-    # No archive touched yet — no WAL to stat, nothing in flight, no rebuilds.
-    # Uptime is the exception: no reading of it means "nothing to report".
-    assert set(_contention.sample()) == {"uptime_s"}
+    # No archive touched yet — no WAL to stat, nothing in flight, no rebuilds, so
+    # none of the conditional fields appear. What remains is the three with no
+    # reading that means "nothing to report", and which every duration in the
+    # ledger is read against: how old this process is, how busy the machine is,
+    # and what this process is costing it.
+    assert set(_contention.sample()) == {"uptime_s", "load1", "rss_mb"}
 
 
 def test_every_search_says_how_old_the_process_serving_it_was(archive_home) -> None:

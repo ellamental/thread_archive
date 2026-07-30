@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import itertools
 import logging
 import os
 import threading
@@ -133,8 +134,8 @@ class IngestThrottle:
 INGEST = IngestThrottle()
 
 
-def _served(fn: Callable[..., str], throttle: Optional["IngestThrottle"] = None
-            ) -> Callable[..., str]:
+def _served(fn: Callable[..., str], throttle: Optional["IngestThrottle"] = None,
+            sampler: Optional["ServeSampler"] = None) -> Callable[..., str]:
     """Wrap a :mod:`thread_archive._tools` function as this server serves it:
     a throttled catch-up ingest kick, then the tool itself.
 
@@ -159,6 +160,8 @@ def _served(fn: Callable[..., str], throttle: Optional["IngestThrottle"] = None
     instance rather than in module globals (see :class:`IngestThrottle`), so a
     caller wanting an independent one — a second server in-process, a test
     measuring what a kick costs — supplies it rather than reaching for the global.
+    ``sampler`` is the same shape for the sub-floor sample (:class:`ServeSampler`),
+    defaulting to :data:`SERVE_SAMPLER`.
     """
     gate = throttle if throttle is not None else INGEST
 
@@ -183,6 +186,7 @@ def _served(fn: Callable[..., str], throttle: Optional["IngestThrottle"] = None
                 kick_ms=kick_ms,
                 tool_ms=span.get("tool_ms"),
                 failed=failed,
+                sampler=sampler,
             )
 
     return tool
@@ -194,9 +198,64 @@ def _served(fn: Callable[..., str], throttle: Optional["IngestThrottle"] = None
 #: that would ever show.
 _SERVE_OVERHEAD_FLOOR_MS = 5.0
 
+#: One in this many *sub-floor* calls is recorded anyway, carrying ``sampled`` with
+#: this value.
+#:
+#: The floor alone truncates the distribution at exactly the end a reader needs to
+#: stand on: with only the expensive calls written down, the ledger can say what a
+#: bad serve costs and cannot say what a normal one costs, so "the front door got
+#: slower" has no baseline to be slower *than* and the tail has no body under it.
+#: A thin sample restores the shape at a fraction of the rows the floor was
+#: removed to avoid.
+#:
+#: A reader computing a distribution over ``serve`` rows must weight each row
+#: carrying ``sampled`` by that value — they stand for the calls that were not
+#: written. Rows without it are the whole population above the floor.
+#:
+#: Deliberately deterministic (every Nth) rather than random: the sampled set is
+#: then reproducible from the row sequence, and a run of identical calls cannot
+#: land a burst of samples by luck the way a coin flip can.
+_SERVE_SAMPLE_EVERY = 20
+
+class ServeSampler:
+    """Decides which sub-floor calls get written down.
+
+    Holds its own counter, so a caller wanting an independent one — a second
+    server in-process, a test that needs a known phase — constructs one instead of
+    reaching for the module's. Same reason :class:`IngestThrottle` is a parameter
+    rather than a global reached for in place.
+
+    Counts only the calls it is asked about, which are only the sub-floor ones, so
+    the rate describes that population rather than all traffic. ``next()`` on an
+    ``itertools.count`` is atomic under the GIL, which is all the coordination a
+    sample counter needs — a lock here would be contended by every served call to
+    protect an approximation.
+    """
+
+    __slots__ = ("every", "_n")
+
+    def __init__(self, every: int = _SERVE_SAMPLE_EVERY) -> None:
+        self.every = every
+        self._n = itertools.count()
+
+    def take(self) -> int:
+        """The weight to stamp on this row, or ``0`` to write nothing.
+
+        The weight is the number of calls the row stands for, which is what a
+        reader must multiply it by — so it is the sampler, not the caller, that
+        says what a sampled row means."""
+        if self.every <= 1:
+            return 1
+        return 0 if next(self._n) % self.every else self.every
+
+
+#: The process-wide sampler, used by every served call that doesn't bring its own.
+SERVE_SAMPLER = ServeSampler()
+
 
 def _record_serve(tool_name: str, *, served_ms: float, kick_ms: float,
-                  tool_ms: Optional[float], failed: bool) -> None:
+                  tool_ms: Optional[float], failed: bool,
+                  sampler: Optional[ServeSampler] = None) -> None:
     """Record what this server's serving layer cost on top of the tool, when that
     is more than noise. Fail-soft — telemetry never breaks a served call.
 
@@ -205,13 +264,20 @@ def _record_serve(tool_name: str, *, served_ms: float, kick_ms: float,
     successes — a raising tool still publishes its own timing on the way out, so a
     fast failure is as measurable, and as uninteresting, as a fast success. It is
     the tool's ``search``/``read`` row that records the failure; this one exists
-    only to say the *layer around it* took time."""
+    only to say the *layer around it* took time.
+
+    Below the floor, one call in :data:`_SERVE_SAMPLE_EVERY` is recorded anyway and
+    marked ``sampled`` — enough to keep the distribution's body in the file without
+    a row per call. See that constant for how a reader must weight them."""
     try:
         if tool_ms is None:
             return  # nothing measured the inside, so there is no overhead to name
         overhead = served_ms - tool_ms
+        sampled = 0
         if overhead < _SERVE_OVERHEAD_FLOOR_MS:
-            return
+            sampled = (sampler if sampler is not None else SERVE_SAMPLER).take()
+            if not sampled:
+                return
         from .._retrieval import usage as _usage
 
         record: dict[str, object] = {
@@ -221,6 +287,8 @@ def _record_serve(tool_name: str, *, served_ms: float, kick_ms: float,
             "tool_ms": round(tool_ms, 1),
             "overhead_ms": round(overhead, 1),
         }
+        if sampled:
+            record["sampled"] = sampled
         if kick_ms >= 1.0:
             record["kick_ms"] = round(kick_ms, 1)
         if failed:

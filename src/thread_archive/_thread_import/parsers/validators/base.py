@@ -44,6 +44,13 @@ class ValidationContext:
     # Results
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    # The findings above that report something the provider *added* and the
+    # parser preserved rather than lost — a new field, block type, line type or
+    # role. Kept as a parallel list rather than folded into the message text so
+    # the surfaces that treat additions differently from losses read the
+    # distinction off the validator that made it, instead of pattern-matching
+    # prose that was never a contract.
+    additive: List[str] = field(default_factory=list)
 
     def add_error(self, msg: str) -> None:
         """Add a validation error."""
@@ -56,8 +63,16 @@ class ValidationContext:
         else:
             self.warnings.append(msg)
 
-    def add_issue(self, msg: str, severity: ValidationSeverity) -> None:
-        """Add an issue with specified severity."""
+    def add_issue(
+        self, msg: str, severity: ValidationSeverity, *, additive: bool = False
+    ) -> None:
+        """Add an issue with specified severity.
+
+        ``additive`` marks a finding whose subject is preserved content the
+        parser doesn't model yet — see :attr:`additive`.
+        """
+        if additive:
+            self.additive.append(msg)
         if severity == ValidationSeverity.error:
             self.add_error(msg)
         else:
@@ -67,6 +82,17 @@ class ValidationContext:
     def has_errors(self) -> bool:
         """Check if any errors were recorded."""
         return len(self.errors) > 0
+
+    @property
+    def additive_only(self) -> bool:
+        """Did every finding report an addition — is nothing here a loss?
+
+        False for a clean parse: "no findings" is not "additive findings", and a
+        caller asking this is deciding how loudly to report a problem it already
+        knows it has.
+        """
+        found = set(self.errors) | set(self.warnings)
+        return bool(found) and found <= set(self.additive)
 
 
 class BaseValidator:
@@ -123,12 +149,17 @@ class BaseValidator:
         pass
 
     def _add_issue(
-        self, context: ValidationContext, msg: str, severity: ValidationSeverity
+        self,
+        context: ValidationContext,
+        msg: str,
+        severity: ValidationSeverity,
+        *,
+        additive: bool = False,
     ) -> None:
         """Add an issue, respecting strict mode."""
         if self.strict and severity == ValidationSeverity.warning:
             severity = ValidationSeverity.error
-        context.add_issue(msg, severity)
+        context.add_issue(msg, severity, additive=additive)
 
     @staticmethod
     def _has_thinking_blocks(msg: NormalizedMessage) -> bool:

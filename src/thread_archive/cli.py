@@ -47,11 +47,25 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Optional
+import time
+from contextlib import contextmanager
+from typing import Iterator, Optional
 
 from . import __version__
 from ._config import resolve_paths
 from ._viewer import viewer_available
+
+#: When this process entered the package, on the monotonic clock. Module import is
+#: the earliest moment the CLI controls — the console script and ``python -m``
+#: both land here — so it is what a terminal call's cost is measured from.
+#:
+#: It excludes interpreter startup ahead of this import, which no portable stdlib
+#: call can date, and that omission is the reason the number is a floor rather
+#: than the whole truth. Everything expensive is inside it: a CLI process pays the
+#: engine import, the archive open, and any model load on every single call, and
+#: those are the costs the MCP server pays once per lifetime and this one never
+#: stops paying.
+_ENTERED = time.monotonic()
 
 
 def _add_home_arg(p: argparse.ArgumentParser) -> None:
@@ -270,6 +284,61 @@ def _self_throttle() -> None:
             pass
 
 
+@contextmanager
+def _served(tool_name: str) -> Iterator[None]:
+    """Record what the terminal cost around one tool call.
+
+    The MCP server has always measured its own serving layer; the CLI never has,
+    so every number the product publishes about a terminal call describes only the
+    part that runs after the process is already up. That omission is not small
+    here the way it is over MCP: a served MCP call reuses a warm process, and a
+    CLI call builds one — interpreter, engine import, archive open, sometimes a
+    model load — and then throws it away. An agent choosing between the two doors
+    is choosing mostly between those, and until this row existed the ledger said
+    they were the same.
+
+    Writes the same ``serve`` shape the MCP wrapper writes, marked
+    ``surface="cli"`` (an absent surface means MCP — see
+    :data:`.._retrieval.usage.UNATTRIBUTED`), so both doors land in one series and
+    a reader compares them without knowing which module wrote which row.
+
+    No floor, unlike the MCP wrapper: process construction is never noise, there
+    is at most one of these rows per process, and a floor would silently drop
+    exactly the fast-startup calls a comparison needs.
+
+    Fail-soft — a terminal command must not die for its own telemetry.
+    """
+    from . import _tools
+
+    with _tools.call_span() as span:
+        failed = False
+        try:
+            yield
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            try:
+                from ._retrieval import usage as _usage
+
+                served_ms = (time.monotonic() - _ENTERED) * 1000.0
+                tool_ms = span.get("tool_ms")
+                record: dict[str, object] = {
+                    "kind": "serve",
+                    "surface": "cli",
+                    "tool": tool_name,
+                    "served_ms": round(served_ms, 1),
+                }
+                if tool_ms is not None:
+                    record["tool_ms"] = round(tool_ms, 1)
+                    record["overhead_ms"] = round(served_ms - tool_ms, 1)
+                if failed:
+                    record["failed"] = True
+                _usage.record_serve(record)
+            except Exception:  # noqa: BLE001 — advisory
+                pass
+
+
 def cmd_search(args: argparse.Namespace) -> int:
     """``thread-archive search`` — the ``thread_search`` tool, rendered to stdout.
 
@@ -282,7 +351,7 @@ def cmd_search(args: argparse.Namespace) -> int:
 
     api.open_archive(args.home)
     try:
-        with _tools.serving("cli"):
+        with _tools.serving("cli"), _served("thread_search"):
             out = _tools.thread_search(
                 args.query,
                 limit=args.limit,
@@ -325,7 +394,7 @@ def cmd_read(args: argparse.Namespace) -> int:
     from . import _tools
 
     api.open_archive(args.home)
-    with _tools.serving("cli"):
+    with _tools.serving("cli"), _served("thread_read"):
         print(_tools.thread_read(
             args.id,
             limit=args.limit,
@@ -1650,6 +1719,15 @@ def report_coverage(r: dict) -> int:
         print(
             f"validation drift: {dr['total']} ledger records, {dr['recent']} in last "
             f"{dr['days']:.0f}d ({dr['recent_findings']} findings) — validation-drift.jsonl"
+        )
+    # What the warning is holding back. Printed here because this report is the
+    # surface someone reached for on purpose: a grace window nobody can see is
+    # indistinguishable from a check that stopped running.
+    if r.get("drift_held"):
+        print(
+            f"held: {r['drift_held']} drift record(s) report additions the parser "
+            f"preserved, first seen inside the last {dr['grace_days']:.0f}d — no "
+            "warning until they age out (\"dev_mode\": true in config.json warns now)"
         )
     # Closed records stay in the file and out of every degradation count, so
     # "25 recent, all repaired" would otherwise render identically to "25 recent,

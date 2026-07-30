@@ -45,7 +45,12 @@ coverage is their reconciliation:
   reach anything watching coverage instead of waiting to be read. Routine
   empty-session skips (``no_importable_content``) are held out of the warning —
   they fire constantly and would drown the signal — while staying in the ledger
-  and its full recent tally for the re-import audit.
+  and its full recent tally for the re-import audit. Drift records that report
+  only *additions* the parser preserved are held for their grace window
+  (:data:`.._importers._validation_ledger.ADDITIVE_GRACE_DAYS`, counted from the
+  finding's first sighting) unless the install runs in ``dev_mode``; drift that
+  loses content warns the day it lands either way. Held records stay in the
+  report's own drift line, so the evidence is never withheld — only the ask.
 
 Runs nightly as a pipeline stage (recording ``coverage_last``; an out-of-band
 green run retires a red nightly stage, see :mod:`.health`) and on demand via
@@ -55,10 +60,11 @@ green run retires a red nightly stage, see :mod:`.health`) and on demand via
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from .health import record_health, stamp_heartbeat
+from .health import elapsed_s, record_health, stamp_heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +281,7 @@ def check_coverage(
     reporting is computed against — when only ``watchers`` is injected it
     doubles as the full set, so a stub-driven test never discovers the real
     machine's stores."""
+    _t0 = time.monotonic()
     from .._api import open_archive
     from .._importers._skip_ledger import summarize_skips
     from .._importers._validation_ledger import summarize_drift
@@ -370,7 +377,7 @@ def check_coverage(
                 "store_latest": _iso(d.latest),
             }
     watcher_names = {w.source_name for w in all_watchers}
-    from .._config import load_config, source_enabled
+    from .._config import dev_mode, load_config, source_enabled
 
     cfg = load_config(home)
     now = datetime.now(timezone.utc).timestamp()
@@ -414,10 +421,23 @@ def check_coverage(
     # recording without warning left them invisible to everything watching
     # coverage (nightly notify, ops digest). Warn, never red — a single benign
     # drift record must not fail the pipeline, but it must surface.
-    if drift["recent_substantive"]:
+    # Additive drift — a field/type/role the provider grew and the parser preserved
+    # without modeling — is a maintenance to-do, not a hole, so off a dev install it
+    # is held for its grace window rather than posted the day it lands: the archive
+    # asking to be looked at is a cost, and one that buys nothing while a release or
+    # a patch still has time to close the finding. Lossy drift ignores the window.
+    # Held records stay in ``drift`` and in the CLI report's own drift line — this
+    # withholds the *warning*, never the evidence.
+    dev = dev_mode(cfg)
+    due = drift["recent_substantive"] if dev else drift["recent_due"]
+    due_findings = (
+        drift["recent_substantive_findings"] if dev else drift["recent_due_findings"]
+    )
+    held = 0 if dev else drift["recent_deferred"]
+    if due:
         warnings.append(
-            f"format drift: {drift['recent_substantive']} validation-drift record(s) "
-            f"({drift['recent_substantive_findings']} finding(s)) in the last "
+            f"format drift: {due} validation-drift record(s) "
+            f"({due_findings} finding(s)) in the last "
             f"{drift['days']:.0f}d "
             "— a parser no longer fully understands a source's format; see the "
             "drift ledger"
@@ -477,6 +497,7 @@ def check_coverage(
         "unwatched": unwatched,
         "skips": skips,
         "drift": drift,
+        "drift_held": held,
         "degraded": degraded,
         "drift_snapshots": snapshots,
     }
@@ -488,6 +509,7 @@ def check_coverage(
         "skips_recent": skips["recent"],
         "drift_recent": drift["recent"],
         "degraded": degraded,
+        "duration_s": elapsed_s(_t0),
     })
     stamp_heartbeat()
     return result

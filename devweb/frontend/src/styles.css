@@ -21,6 +21,14 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
    the affordance, not anchor blue. :where() keeps specificity at zero so class rules
    (e.g. .chip's accent color) still win. */
 :where(a.hit, a.chip, a.gh, a.tree-title, a.rail-item, a.rail-link) { color: inherit; text-decoration: none; }
+/* Text that has to be present without being read first: the prose under a
+   heading, a count beside a number, a path. Every view here reaches for it. */
+.muted { color: var(--muted); }
+/* A fetch that failed, in the same red the ledger tables mark a fault in. */
+.error { color: #b34233; }
+@media (prefers-color-scheme: dark) {
+  .error { color: #e0806f; }
+}
 
 .app { display: flex; height: 100vh; }
 
@@ -779,7 +787,7 @@ a.session-link:hover { color: var(--accent); }
 }
 /* The wide pages — dashboards and the import flow — share one measure. Kept ahead
    of the breakpoints below so their narrower padding wins on source order. */
-.health-page, .upload-page, .retrieval-page, .telemetry-page, .lab-page {
+.health-page, .upload-page, .retrieval-page, .telemetry-page, .lab-page, .dash-page {
   max-width: 1120px; margin: 0 auto; padding: 34px 38px 96px;
 }
 .health-hero {
@@ -1158,7 +1166,7 @@ a.session-link:hover { color: var(--accent); }
   .wrap { padding-inline: 22px; }
   .home { padding-inline: 28px; }
   .recent-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .health-page, .retrieval-page, .telemetry-page, .lab-page { padding-inline: 26px; }
+  .health-page, .retrieval-page, .telemetry-page, .lab-page, .dash-page { padding-inline: 26px; }
   .health-check-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
@@ -1218,7 +1226,7 @@ a.session-link:hover { color: var(--accent); }
   .hit-nav { justify-content: space-between; }
   .msg { padding: 11px 13px; }
   .stat-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .health-page, .retrieval-page, .telemetry-page, .lab-page { max-width: none; padding: 22px 16px 76px; }
+  .health-page, .retrieval-page, .telemetry-page, .lab-page, .dash-page { max-width: none; padding: 22px 16px 76px; }
   .health-hero { padding: 22px; }
   .health-check-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .health-detail-grid { grid-template-columns: 1fr; }
@@ -1314,14 +1322,17 @@ a.session-link:hover { color: var(--accent); }
 /* ---- search lab (dev) ---- */
 /* An inventory, not a dashboard: every value is categorical or a count, so the
    page is tables and status pills with no charts to keep in scale. */
-.lab-page {
+/* The tones travel with the pills, so any page showing a `.lab-pill` carries
+   them — a status chip whose tint resolves to nothing reads as plain text, which
+   is the one thing a status chip must not do. */
+.lab-page, .dash-page {
   --lab-good: #27774a; --lab-good-bg: #edf8f1;
   --lab-warn: #956413; --lab-warn-bg: #fff7e5;
   --lab-bad: #b34233;  --lab-bad-bg: #fff0ed;
   --lab-busy: #2f6296; --lab-busy-bg: #eaf1f9;
 }
 @media (prefers-color-scheme: dark) {
-  .lab-page {
+  .lab-page, .dash-page {
     --lab-good: #6bbd8c; --lab-good-bg: #1b2f24;
     --lab-warn: #d4a556; --lab-warn-bg: #2f2718;
     --lab-bad: #e0806f;  --lab-bad-bg: #331f1c;
@@ -1455,16 +1466,21 @@ a.session-link:hover { color: var(--accent); }
   align-items: center;
   gap: 1.5rem;
   padding: 0.75rem 1.5rem;
-  border-bottom: 1px solid var(--border, #2a2a2a);
+  border-bottom: 1px solid var(--line);
   position: sticky;
   top: 0;
-  background: var(--bg, #111);
+  background: var(--bg);
   z-index: 10;
 }
-.devweb-brand {
+/* The brand is the way back to the overview, so it is an anchor — and takes the
+   header's own ink rather than anchor blue. */
+a.devweb-brand {
   font-weight: 600;
   white-space: nowrap;
+  color: inherit;
+  text-decoration: none;
 }
+a.devweb-brand:hover { color: var(--accent); }
 .devweb-nav {
   display: flex;
   gap: 0.25rem;
@@ -1474,18 +1490,98 @@ a.session-link:hover { color: var(--accent); }
   padding: 0.3rem 0.7rem;
   border-radius: 6px;
   text-decoration: none;
-  color: var(--muted, #999);
+  color: var(--muted);
 }
 .devweb-link:hover {
-  color: var(--fg, #eee);
+  color: var(--ink);
 }
 .devweb-link.active {
-  color: var(--fg, #eee);
-  background: var(--surface, #1e1e1e);
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 .devweb-away {
   margin-left: auto;
 }
 .devweb .content {
   padding: 1.5rem;
+}
+
+/* ---- the overview ---- */
+/* Panels on a two-column grid: half width, or the full measure for one that
+   carries two tables side by side. Every panel is a heading, a small table or a
+   row of figures, and the way to the page that explains it — nothing here is a
+   surface anyone should end up reading *instead* of the instrument. */
+.dash-page h1 { margin: 0; }
+/* Anchors on this page are the way out of it, so they wear the accent rather
+   than the browser's own blue — which on the dark surface is barely a link. */
+.dash-page a { color: var(--accent); text-decoration: none; }
+.dash-page a:hover { text-decoration: underline; }
+.dash-lede { max-width: 68ch; margin: 10px 0 20px; }
+/* `start`, not the default stretch: a panel with four rows in it should be four
+   rows tall. Equal heights would buy aligned footers at the price of dead space
+   inside the shorter panel, which is the opposite of what a glance wants. */
+.dash-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start; gap: 16px;
+}
+.dash-panel {
+  display: flex; flex-direction: column; min-width: 0;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--panel);
+  padding: 13px 16px 12px;
+}
+.dash-panel.wide { grid-column: 1 / -1; }
+.dash-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; margin-bottom: 10px;
+}
+.dash-head h2 {
+  margin: 0; font-size: 12px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.dash-head a { flex: none; font-size: 11px; color: var(--accent); text-decoration: none; }
+.dash-head a:hover { text-decoration: underline; }
+.dash-h3 {
+  margin: 0 0 6px; font-size: 11px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .06em;
+}
+/* The gloss sits at the bottom of the panel whatever the body's height, so two
+   panels side by side end on the same line. */
+.dash-note {
+  margin: 10px 0 0; padding-top: 10px; margin-top: auto;
+  color: var(--muted); font-size: 11px; line-height: 1.5;
+}
+.dash-split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 26px; }
+
+/* A panel's own figures. Not `.stat-tile`: a bordered tile inside a bordered
+   panel reads as a box in a box. */
+.dash-metrics {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px; margin-bottom: 14px;
+}
+.dash-metric .n { display: block; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.dash-metric .l { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.dash-metric .s {
+  display: block; margin-top: 2px; color: var(--muted); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Tables inside a panel are denser than a page's: the panel is a glance, and the
+   row height that carries a full page of them is more air than a glance needs. */
+.dash-page .stat-table { font-size: 12.5px; }
+.dash-page .stat-table th { padding: 4px 10px 5px 0; }
+.dash-page .stat-table td { padding: 5px 10px 5px 0; }
+.dash-page .stat-table th.bar-col { width: 46%; }
+.dash-page .bar-num { min-width: 42px; font-size: 11px; }
+.dash-page .lab-run-link { white-space: nowrap; }
+
+/* Where this box is, under everything that measured it. */
+.dash-facts {
+  display: flex; flex-wrap: wrap; gap: 4px 20px;
+  margin: 20px 0 0; color: var(--muted); font-size: 11px;
+}
+
+@media (max-width: 1000px) {
+  .dash-grid, .dash-split { grid-template-columns: 1fr; }
+  .dash-panel.wide { grid-column: auto; }
+  .dash-note { margin-top: 10px; }
 }

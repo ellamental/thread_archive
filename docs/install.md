@@ -77,7 +77,8 @@ The development install is a clone with an editable venv:
 ```bash
 git clone https://github.com/ellamental/thread_archive.git thread-archive && cd thread-archive
 python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'          # add -e '.[embeddings]' for local semantic search
+.venv/bin/pip install --upgrade pip        # `--group` is PEP 735; needs pip >= 25.1
+.venv/bin/pip install -e . --group dev     # add -e '.[embeddings]' for local semantic search
 .venv/bin/pytest tests/ -q                 # confirm green (add `-m package` for the wheel/sdist release lane)
 
 # wire the read MCP server into this clone's .mcp.json (absolute venv path)

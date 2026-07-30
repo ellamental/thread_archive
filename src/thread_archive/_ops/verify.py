@@ -10,11 +10,12 @@ components and appends its full evidence to ``<home>/verify-failures.jsonl``.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Optional
 
 from .._config import resolve_paths
-from .health import read_health, record_health, stamp_heartbeat
+from .health import elapsed_s, read_health, record_health, stamp_heartbeat
 
 # How far above the live truth a mirror's effective count may sit before the
 # backup check calls it a fault (see :func:`_verify_backup`). The mirror is a
@@ -137,6 +138,7 @@ def verify(
     """
     from .._api import open_archive
 
+    _t0 = time.monotonic()
     open_archive(home)
     from sqlalchemy import func, select
 
@@ -376,6 +378,10 @@ def verify(
         "drift_threads": drift_threads,
         "parse_errors": truth["parse_errors"],
         "failed": failed,
+        # Only comparable against a run of the same shape: the tiers above walk
+        # progressively more of the archive, so the flags beside it are part of
+        # reading the number.
+        "duration_s": elapsed_s(_t0),
     })
     # The escalated tiers get their own records: ``verify_last`` is overwritten
     # by every shallow run, so these are what age-gated schedulers (``nightly``)

@@ -1,8 +1,8 @@
 # Dev panels
 
 Three pages whose subject is how the archive is *doing* rather than what it
-holds. They are a separate app on a separate server, in a directory that ships in
-nothing.
+holds, and an overview that says which one to open. They are a separate app on a
+separate server, in a directory that ships in nothing.
 
 ```bash
 cd devweb/frontend && npm install && npm run build   # once, and after frontend edits
@@ -11,10 +11,21 @@ python -m devweb                                    # → http://127.0.0.1:8789
 
 | Path | What it is |
 | --- | --- |
-| `/retrieval` | how search is performing: served latency per front door and by warm/cold regime, per-stage costs |
-| `/telemetry` | web endpoint latency, ingest cost, folded ingest faults, retained ledger size |
+| `/` | the overview: each instrument's headline in a panel, one window over all of them |
+| `/retrieval` | how search is performing: served latency per front door and by warm/cold regime, per-stage costs, restarts and background rebuilds |
+| `/telemetry` | web endpoint latency, ingest cost (including the loop's idle floor), folded ingest faults, retained ledger size |
 | `/lab` | what the bench has to measure with: benchmark rows, corpora on disk, every recorded run |
 | `/lab/run/<id>` | one run's per-query detail, optionally diffed against another |
+
+The overview summarises and does not restate: every panel links to the page that
+explains it, and the reasoning lives there. What it may not do is pool. A median
+across front doors is a mixture nobody waited on — which is the retrieval page's
+whole argument, and a dashboard is exactly where that number would get quoted as
+the headline — so the door table comes across per door and the pooled figures
+stay off it. Its window drives retrieval and telemetry together, since two panels
+read side by side have to cover the same stretch of time; the bench inventory and
+the run ledger are windowless and do not move with it. Each panel fetches and
+fails on its own, so one unreadable ledger costs one panel rather than the page.
 
 `python -m devweb --open` opens the browser once the server is up; `--port` and
 `--host` move it — though the viewer's link to here (below) is fixed at the
@@ -54,7 +65,7 @@ devweb/
   telemetry.py   # the /telemetry data layer, over the archive's ledgers
   __main__.py    # python -m devweb
   static/        # the built bundle — NOT committed (see below)
-  frontend/      # the React app: four views, its own Vite build
+  frontend/      # the React app: the overview, three panels, one run, its own Vite build
 ```
 
 `server.py` imports the archive's request guards (`_host_allowed`, the security
@@ -79,7 +90,7 @@ build command if it is missing rather than 404ing per page.
   `tests/test_web.py` drives the viewer's. It carries the `viewer` marker, so the
   Docker install lane — which runs this suite against the installed wheel —
   stands it down along with every other test of a surface that does not ship.
-- `cd devweb/frontend && npm test` covers the four views (`devweb-test` in
+- `cd devweb/frontend && npm test` covers every view (`devweb-test` in
   `ci.toml`, with `devweb-typecheck` beside it).
 - `npm run e2e` drives them in Chromium against a production build, API mocked at
   the network boundary — including the drill from the lab's run ledger into one

@@ -1,6 +1,7 @@
 import { Link, Route, Routes, useLocation } from 'react-router-dom'
 
 import { BenchRunView } from './components/BenchRunView'
+import { DashboardView } from './components/DashboardView'
 import { RetrievalView } from './components/RetrievalView'
 import { SearchLabView } from './components/SearchLabView'
 import { TelemetryView } from './components/TelemetryView'
@@ -11,10 +12,12 @@ import { TelemetryView } from './components/TelemetryView'
  * Deliberately thinner than the viewer's: no sidebar of recent threads, no
  * global search, no status bar. This app has no conversations in it — the
  * archive is next door at :8787 and that is where reading happens. What is left
- * is three instruments and a way between them.
+ * is three instruments, an overview that says which one to open, and a way
+ * between them.
  */
 
 const NAV = [
+  { to: '/', label: 'overview', blurb: 'what all three lead with' },
   { to: '/retrieval', label: 'retrieval', blurb: 'how search is performing' },
   { to: '/telemetry', label: 'telemetry', blurb: 'the operational ledgers' },
   { to: '/lab', label: 'lab', blurb: 'what the bench can measure with' },
@@ -29,7 +32,9 @@ export function App() {
   return (
     <div className="devweb">
       <header className="devweb-head">
-        <span className="devweb-brand">thread-archive · dev panels</span>
+        <Link className="devweb-brand" to="/">
+          thread-archive · dev panels
+        </Link>
         <nav className="devweb-nav">
           {NAV.map((item) => (
             <Link
@@ -56,7 +61,7 @@ export function App() {
       </header>
       <main className="content">
         <Routes>
-          <Route path="/" element={<SearchLabView />} />
+          <Route path="/" element={<DashboardView />} />
           <Route path="/retrieval" element={<RetrievalView />} />
           <Route path="/telemetry" element={<TelemetryView />} />
           <Route path="/lab" element={<SearchLabView />} />

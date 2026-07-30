@@ -41,10 +41,14 @@ def _thread_id(query: str) -> str:
 
 
 def _ledger(home) -> list[dict]:
+    """The tool-call rows. ``serve`` rows are dropped — they describe the *door*
+    around a call rather than the call, and this file is about the calls. Filtering
+    by kind is what every real consumer of this ledger does."""
     path = home / usage.LEDGER_FILE
     if not path.exists():
         return []
-    return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    rows = [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    return [r for r in rows if r.get("kind") in ("search", "read")]
 
 
 # ── search ───────────────────────────────────────────────────────────────────

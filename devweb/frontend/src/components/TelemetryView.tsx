@@ -311,6 +311,18 @@ export function TelemetryView() {
                 </tr>
               </tbody>
             </table>
+            {report.ingest.idle && report.ingest.idle.passes > 0 && (
+              // Outside the table on purpose: these passes imported nothing, so
+              // they have no p95 of import work to sit in that column. What they
+              // cost per pass is the number worth reading — it grows with how many
+              // files the loop has to look at, not with how busy the machine is.
+              <p className="muted small">
+                idle · {integer(report.ingest.idle.passes)} passes found nothing ·{' '}
+                {duration(report.ingest.idle.per_pass_ms)} each, worst{' '}
+                {duration(report.ingest.idle.max_ms)} ·{' '}
+                {duration(report.ingest.idle.total_s * 1000)} total
+              </p>
+            )}
           </div>
         </div>
       </section>

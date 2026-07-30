@@ -955,7 +955,37 @@ def _refresh_matrix(key: tuple, cts: tuple[str, ...]) -> None:
         token = _validity_token(s)
     if cached is not None and cached[0] == token:
         return  # still fresh — nothing to rebuild
-    _store_matrix_entry(key, _build_matrix_entry(cts))
+    # Timed from here, not from function entry: the freshness check above is the
+    # common case and costs a token read, and folding it in would report a
+    # rebuild that never happened.
+    _t0 = time.perf_counter()
+    rows = 0
+    failed = True
+    try:
+        entry = _build_matrix_entry(cts)
+        rows = len(entry[1])  # the id array — one row per packed vector
+        _store_matrix_entry(key, entry)
+        failed = False
+    finally:
+        _record_matrix_refresh(_t0, rows, failed=failed)
+
+
+def _record_matrix_refresh(started: float, rows: int, *, failed: bool) -> None:
+    """Log the rebuild to the usage ledger. Fail-soft: a background rebuild's
+    telemetry must never be what takes the process down."""
+    try:
+        from . import _contention
+        from .usage import record_refresh
+
+        record_refresh(
+            "matrix",
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            failed=failed,
+            detail={"rows": rows} if rows else None,
+            context=_contention.sample(),
+        )
+    except Exception:  # noqa: BLE001 — advisory
+        logger.debug("vectors: could not record matrix refresh", exc_info=True)
 
 
 def _refresh_matrix_async(key: tuple, cts: tuple[str, ...]) -> None:

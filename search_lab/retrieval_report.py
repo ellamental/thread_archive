@@ -514,6 +514,44 @@ def restarts(home: Path, *, hours: int = DEFAULT_HOURS,
     }
 
 
+def rebuilds(home: Path, *, hours: int = DEFAULT_HOURS) -> dict[str, Any]:
+    """Background rebuilds over the window, by what was rebuilt.
+
+    The third thing a serving process spends time on, after requests and warming.
+    A search that ran beside one has always carried ``refreshing`` — which names
+    the rebuild and says nothing about it — so the work most able to make a search
+    slow was the only work here with no series of its own.
+
+    Split by ``what`` (the vector matrix, the corpus graph) because they are
+    unrelated costs on unrelated schedules: the matrix rebuilds when ingest moves
+    the store's validity token, the graph when its Leiden partition goes stale, and
+    a total over both tracks neither. ``total_s`` beside the count is the part
+    worth reading against a latency chart: it is the share of the window during
+    which every search on this box was competing with a rebuild."""
+    from thread_archive._retrieval.usage import LEDGER_FILE
+
+    rows = _rows_since(home / LEDGER_FILE, _cutoff(hours),
+                       lambda r: r.get("kind") == "refresh")
+    per_what: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        per_what[str(r.get("what") or "?")].append(r)
+    return {
+        "n": len(rows),
+        "by_what": sorted(
+            ({"what": what,
+              "n": len(rs),
+              "failed": sum(1 for r in rs if r.get("failed")),
+              "p50_ms": round(percentile(
+                  [r["duration_ms"] for r in rs if r.get("duration_ms")], 0.50), 1),
+              "max_ms": round(max((r.get("duration_ms") or 0.0) for r in rs), 1),
+              "total_s": round(
+                  sum(r.get("duration_ms") or 0.0 for r in rs) / 1000.0, 1)}
+             for what, rs in per_what.items()),
+            key=lambda s: -s["n"],
+        ),
+    }
+
+
 def bench(home: Path, *, limit: int = 40) -> dict[str, list[dict[str, Any]]]:
     """The controlled latency timeseries, split by query set.
 
@@ -569,6 +607,7 @@ def report(home: Optional[Path] = None, *, hours: int = DEFAULT_HOURS,
     out["served"] = section(served, hours=hours, bucket=bucket, rows=rows)
     out["stages"] = section(stages, hours=hours, rows=rows)
     out["restarts"] = section(restarts, hours=hours, bucket=bucket)
+    out["rebuilds"] = section(rebuilds, hours=hours)
     out["bench"] = section(bench)
     return out
 

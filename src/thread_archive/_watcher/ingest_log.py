@@ -101,6 +101,67 @@ def record_pass(
         logger.debug("could not record ingest pass", exc_info=True)
 
 
+def record_idle(
+    *,
+    home,
+    passes: int,
+    total_ms: float,
+    max_ms: float,
+    window_s: float,
+    checked: int,
+    load1_avg: Optional[float] = None,
+) -> None:
+    """Append one rollup of the passes that found nothing to do. Never raises.
+
+    A pass that fingerprint-skips every target writes no ``ingest-pass`` row, and
+    that is right: the loop spends nearly all of its life finding nothing, and a
+    row each would bury every row that matters. But it leaves the loop's *floor*
+    unrecorded — the directory walks and fingerprint stats paid on every poll
+    whether or not anything changed. That cost is real, it scales with the number
+    of watched files rather than with activity, and until now it lived only in
+    ``health.json``'s per-source counters, which are cumulative since process
+    start and therefore erased by every restart. The same un-retention this
+    ledger was built to fix, for the quiet half of the loop.
+
+    So: one row per window, not per pass — ``passes`` of them cost ``total_ms``
+    between them, the worst taking ``max_ms``, over ``checked`` targets. Rate per
+    pass is the number to read (``total_ms / passes``); the window length is here
+    so a reader can tell a busy interval from a sleepy one rather than assuming a
+    poll cadence that config controls.
+
+    ``max_ms`` because the mean hides the case worth catching: a loop that is
+    usually instant and occasionally stalls for seconds on a cold directory
+    averages out to healthy.
+
+    ``load1_avg`` is the machine averaged across the window's passes, and without
+    it the rest of the row cannot be read. A pass costs what it costs partly
+    because of how many files it has to stat and partly because of what else the
+    box was doing, and those want opposite responses: the first is the loop
+    getting expensive, the second is an afternoon. Sampled per pass rather than
+    once at flush, because a spot reading at the end of five minutes describes the
+    end of five minutes.
+    """
+    if not _enabled():
+        return
+    try:
+        if passes <= 0:
+            return
+        record: dict[str, Any] = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "kind": "idle",
+            "passes": passes,
+            "total_ms": round(total_ms, 1),
+            "max_ms": round(max_ms, 1),
+            "window_s": round(window_s, 1),
+            "checked": checked,
+        }
+        if load1_avg is not None:
+            record["load1_avg"] = round(load1_avg, 2)
+        ledger.append(home / LEDGER_FILE, record, max_bytes=max_bytes())
+    except Exception:  # noqa: BLE001 — advisory; the poll loop must survive
+        logger.debug("could not record idle rollup", exc_info=True)
+
+
 def _percentile(xs: list[float], q: float) -> float:
     """Nearest-rank quantile — the honest one at these sample counts: an
     interpolated p95 over forty passes invents a duration no pass took."""
@@ -123,7 +184,8 @@ def summarize(home, *, hours: int = 24) -> dict[str, Any]:
     Maintenance and embed rows are summarized beside the source rows rather than
     mixed into them: they are the loop's other two jobs, and folding them into a
     source's totals would attribute upkeep to whichever provider happened to
-    trigger it."""
+    trigger it. The same for idle rollups, which are the loop's *fourth* job and
+    the one nothing else reports: what it costs to keep finding nothing."""
     from datetime import timedelta
 
     from .._importers._probe import STAGES
@@ -135,6 +197,9 @@ def summarize(home, *, hours: int = 24) -> dict[str, Any]:
     maintenance: list[float] = []
     embed: list[float] = []
     embedded = 0
+    idle_passes = 0
+    idle_ms = 0.0
+    idle_max_ms = 0.0
 
     for row in ledger.iter_rows(home / LEDGER_FILE):
         if row.get("at", "") < cutoff:
@@ -151,6 +216,11 @@ def summarize(home, *, hours: int = 24) -> dict[str, Any]:
         if kind == "embed":
             embed.append(float(row.get("ms") or 0.0))
             embedded += int(row.get("embedded") or 0)
+            continue
+        if kind == "idle":
+            idle_passes += int(row.get("passes") or 0)
+            idle_ms += float(row.get("total_ms") or 0.0)
+            idle_max_ms = max(idle_max_ms, float(row.get("max_ms") or 0.0))
             continue
         if kind != "ingest-pass":
             continue
@@ -186,6 +256,13 @@ def summarize(home, *, hours: int = 24) -> dict[str, Any]:
         "embed": {"passes": len(embed), "embedded": embedded,
                   "total_s": round(sum(embed) / 1000.0, 1),
                   "p95_ms": round(_percentile(embed, 0.95), 1)},
+        # The loop's floor. ``per_pass_ms`` is the number to watch: totals grow
+        # with how long the daemon has been up, and the per-pass cost grows with
+        # how many files it has to look at — only the second is a regression.
+        "idle": {"passes": idle_passes,
+                 "total_s": round(idle_ms / 1000.0, 1),
+                 "max_ms": round(idle_max_ms, 1),
+                 "per_pass_ms": round(idle_ms / idle_passes, 1) if idle_passes else 0.0},
         "retained_bytes": ledger.total_bytes(home / LEDGER_FILE),
     }
 

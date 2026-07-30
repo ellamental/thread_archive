@@ -2,6 +2,127 @@
 
 ## Unreleased
 
+- **The dev panels open on an overview.** `http://127.0.0.1:8789/` used to be the
+  search lab by another name; it is now a page of panels — the front doors and
+  where a search spends its time, web requests and ingest, the bench's rows
+  beside its newest runs — with one window driving the two time-bounded halves
+  and a facts line for where this box keeps what they measured. Each panel
+  fetches and fails on its own, so a ledger that is mid-rebuild costs one panel
+  rather than the page, and each links to the instrument that explains it: the
+  overview summarises and does not restate.
+
+  What it deliberately does not do is pool. A median across front doors is a
+  mixture nobody waited on — the argument the retrieval page is built around, and
+  a dashboard is exactly where that number gets quoted as a headline — so the
+  door table crosses over per door and the pooled figures are not on the page at
+  all. `/lab` is unchanged and is still where the lab lives.
+
+  Three things the panels needed were missing from this app's stylesheet, which
+  is a trimmed copy of the viewer's: `.muted` and `.error` were undefined (so
+  prose meant to recede read at full ink, and a failed fetch read as body text),
+  the lab's status tones were scoped to `.lab-page` (so a `stale` chip anywhere
+  else lost its tint), and the shell's nav coloured itself off `--fg`/`--surface`,
+  which no theme here defines — its hover made the link invisible in light mode.
+
+- **Performance telemetry: the numbers the product was producing and throwing
+  away.** An audit of what is recorded across the lifecycle turned up work that
+  cost real time and left no trace, and denominators without which the numbers
+  that *were* recorded could not be read. Seven of them close here.
+
+  - **Every latency row now carries the machine, not just the process.**
+    `load1` and `rss_mb` join `uptime_s` on the contention sample, read from a new
+    `_ops/machine.py` that the three callers who need the machine's own state —
+    the contention sample, the watcher's idle rollup, the latency gate — share
+    rather than each keeping a copy that rounds differently. The contention module
+    already named the failure — "the same load measures seconds on a quiet box and
+    over a minute beside a test suite" — while sampling only this process's own
+    facts, so a box under load and an idle one wrote the same row, and every
+    percentile over the ledger was a mixture of the pipeline and the afternoon.
+  - **Background rebuilds have a series of their own.** A `refresh` row per
+    vector-matrix or corpus-graph build, with what it cost and how big the corpus
+    was. A search running beside one carried `refreshing`, which names the rebuild
+    and says nothing about it — the thing most able to make a search slow was the
+    thing with no record.
+  - **Scheduled operations record `duration_s`.** backup, verify, restore drill,
+    coverage and the nightly (which also records `stage_s`, the split across its
+    five stages, including stages that *raised* and so never wrote a record of
+    their own). They run unattended and their cost grows with the corpus; "the
+    nightly is taking longer" was an impression with nothing that could settle it.
+  - **The terminal front door reports what it costs.** A `serve` row with
+    `surface="cli"`, timed from process entry rather than from the tool. Measured
+    on this archive: 440 ms of door around 11 ms of search — a CLI call builds a
+    process where an MCP call reuses one, and the ledger used to say the two doors
+    were the same.
+  - **Sub-floor serve rows are sampled 1-in-20** rather than dropped, marked
+    `sampled` so a reader can weight them. The floor kept the tail and discarded
+    the body, so the file could say what a bad serve cost and not what a normal
+    one does.
+  - **The quiet poll loop is retained.** An `idle` rollup row per 5-minute window
+    — passes, total, worst, targets checked, and the machine's load averaged over
+    the window's passes. Passes that import nothing rightly write no row each, but
+    their cost then lived only in `health.json`'s since-process-start counters,
+    which every restart erases: the same un-retention `ingest-runs.jsonl` was
+    built to end, for the half of the loop that does nothing. First window
+    measured on this archive: 22 quiet passes costing 16.4s between them, the
+    worst of them 8.5s, over ~2270 stat'd targets per pass.
+  - **The latency ratchet is wired to something that runs.**
+    `search_lab/latency_smoke.py` + the `latency-gate` row in `ci.toml`. The
+    pieces — `smoke_set`, `ceiling_ms`, per-set baselines — had existed with no
+    caller, so a search that returned the right hits ever slower was caught only
+    when somebody thought to look. It replays the slowest recorded calls against
+    a baseline of its own (`query_set=smoke`, kept apart from `observed` because
+    the sweeper's scheduling tier is not a terminal's), and confirms a breach with
+    a second pass before failing: it shares a machine with the rest of the sweep,
+    and a gate that cries wolf is a gate that gets removed.
+
+- **A provider addition gets two weeks before it asks to be looked at.** Format
+  drift was one category, and it isn't. A provider that grows a field, block
+  type, line kind or role costs the reader nothing — the parser preserves the
+  value under `annotations['unmodeled']` and the validator names it — so the
+  finding is a maintenance to-do for whoever maintains the parser. A finding
+  that says content is *missing* is a hole in the archive. Posting both the day
+  they land made the health page go yellow over routine upstream housekeeping,
+  which is how a page that is supposed to be believed stops being read.
+
+  So the two are told apart at the source: `TypeValidator`'s findings — the ones
+  whose whole subject is preserved-but-unmodeled content — are marked `additive`
+  on the `ValidationContext`, and a drift record made *entirely* of them carries
+  `"additive": true`. The coverage warning holds those for
+  `ADDITIVE_GRACE_DAYS` (14) counted from the finding's **first sighting**, long
+  enough for a release or a patch to close it before anyone is asked to look.
+  A record that mixes an addition with a loss is not additive — the loss decides
+  — and warns immediately, as does everything on an install that sets
+  `"dev_mode": true` in `config.json`, where the to-do is the point.
+
+  Three properties keep the hold from being a mute button. Maturity is **per
+  finding**, so a field the provider grew this morning can't inherit the age of
+  one it grew last quarter. It is measured from **first** sighting rather than
+  latest, so drift that recurs on every import can't reset its own clock. And a
+  **repair restarts it**: a record closed by `source recheck` no longer ages the
+  finding it recorded, so drift that comes back after a fix gets its own window
+  instead of being born past due.
+
+  Nothing is hidden — only deferred. Held records stay in the ledger, in
+  `summarize_drift`'s totals, and in `thread-archive source coverage`, which
+  prints how many it is holding and how to see them now. The degradation verdict
+  is deliberately untouched: it is what triggers the drift *snapshot*, and
+  preservation of a provider's raw files must never wait on a grace window.
+
+- **The maintainer's toolchain is a PEP 735 dependency group, not a published
+  extra.** `pytest`, `mypy`, `ruff`, `build`, `pyarrow` and `hypothesis` were
+  advertised in the distribution's own metadata, so every `pip install
+  thread-archive` carried an offer — `[dev]` — that resolves a test toolchain
+  against a wheel that ships no tests. They move to `[dependency-groups]`, which
+  is read from `pyproject.toml` and therefore reaches a checkout and nothing
+  else: `pip install -e . --group dev`. `testing` stays an extra, because its
+  audience (provider-plugin authors) installs from the index and never sees this
+  repo. The container install lane installs the wheel and the group in two steps
+  — a group is not published metadata, so no wheel carries one. Needs pip >=
+  25.1, which CI, the Dockerfile and the documented clone install now all pin.
+- **PyPI metadata: a `Documentation` URL pointing at the docs tree**, plus the
+  `Programming Language :: Python :: 3 :: Only` and `Topic :: Communications ::
+  Chat` classifiers — nothing in the previous set said this product is about
+  conversations.
 - **The dev panels are their own server now — `python -m devweb` on :8789.**
   `/retrieval`, `/telemetry` and `/lab` report on how the archive is *doing*
   rather than what it holds, and they were routes inside the archive's own

@@ -313,7 +313,16 @@ def log_parse_validation(
     if findings:
         # Durable, queryable trail so the coverage check / nightly can surface drift
         # volume — the log line alone is ephemeral. Advisory + fail-soft.
-        record_drift(provider, conversation_id, findings=findings, batch_safe=batch_safe)
+        # ``additive_only`` rides along because the ledger cannot re-derive it: by
+        # the time a record is read, a finding is prose, and only the validator
+        # that raised it knows whether it describes an addition or a loss.
+        record_drift(
+            provider,
+            conversation_id,
+            findings=findings,
+            batch_safe=batch_safe,
+            additive=context.additive_only,
+        )
     # The version tripwire: a first-seen harness version, recorded to the same
     # ledger — format changes ride version bumps, so this warns *before* any
     # field drifts (and explains it when one does).

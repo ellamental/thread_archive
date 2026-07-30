@@ -78,7 +78,8 @@ continues there — so the release branch gets its own worktree:
 git worktree add "$HOME/dev/archive-rc" -b release/X.Y.Z dev
 cd ~/dev/archive-rc
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev,embeddings,leiden]"
+.venv/bin/pip install --upgrade pip   # `--group` is PEP 735; needs pip >= 25.1
+.venv/bin/pip install -e ".[embeddings,leiden]" --group dev
 (cd frontend && npm ci)
 git push -u origin release/X.Y.Z
 ```

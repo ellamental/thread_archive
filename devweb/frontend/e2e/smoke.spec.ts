@@ -7,6 +7,7 @@ test('every panel renders with no console errors and no unmocked calls', async (
   const unhandled = await mockApi(page)
 
   for (const [path, heading] of [
+    ['/', 'Overview'],
     ['/retrieval', 'Retrieval'],
     ['/telemetry', 'Telemetry'],
     ['/lab', 'Search lab'],

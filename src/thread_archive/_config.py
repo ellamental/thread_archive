@@ -205,6 +205,28 @@ def source_enabled(cfg: dict, source_name: str) -> bool:
     return enabled if isinstance(enabled, bool) else False
 
 
+def dev_mode(cfg: dict) -> bool:
+    """Whether this install is being *developed on* rather than merely run.
+
+    Provider format drift is where the difference bites. A provider that grows a
+    new field, block type or line type costs the reader nothing — the value is
+    preserved under the anchor event's ``annotations["unmodeled"]`` — so the
+    finding is a parser to-do for whoever maintains thread-archive, not a fault
+    the operator must act on. On a dev install that to-do is the whole point and
+    the warning fires the moment it lands; everywhere else it waits out a grace
+    window (:data:`.._importers._validation_ledger.ADDITIVE_GRACE_DAYS`), so a
+    routine addition that a release fixes in the meantime is never posted at
+    all. Drift that *loses* content ignores this switch entirely and warns
+    immediately either way.
+
+    ``"dev_mode": true`` in ``config.json``, strict ``True`` like
+    :func:`dev_panels` — a key holding the string ``"false"`` is not a switch.
+    """
+    if not getattr(cfg, "valid", True):
+        return False
+    return cfg.get("dev_mode") is True
+
+
 def dev_panels(cfg: dict) -> bool:
     """Whether the viewer links out to the dev panels.
 

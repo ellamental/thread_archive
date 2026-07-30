@@ -299,6 +299,35 @@ def test_restarts_are_attributed_to_the_daemon_that_paid_them(archive_home) -> N
     ]
 
 
+def test_rebuilds_are_split_by_what_was_rebuilt(archive_home) -> None:
+    """The matrix and the graph rebuild on unrelated triggers and unrelated
+    schedules — one on ingest moving the store's validity token, the other on a
+    stale partition — so a total over both tracks neither."""
+    _write(archive_home, [
+        {"at": _at(10), "kind": "refresh", "what": "matrix", "duration_ms": 4000.0},
+        {"at": _at(12), "kind": "refresh", "what": "graph", "duration_ms": 9000.0},
+        {"at": _at(20), "kind": "refresh", "what": "matrix", "duration_ms": 6000.0,
+         "failed": True},
+    ])
+    out = rr.rebuilds(archive_home, hours=24)
+    assert out["n"] == 3
+    matrix, graph = out["by_what"]
+    assert (matrix["what"], matrix["n"], matrix["failed"]) == ("matrix", 2, 1)
+    assert matrix["max_ms"] == 6000.0 and matrix["total_s"] == 10.0
+    assert (graph["what"], graph["n"]) == ("graph", 1)
+
+
+def test_rebuilds_do_not_leak_into_the_served_distribution(archive_home) -> None:
+    """A refresh is work between requests, not a request. Counting one as served
+    latency would put a multi-second rebuild in a percentile no agent waited on."""
+    _write(archive_home, [
+        {"at": _at(10), "kind": "search", "query": "q", "duration_ms": 40.0},
+        {"at": _at(11), "kind": "refresh", "what": "graph", "duration_ms": 9000.0},
+    ])
+    out = rr.served(archive_home, hours=24)
+    assert out["n"] == 1
+
+
 def test_a_failed_search_still_counts_toward_the_distribution(archive_home) -> None:
     """Dropping slow errors biases every percentile toward the searches that
     happened to succeed."""

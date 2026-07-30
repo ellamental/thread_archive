@@ -7,8 +7,12 @@
 # a local gate (see ci.toml).
 #
 # The suite is model-free (conftest forces the embed/rerank availability gates
-# off), so CI installs only the base + [dev] deps — never the heavy [embeddings]
-# (torch) extra.
+# off), so CI installs only the base deps + the `dev` dependency group — never
+# the heavy [embeddings] (torch) extra.
+#
+# `--group` is PEP 735, which pip gained in 25.1; setup-python pins whatever pip
+# shipped with the interpreter build, so every install step upgrades pip first
+# rather than trusting the runner image's floor.
 
 name: CI
 
@@ -45,14 +49,16 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      # Base + [dev] only. The optional thread-librarian package (curation; its
-      # own repo) is deliberately NOT installed: nothing in this repo may
-      # require it, in CI or anywhere else. The tests that exercise the curated
-      # data plane seed through its write surface and importorskip without it;
-      # the coverage floors are set to hold on this librarian-free run, so a
-      # fork PR needs no secrets and no sibling checkout.
+      # Base + the `dev` group only. The optional thread-librarian package
+      # (curation; its own repo) is deliberately NOT installed: nothing in this
+      # repo may require it, in CI or anywhere else. The tests that exercise the
+      # curated data plane seed through its write surface and importorskip
+      # without it; the coverage floors are set to hold on this librarian-free
+      # run, so a fork PR needs no secrets and no sibling checkout.
       - name: Install
-        run: pip install -e ".[dev]"
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --group dev
 
       - name: Ruff
         run: ruff check .
@@ -89,7 +95,9 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install
-        run: pip install -e ".[dev]"
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --group dev
 
       # Bring up the runner user's systemd instance (+ its runtime dir / bus),
       # which `systemctl --user` needs and a fresh non-login runner lacks.
@@ -159,7 +167,9 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install
-        run: pip install -e ".[dev]"
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --group dev
 
       - name: Package
         run: >

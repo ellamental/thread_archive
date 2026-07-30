@@ -55,8 +55,19 @@ LATENCY_RUNS_FILE = "latency-runs.jsonl"
 #: another, so every run row names its set and every set gets its own baseline
 #: file — one file would mean whichever set ran last defined the reference for
 #: both. :data:`OBSERVED_SET` is the searches agents actually ran
-#: (``latency_replay.py``), and it is the only set measured here.
+#: (``latency_replay.py``), measured deliberately by a human at a terminal.
 OBSERVED_SET = "observed"
+
+#: The regression gate's set (``latency_smoke.py``): a handful of the slowest
+#: recorded calls, run unattended on every commit.
+#:
+#: Deliberately not :data:`OBSERVED_SET`, though it is drawn from the same ledger.
+#: A baseline is only a reference for runs taken the way it was: the gate runs in
+#: the CI sweeper's background scheduling tier while the rest of the sweep is
+#: running, and an interactive replay runs on a box someone is waiting at. The two
+#: measure the same pipeline and disagree by more than any regression worth
+#: catching — so they get separate baselines and neither can move the other's.
+SMOKE_SET = "smoke"
 
 
 def baseline_file(query_set: str) -> str:

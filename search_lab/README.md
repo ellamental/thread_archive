@@ -63,6 +63,7 @@ already measured at this configuration — see "Running the whole bench".)
 | 0 | `tests/test_search_quality.py` + `tests/test_search_recall_shape.py` + `tests/test_reality_mechanisms.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding model | minutes | touching the model arm |
 | 2 | CI arm-liveness probes (`retrieval_eval.py --probes-only`) | live archive | ~a minute (it loads both models) | every commit, on the maintainer's local CI |
+| 2 | CI latency gate (`latency_smoke.py`) | live archive, the slowest recorded calls | ~a minute | every commit, on the maintainer's local CI |
 | 3 | `latency_replay.py` (speed over real traffic), `--behavior` | the live archive | minutes | evaluating a deliberate ranking change |
 | 4 | `python -m search_lab benchmark`; `pytest -m beir` | seven external IR / conversational-memory benchmarks | minutes once the corpora are built; about a day of CPU to build them all the first time | the quality claim — calibrating against published baselines |
 | gate | `python -m search_lab gate --run` | tier 4's recorded numbers vs the checked-in accepted ones | whatever tier 4 costs, plus milliseconds | cutting a release |
@@ -220,6 +221,17 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   the live archive, not a snapshot; `--baseline` sets the reference, and the
   timeseries is tagged `query_set=observed` so it never averages with rows from
   another population.
+- **`latency_smoke.py`** — the same measurement as a *gate*, run unattended by the
+  CI sweeper on every commit (`latency-gate` in `ci.toml`). Replays the slowest
+  recorded calls against a baseline of its own (`query_set=smoke`), reds when they
+  got materially slower, and confirms a breach with a second pass before failing —
+  it shares a machine with everything else the sweep is doing, so one bad window is
+  the likeliest reading of one bad number. Loose on purpose (2× on those queries'
+  own recorded timings): it is here to catch the order-of-magnitude regression that
+  no other row can see, not to police drift. Seeds its own baseline on first run;
+  `--seed` re-establishes it when the archive has genuinely grown into a slower
+  shape. `latency_replay.py` remains the instrument you point at a change —
+  this is the tripwire that notices when nobody did.
 - **`beir_eval.py`** / **`cdr_eval.py`** / **`mtrag_eval.py`** /
   **`haystack_eval.py`** / **`perltqa_eval.py`** — the external
   yardsticks: the real pipeline over public benchmarks, beside their published

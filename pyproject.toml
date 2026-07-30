@@ -24,6 +24,8 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Communications :: Chat",
     "Topic :: Text Processing :: Indexing",
     "Topic :: Utilities",
 ]
@@ -77,20 +79,39 @@ embeddings = [
     "thread-archive[leiden]",
 ]
 # Every runtime feature in one name, for an install that wants the whole product
-# rather than a considered subset. Runtime only — `dev` and `testing` are bench
-# and plugin-author tooling, not features, so they stay out.
+# rather than a considered subset. Runtime only — `testing` is plugin-author
+# tooling, not a feature, so it stays out.
 all = ["thread-archive[embeddings]", "thread-archive[leiden]"]
+# What a provider plugin needs to test itself against the archive: the golden
+# harness and isolated-home fixture in thread_archive.provider.testing. An extra
+# rather than a dependency group, unlike `dev` below: its audience installs
+# thread-archive from the index and never sees this repo, so it has to travel in
+# the published metadata.
+testing = ["pytest>=8.0"]
+
+# The maintainer's toolchain — a PEP 735 group, not an extra, because none of it
+# is a feature of the installed package. An extra is published metadata: every
+# `pip install thread-archive` advertises it, and `pip install thread-archive[dev]`
+# from the index resolves a test toolchain against a wheel that carries no tests.
+# A group is read from this file, so it reaches a checkout (`pip install -e .
+# --group dev`) and nothing else. Needs pip >= 25.1, which is also the floor for
+# the CI and container installs that use it.
+#
 # pyarrow: search_lab/haystack_eval.py reads the BEAM parquet shards. Bench-only —
 # no product code imports it.
 # hypothesis: generated queries against the never-raise contract (tests/test_search_fuzz.py).
+[dependency-groups]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-xdist>=3.6", "pytest-timeout>=2.3", "ruff>=0.6", "mypy>=1.11", "build>=1.2", "pyarrow>=17.0", "hypothesis>=6.100"]
-# What a provider plugin needs to test itself against the archive: the golden
-# harness and isolated-home fixture in thread_archive.provider.testing.
-testing = ["pytest>=8.0"]
 
 [project.urls]
 Homepage = "https://github.com/ellamental/thread_archive"
 Repository = "https://github.com/ellamental/thread_archive"
+# The docs tree, not a single page: install, cli, mcp, providers and format are
+# each the entry point for a different reader, and the index is what lets them
+# find theirs. `main` rather than a tag — it tracks the released code (release
+# PRs are the only thing that moves it), so the link never points at docs for a
+# version nobody can install.
+Documentation = "https://github.com/ellamental/thread_archive/tree/main/docs"
 Changelog = "https://github.com/ellamental/thread_archive/blob/main/CHANGELOG.md"
 Issues = "https://github.com/ellamental/thread_archive/issues"
 

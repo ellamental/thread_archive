@@ -441,11 +441,41 @@ def build(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[CorpusGraph]:
             return entry[1]
         with _BUILD_GUARD:
             _BUILDING.add(key)
+        # Timed around the real build only — every early return above served a
+        # cache (memory, or another process's on-disk entry) and rebuilt nothing.
+        _t0 = time.perf_counter()
+        graph = None
         try:
-            return _build_graph(key, token, knn, min_sim)
+            graph = _build_graph(key, token, knn, min_sim)
+            return graph
         finally:
             with _BUILD_GUARD:
                 _BUILDING.discard(key)
+            _record_graph_refresh(_t0, graph)
+
+
+def _record_graph_refresh(started: float, graph: Optional[CorpusGraph]) -> None:
+    """Log the build to the usage ledger — its cost, and the corpus size that
+    explains the cost. Fail-soft: the graph is best-effort and its telemetry is
+    more so."""
+    try:
+        from . import _contention
+        from .usage import record_refresh
+
+        detail = (
+            {"threads": len(graph.thread_ids), "edges": int(graph.edges),
+             "communities": len(graph.members)}
+            if graph is not None else None
+        )
+        record_refresh(
+            "graph",
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            failed=graph is None,
+            detail=detail,
+            context=_contention.sample(),
+        )
+    except Exception:  # noqa: BLE001 — advisory
+        logger.debug("corpus graph: could not record refresh", exc_info=True)
 
 
 def _build_lock(key: int) -> threading.Lock:

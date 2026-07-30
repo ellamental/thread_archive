@@ -184,12 +184,21 @@ export interface TelemetryBackgroundWork {
   embedded?: number
 }
 
+/** The poll loop's floor: passes that found nothing, rolled up per window. */
+export interface TelemetryIdle {
+  passes: number
+  total_s: number
+  max_ms: number
+  per_pass_ms: number
+}
+
 export interface TelemetryIngest {
   hours: number
   sources: Record<string, TelemetryIngestSource>
   stages: Record<string, number>
   maintenance: TelemetryBackgroundWork
   embed: TelemetryBackgroundWork
+  idle?: TelemetryIdle
   retained_bytes: number
 }
 

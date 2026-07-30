@@ -68,18 +68,63 @@ def test_publishing_with_nobody_listening_is_a_no_op() -> None:
     _tools._publish_call_ms(12.0)  # must not raise
 
 
-def test_a_fast_serve_writes_no_row(archive_home) -> None:
+def test_a_fast_serve_is_sampled_rather_than_recorded_per_call(archive_home) -> None:
     """A row per search saying "the wrapper cost nothing" would be the largest
-    thing in the ledger and would say nothing."""
+    thing in the ledger. A thin sample of them is a different thing: without any,
+    the file holds only the expensive calls, so it can say what a bad serve costs
+    and not what a normal one does — a tail with no body under it.
+
+    The sampler is this test's own (the seam ``_served`` exposes beside
+    ``throttle``), so the assertion is about the rule rather than about which
+    phase of the process-wide counter the test happened to run at."""
     gate = Gate()
+    sampler = server.ServeSampler(every=4)
+
+    def quick(**kwargs) -> str:
+        _tools._publish_call_ms(0.0)
+        return "ok"
+
+    for _ in range(8):
+        server._served(quick, gate, sampler)()
+    assert gate.kicks == 8, "the wrapper kicks every call"
+
+    rows = _serve_rows(archive_home)
+    assert len(rows) == 2, "one row per four sub-floor calls, not one per call"
+    for row in rows:
+        # Marked, because a reader computing a distribution has to weight it by
+        # the calls it stands for. An unmarked row is one of the whole population
+        # above the floor; this one stands for four.
+        assert row["sampled"] == 4
+        assert row["overhead_ms"] < server._SERVE_OVERHEAD_FLOOR_MS
+
+
+def test_an_unsampled_fast_serve_still_writes_nothing(archive_home) -> None:
+    """The floor is doing its job between samples — which is the whole reason the
+    sample is thin enough to afford."""
+    gate = Gate()
+    sampler = server.ServeSampler(every=4)
+    assert sampler.take() == 4, "the first call of a cycle is the sampled one"
+
+    def quick(**kwargs) -> str:
+        _tools._publish_call_ms(0.0)
+        return "ok"
+
+    server._served(quick, gate, sampler)()
+    assert _serve_rows(archive_home) == []
+
+
+def test_a_real_overhead_row_is_never_marked_sampled(archive_home) -> None:
+    """Above the floor every call is recorded, so weighting one would double-count
+    it. Only the sub-floor rows stand for calls that were not written."""
+    gate = Gate(cost_s=0.02)
 
     def quick(**kwargs) -> str:
         _tools._publish_call_ms(0.0)
         return "ok"
 
     server._served(quick, gate)()
-    assert gate.kicks == 1, "the wrapper still kicks; it just has nothing to report"
-    assert _serve_rows(archive_home) == []
+    (row,) = _serve_rows(archive_home)
+    assert "sampled" not in row
 
 
 def test_real_overhead_is_recorded_against_the_tool_it_wrapped(archive_home) -> None:
@@ -123,8 +168,10 @@ def test_a_fast_failure_is_as_uninteresting_as_a_fast_success(archive_home) -> N
         _tools._publish_call_ms(0.0)
         raise RuntimeError("nope")
 
+    sampler = server.ServeSampler(every=4)
+    sampler.take()  # spend the cycle's sample, so this call is an ordinary one
     try:
-        server._served(boom, Gate())()
+        server._served(boom, Gate(), sampler)()
     except RuntimeError:
         pass
     assert _serve_rows(archive_home) == []

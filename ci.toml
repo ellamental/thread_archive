@@ -131,6 +131,24 @@ argv = ["{repo}/.venv/bin/python", "{repo}/search_lab/retrieval_eval.py",
         "--probes-only", "--require-semantic"]
 timeout = 600
 
+# The speed half of that gate, and the one exception to the no-metric rule above:
+# a millisecond is not graded by the ranker that produced it, so it can be checked
+# here without the circularity that keeps quality numbers on the public bench.
+#
+# Replays the slowest calls agents actually made (from the usage ledger, with their
+# recorded parameters) against a baseline recorded in THIS lane, and reds when they
+# got materially slower. What it is protecting against is the regression class no
+# other row can see: search that returns exactly the right hits, ever slower.
+#
+# Noise is the real design constraint — it runs on the operator's live machine
+# beside the rest of the sweep — so it is loose by construction: a 2x ratchet on
+# those queries' own recorded timings, and a confirm re-measure before any failure.
+# It seeds its own baseline on first run and passes. See the module docstring.
+[[suite]]
+name = "latency-gate"
+argv = ["{repo}/.venv/bin/python", "{repo}/search_lab/latency_smoke.py"]
+timeout = 900
+
 # The release lane: build the wheel + sdist, prove their contents, install the
 # wheel into a clean venv, and run the real CLI lifecycle from it. Deselected
 # from the default pytest run (see pyproject addopts), so it gets its own row.

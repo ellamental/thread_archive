@@ -19,12 +19,17 @@ lives beside the other home-root ledgers (``capture-skips.jsonl``,
 ``validation-drift.jsonl``), outside ``truth/`` — it is operational telemetry,
 not archive data, and no backup/verify path depends on it.
 
-Three record kinds, distinguished by ``kind``: ``search`` and ``read`` for the two
-tools, and ``warm`` for one :func:`thread_archive._retrieval.warm_models` pass.
+Four record kinds, distinguished by ``kind``: ``search`` and ``read`` for the two
+tools, ``warm`` for one :func:`thread_archive._retrieval.warm_models` pass, and
+``refresh`` for one background rebuild of the vector matrix or the corpus graph.
 The warm row is here rather than in its own file because it is the other half of
 the same latency story — the startup cost the model arms carry, recorded where it
 is paid on purpose, against the cold flags that mark a request unlucky enough to
-pay it inside the call.
+pay it inside the call. The refresh row is the third: work a process does *between*
+requests that every request beside it pays for.
+
+(A fifth, ``serve``, is written by a serving surface rather than by the engine —
+what the front door cost around a tool call, see :func:`record_serve`.)
 
 Append-only JSONL, advisory, fail-soft — a ledger write must never break the
 retrieval call it describes. ``THREAD_ARCHIVE_USAGE_LOG=0`` disables it. At
@@ -347,6 +352,56 @@ def record_warm(
     record.update({k: round(v, 1) for k, v in stages.items()})
     if failed:
         record["failed_stages"] = failed
+    if context:
+        record.update(context)
+    _append(record)
+
+
+def record_refresh(
+    what: str,
+    *,
+    duration_ms: float,
+    failed: bool = False,
+    detail: Optional[dict[str, Any]] = None,
+    context: Optional[dict[str, Any]] = None,
+) -> None:
+    """Record one background rebuild — the vector matrix (``what="matrix"``) or the
+    corpus graph (``what="graph"``) — and what it cost.
+
+    These are the two pieces of work in a serving process that are neither a
+    request nor a startup, and until they are recorded they exist in this ledger
+    only as somebody else's problem: a search that ran beside one carries
+    ``refreshing`` in its contention sample, which names the rebuild and says
+    nothing about it. How long it ran, how often it runs, and whether it is
+    getting slower are all invisible from the field that reports it — so the one
+    thing in the process most able to make a search slow is the one thing with no
+    series of its own.
+
+    ``uptime_s`` (from ``context``) is what makes the pair readable: a refresh row
+    and the search rows around it share a process, so a rebuild's window can be
+    laid over the searches it overlapped rather than inferred from a boolean on
+    each of them.
+
+    ``detail`` is whatever the rebuild can say about its own size — the row count
+    it packed, the nodes and edges it built. A duration without it is the same
+    trap ``chars`` exists to close on reads: the corpus grows, so a rebuild that
+    costs more may be doing more, and only the size says which.
+
+    Cheap to write (one row per rebuild, not per request) and fail-soft like every
+    other writer here: a background thread's telemetry must never take a search's
+    process down with it."""
+    if not _enabled():
+        return
+    record: dict[str, Any] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "kind": "refresh",
+        "what": what,
+        "duration_ms": round(duration_ms, 1),
+    }
+    if failed:
+        record["failed"] = True
+    if detail:
+        record.update(detail)
     if context:
         record.update(context)
     _append(record)

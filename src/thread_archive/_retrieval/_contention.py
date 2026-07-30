@@ -45,7 +45,33 @@ Three signals, each cheap enough to take on every search:
     came from one process, and a threshold for "cold" can be chosen when the
     question is asked rather than baked in when it is recorded.
 
-The other fields are omitted unless they say something (no in-flight peers, no
+``load1``
+    The machine's one-minute load average. Every other signal here is scoped to
+    this process, and most of what competes for this box is not: a test suite, a
+    sweep of the family's CI, a second agent's session, an editor indexing. The
+    same search measures milliseconds on a quiet box and seconds beside any of
+    them, and without this the two are the same row — which makes *every* latency
+    percentile over the ledger a mixture of the pipeline and the afternoon.
+
+    Raw rather than divided by the core count: it is the number the operator
+    already reads off ``uptime``, and cores are a property of the machine the
+    home lives on rather than of a call it served. The one-minute window is the
+    shortest the kernel keeps and still averages over more than a fast search;
+    for a slow one — which is the case worth diagnosing — it covers most of it.
+
+``rss_mb``
+    Peak resident memory of the serving process. The model arms are hundreds of
+    megabytes each and the vector matrix is read whole into memory, so a process
+    serving search is the largest thing on the box, and the point where the
+    machine starts swapping is a latency finding that no timer can see.
+
+    A high-water mark (the kernel's, since process start), not an instantaneous
+    reading: it never falls, so a row does not say the memory is *currently*
+    held. That is the honest cheap number available on every platform this runs
+    on, and it is the one that answers the question worth asking — whether this
+    process has ever been big enough to hurt the machine it shares.
+
+The remaining fields are omitted unless they say something (no in-flight peers, no
 refresh, a long-quiet WAL), so a search on an idle machine records nothing and
 their presence carries the signal. That economy has a cost worth naming: an absent
 field means *nothing to report*, never *not measured*, and the two are only the
@@ -54,8 +80,11 @@ span — not only the ones serving a request. A warm pass loads a model and runs
 real search, and is the heaviest thing a process ever does; a caller that samples
 without entering makes its own work invisible to everyone else's peak, and the
 ledger then reads idle on a machine that was not.
-``uptime_s`` is the exception and is always present: there is no reading of it that
-means *nothing to report*, and it is the denominator the others are read against.
+
+``uptime_s``, ``load1`` and ``rss_mb`` are the exceptions and are always present:
+there is no reading of any of them that means *nothing to report*, and they are the
+denominators the others are read against — the process's cache state, the machine's
+own busyness, and what this process is costing it.
 """
 
 from __future__ import annotations
@@ -198,6 +227,14 @@ def sample() -> dict[str, Any]:
     arrives separately from :func:`peak_inflight`."""
     rec: dict[str, Any] = {"uptime_s": round(time.monotonic() - _STARTED, 1)}
     try:
+        from .._ops import machine
+
+        load = machine.load1()
+        if load is not None:
+            rec["load1"] = load
+        rss = machine.rss_mb()
+        if rss is not None:
+            rec["rss_mb"] = rss
         busy = _refreshing()
         if busy:
             rec["refreshing"] = busy
