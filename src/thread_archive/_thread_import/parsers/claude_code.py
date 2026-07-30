@@ -1031,8 +1031,8 @@ class ClaudeCodeParser(ProviderParser):
         session that opened one PR reads as one association, not as forty.
 
         Provenance, not chatter: this is the same class of fact as a commit an
-        event's output shows being created, and it folds into the ``event_prs``
-        projection behind ``thread_search(pr=...)``.
+        event's output shows being created, and it folds into the same
+        ``event_git_refs`` projection, behind ``thread_search(pr=...)``.
         """
         repo = line.get("prRepository")
         number = line.get("prNumber")

@@ -250,7 +250,7 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
         "progress",  # hook/tool progress telemetry (e.g. PostToolUse hook callbacks)
         "attachment",  # non-queued_command attachment sub-kinds, preserved as hidden system records
         "model_change",  # a manual /model switch, preserved so the archive can show it
-        "pr_link",  # the pull request a session is working on (folded into event_prs)
+        "pr_link",  # the pull request a session is working on (folded into event_git_refs)
         "unknown_line",  # verbatim preservation of an unmodeled line kind (see below)
     },
     # Line kinds the parser knowingly preserves verbatim without modeling:

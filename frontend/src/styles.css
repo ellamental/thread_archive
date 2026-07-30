@@ -1441,3 +1441,14 @@ a.session-link:hover { color: var(--accent); }
   font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-all;
   margin: 0;
 }
+
+/* A rail link that leaves this origin — the dev panels on their own server.
+   Pushed to the bottom of the nav and dimmed: it is a maintainer's door, shown
+   only when the operator asked for it (src/dev.ts). */
+.rail-link.rail-away {
+  margin-top: 0.5rem;
+  opacity: 0.7;
+}
+.rail-link.rail-away:hover {
+  opacity: 1;
+}

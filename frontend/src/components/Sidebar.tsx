@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { api, type ThreadListItem } from '../api'
-import { devPanels } from '../dev'
+import { DEV_PANELS_URL, devPanels } from '../dev'
 import { SearchBox } from './SearchBox'
 
 function fmtDate(iso: string | null): string {
@@ -78,31 +78,12 @@ export function Sidebar({
           import
         </Link>
         {dev && (
-          <>
-            <Link
-              className={'rail-link' + (pathname === '/retrieval' ? ' active' : '')}
-              to="/retrieval"
-              onClick={onClose}
-            >
-              retrieval
-            </Link>
-            <Link
-              className={'rail-link' + (pathname === '/telemetry' ? ' active' : '')}
-              to="/telemetry"
-              onClick={onClose}
-            >
-              telemetry
-            </Link>
-            <Link
-              // A run's own page is still the lab, so the rail keeps its mark:
-              // an unlit nav on a page reached from it reads as having left.
-              className={'rail-link' + (pathname.startsWith('/lab') ? ' active' : '')}
-              to="/lab"
-              onClick={onClose}
-            >
-              lab
-            </Link>
-          </>
+          // A plain anchor, not a Link: the panels are a different origin, and
+          // client-side routing to them would ask this app for a page it does
+          // not have. Marked as leaving, because it is.
+          <a className="rail-link rail-away" href={DEV_PANELS_URL} onClick={onClose}>
+            dev panels ↗
+          </a>
         )}
       </nav>
       <div className="rail-head">

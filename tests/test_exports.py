@@ -7,13 +7,18 @@ from __future__ import annotations
 import json
 import zipfile
 
+import pytest
 from sqlalchemy import select
 
 from thread_archive._importers.exports import (
+    MAX_EXPANSION_RATIO,
+    RATIO_FLOOR_BYTES,
+    ExportTooLarge,
     classify_export,
     import_chatgpt_export,
     import_claude_ai_export,
     import_xai_export,
+    read_member,
 )
 from thread_archive._store import Event, Thread, get_session, init_db
 
@@ -219,6 +224,82 @@ def test_classify_falls_back_to_conversation_shape(tmp_path) -> None:
     with zipfile.ZipFile(empty, "w") as zf:
         zf.writestr("conversations.json", "[]")
     assert classify_export(empty) is None
+
+
+# ── decompression bombs ──────────────────────────────────────────────────────
+# A drop is untrusted: a file downloaded from a provider, and on the viewer's
+# upload path an HTTP request body. Every loader reads a member whole, so the
+# ceiling on what a member may expand to is the only thing between a 200 KB ZIP
+# and the death of the process that also cohosts the viewer and every other
+# source's ingest.
+
+
+def _bomb(path, name: str = "conversations.json", *, expanded: int = 64 << 20) -> None:
+    """A ZIP whose one member is highly compressible — the shape of a bomb, at a
+    size a test can afford."""
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        zf.writestr(name, b"A" * expanded)
+
+
+def test_read_member_refuses_a_bomb(tmp_path) -> None:
+    path = tmp_path / "bomb.zip"
+    _bomb(path)
+    with zipfile.ZipFile(path) as zf:
+        info = zf.getinfo("conversations.json")
+        # The premise: a ratio no honest conversation JSON reaches.
+        assert info.file_size / info.compress_size > MAX_EXPANSION_RATIO
+        with pytest.raises(ExportTooLarge):
+            read_member(zf, "conversations.json")
+
+
+def test_read_member_passes_an_honestly_compressed_member(tmp_path) -> None:
+    """The bound is on expansion, not on size: a real export is large and
+    compresses like text, and must read whole."""
+    path = tmp_path / "real.zip"
+    payload = json.dumps([_CHATGPT_CONV] * 500).encode()
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("conversations.json", payload)
+    with zipfile.ZipFile(path) as zf:
+        assert read_member(zf, "conversations.json") == payload
+
+
+def test_read_member_ignores_ratio_for_a_small_member(tmp_path) -> None:
+    """A small member is not a bomb whatever it compressed by — a repetitive
+    little sidecar must not trip the ratio."""
+    path = tmp_path / "small.zip"
+    payload = b"x" * (RATIO_FLOOR_BYTES // 2)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        zf.writestr("users.json", payload)
+    with zipfile.ZipFile(path) as zf:
+        assert read_member(zf, "users.json") == payload
+
+
+def test_a_lying_header_does_not_buy_expansion(tmp_path) -> None:
+    """Understating the uncompressed size is not a way around the bound.
+
+    The read is bounded twice over: this module stops at what the member may
+    expand to, and zipfile itself stops at what the entry declared and then fails
+    the CRC. So a bomb wearing a small header delivers the small size and a
+    refusal, never the expansion — which is why the bound may be derived from the
+    header without trusting it."""
+    path = tmp_path / "liar.zip"
+    _bomb(path)
+    raw = path.read_bytes()
+    truthful = zipfile.ZipFile(path).getinfo("conversations.json").file_size
+    path.write_bytes(raw.replace(truthful.to_bytes(4, "little"), (1024).to_bytes(4, "little")))
+    with zipfile.ZipFile(path) as zf:
+        assert zf.getinfo("conversations.json").file_size == 1024  # the lie
+        with pytest.raises((ExportTooLarge, zipfile.BadZipFile)):
+            read_member(zf, "conversations.json")
+
+
+def test_a_bomb_is_not_a_recognized_export(tmp_path) -> None:
+    """End to end: nothing claims it. The upload endpoint refuses on that answer
+    and a hand-dropped copy is quarantined, neither of which requires anyone to
+    have read the member."""
+    path = tmp_path / "bomb.zip"
+    _bomb(path)
+    assert classify_export(path) is None
 
 
 def test_chatgpt_zip_import(archive_home) -> None:

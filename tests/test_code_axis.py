@@ -868,6 +868,74 @@ def test_git_helpers_fail_soft(archive_home, tmp_path):
     assert code._previous_touch("deadbeef", str(tmp_path), ["a.py"]) == ({}, False)
 
 
+def test_git_runs_nothing_for_a_directory_that_is_not_one(archive_home, tmp_path, monkeypatch):
+    """The directory git is pointed at arrives from a tool argument (``repo=``) or
+    from archived session metadata (a recorded ``cwd``), so a value naming no
+    directory is answered here rather than spent on a subprocess.
+
+    Observed through a ``git`` stand-in that is the only executable on ``PATH``
+    and logs the argv it was given: what is asserted is the real command line the
+    real ``subprocess.run`` produced, including the config pinning every
+    invocation carries."""
+    bin_dir = tmp_path / "stub-bin"
+    bin_dir.mkdir()
+    log = tmp_path / "git.log"
+    stub = bin_dir / "git"
+    stub.write_text(f'#!/bin/sh\necho "$*" >> "{log}"\n', encoding="utf-8")
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    a_file = tmp_path / "not-a-dir"
+    a_file.write_text("", encoding="utf-8")
+    assert code._git(["rev-parse", "HEAD"], str(a_file)) is None
+    assert code._git(["rev-parse", "HEAD"], str(tmp_path / "absent")) is None
+    assert not log.exists(), "a path naming no directory still spawned git"
+
+    # A real directory does reach git — carrying the pinning, ahead of -C.
+    code._git(["rev-parse", "HEAD"], str(tmp_path))
+    argv = log.read_text(encoding="utf-8").split()
+    assert argv == [*code._GIT_SAFE, "-C", str(tmp_path), "rev-parse", "HEAD"]
+
+
+@pytest.mark.skipif(not _git_available(), reason="git not installed")
+def test_git_refuses_the_config_of_the_repository_it_is_pointed_at(archive_home, tmp_path):
+    """Git takes instructions from the config of whatever repository it reads, and
+    that repository is caller- or content-named — a ``repo=`` argument on the
+    search tool, or a ``cwd`` some archived session recorded. The keys that can
+    name a command to run are pinned off on the command line, which outranks any
+    config file.
+
+    Probed with ``status``, which is *not* one of the commands the code axis runs.
+    That is deliberate: none of the four it does run reaches these keys today, so
+    a test built on one of them would pass with the guard removed. ``status``
+    refreshes the index and so does fire ``core.fsmonitor`` — it is the shortest
+    honest demonstration that the pinning works, and what makes this a real test
+    of the guard rather than of today's command list.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for argv in (["init", "-q"], ["config", "user.email", "t@example.com"],
+                 ["config", "user.name", "t"]):
+        subprocess.run(["git", *argv], cwd=repo, check=True)
+    (repo / "a.py").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "a.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "first"], cwd=repo, check=True)
+
+    fired = tmp_path / "fired"
+    for key in ("core.fsmonitor", "core.alternateRefsCommand", "diff.external"):
+        subprocess.run(["git", "config", key, f"touch {fired}"], cwd=repo, check=True)
+
+    assert code._git(["status", "--porcelain"], str(repo)) is not None
+    assert not fired.exists(), "the repository's config named a command and it ran"
+
+    # And the reads the code axis actually makes still work against it.
+    sha = (code._git(["rev-parse", "HEAD"], str(repo)) or "").strip()
+    assert sha
+    facts = code._git_commit_facts(sha, str(repo))
+    assert facts is not None and facts["files"] == ["a.py"]
+    assert not fired.exists()
+
+
 @pytest.mark.skipif(not _git_available(), reason="git not installed")
 def test_candidate_repos_come_from_the_directories_sessions_ran_in(archive_home, tmp_path):
     """The archive already knows the user's repositories — every session records its

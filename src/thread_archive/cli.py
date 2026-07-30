@@ -437,12 +437,14 @@ def cmd_web(args: argparse.Namespace) -> int:
     The viewer runs inside the always-on watcher process (``watch --web``), so
     there is one read URL over one SQLite engine and this verb only points at it.
 
-    ``web dev`` turns the dev panels on before opening it — the retrieval report
-    and the search lab, whose subject is the search pipeline rather than the
-    archive. That is a line in ``config.json`` (``"dev_panels": true``) which the
-    server stamps onto every shell it serves, so the choice outlives the browser
-    and the watcher both; ``web --no-dev`` puts it back. Nothing restarts: the
-    next page load reads the new line.
+    ``web dev`` puts a link to the dev panels in the viewer's rail before opening
+    it — the retrieval report, telemetry and the search lab, which are their own
+    app on their own server (``python -m devweb``). This switch does not start or
+    gate that server; it decides whether this viewer's navigation names it. The
+    answer is a line in ``config.json`` (``"dev_panels": true``) which the server
+    stamps onto every shell it serves, so the choice outlives the browser and the
+    watcher both; ``web --no-dev`` puts it back. Nothing restarts: the next page
+    load reads the new line.
     """
     import webbrowser
 
@@ -458,7 +460,7 @@ def cmd_web(args: argparse.Namespace) -> int:
             return 1
         cfg["dev_panels"] = args.mode == "dev"
         path = save_config(cfg, args.home)
-        print(f"dev panels {'on' if dev_panels(cfg) else 'off'} ({path})")
+        print(f"dev-panel link {'on' if dev_panels(cfg) else 'off'} ({path})")
 
     url = f"http://127.0.0.1:{args.port}"
     print(url)
@@ -2023,17 +2025,16 @@ def build_parser(*, has_viewer: Optional[bool] = None) -> argparse.ArgumentParse
         # The switch is written to the archive's own config, so this verb needs to
         # know which home it is opening.
         _add_home_arg(p_web)
-        # `web dev` reads as a mode, not a flag, which is what it is — and leaves
-        # room for other dev pages to join the same switch. The default is None
-        # rather than False so a plain `web` opens the viewer without restating a
-        # preference already written down.
+        # `web dev` reads as a mode, not a flag, which is what it is. The default
+        # is None rather than False so a plain `web` opens the viewer without
+        # restating a preference already written down.
         p_web.add_argument(
             "mode", nargs="?", choices=["dev"], default=None,
-            help="'dev' turns on the dev panels (retrieval report, search lab)",
+            help="'dev' adds a rail link to the dev panels (python -m devweb)",
         )
         p_web.add_argument(
             "--no-dev", dest="no_dev", action="store_true",
-            help="turn the dev panels back off",
+            help="take the dev-panel link back out of the rail",
         )
         p_web.set_defaults(func=cmd_web)
 

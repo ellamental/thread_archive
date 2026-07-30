@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .. import _tools
 from .._config import ENV_MCP_INGEST
@@ -325,18 +326,55 @@ def plan_serve(argv: Optional[Sequence[str]] = None) -> ServePlan:
     return ServePlan(transport="streamable-http", warm=warm, host=args.host, port=args.port)
 
 
+def transport_security(plan: ServePlan) -> TransportSecuritySettings:
+    """The ``Host``/``Origin`` allow-list this bind serves behind.
+
+    DNS-rebinding defense, the same one the web viewer implements by hand: a
+    malicious page points its own domain at 127.0.0.1 and reads the archive
+    through the victim's browser, but the browser still sends that domain as
+    ``Host``, so requiring a loopback name blocks it.
+
+    Built here from the *planned* host rather than left to the SDK's own
+    auto-enable, which reads the host handed to the ``FastMCP`` constructor. This
+    server object is constructed at import, before a command line has been read,
+    so that host is always the default — and a deliberate non-loopback bind would
+    otherwise serve behind a loopback-only allow-list and refuse every request it
+    accepted.
+
+    A non-loopback bind is the deliberate ``THREAD_ARCHIVE_MCP_NONLOCAL`` opt-in,
+    and this server cannot know the names it will legitimately be reached by, so
+    the check comes off — exactly as the viewer's ``Host`` check does under its
+    own opt-in. Exposing an unauthenticated full read of the archive is the act
+    that accepts that.
+    """
+    if plan.host not in LOOPBACK_HOSTS:
+        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    # Both forms of each name: the ``:*`` patterns are the SDK's port wildcard,
+    # and the bare entries catch a client that reached a default port and sent no
+    # port in the header.
+    hosts = [f"{h}:*" for h in LOOPBACK_HOSTS] + list(LOOPBACK_HOSTS)
+    origins = [f"http://{h}" for h in hosts]
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        allowed_origins=origins,
+    )
+
+
 def apply_settings(plan: ServePlan) -> None:
     """Point the server at the plan's bind, ready for its HTTP transport.
 
     Stateless + JSON responses: each request is self-contained (no held-open
     per-client SSE stream or server-side session to track across many agents),
     and the read-only tools have nothing to push back. ``run()`` reads these off
-    ``mcp.settings`` when it starts, so they are set before it is called.
+    ``mcp.settings`` when it starts, so they are set before it is called — which
+    is also why the transport's allow-list is set here and not at construction.
     """
     mcp.settings.host = plan.host
     mcp.settings.port = plan.port
     mcp.settings.stateless_http = True
     mcp.settings.json_response = True
+    mcp.settings.transport_security = transport_security(plan)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:

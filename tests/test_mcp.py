@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 
 import pytest
@@ -417,6 +418,42 @@ def test_plan_http_warms_and_serves_streamable() -> None:
     assert mcp.settings.stateless_http is True and mcp.settings.json_response is True
 
 
+def test_loopback_bind_serves_behind_a_rebinding_allowlist() -> None:
+    """A loopback bind validates Host and Origin.
+
+    DNS-rebinding defense: a page that points its own domain at 127.0.0.1 reaches
+    this port through the victim's browser, and the browser still sends that
+    domain as Host. The allow-list is what makes that request unservable.
+    """
+    settings = server.transport_security(ServePlan(host="127.0.0.1", port=8788))
+    assert settings.enable_dns_rebinding_protection is True
+    # Both forms of each loopback name: the SDK's port wildcard, and the bare
+    # entry for a client that sent no port.
+    for name in server.LOOPBACK_HOSTS:
+        assert name in settings.allowed_hosts and f"{name}:*" in settings.allowed_hosts
+        assert f"http://{name}:*" in settings.allowed_origins
+    assert not any("evil" in h for h in settings.allowed_hosts)
+
+
+def test_apply_settings_builds_the_allowlist_from_the_planned_host(monkeypatch) -> None:
+    """The allow-list follows the bind the command line asked for.
+
+    The SDK derives its own from the host handed to the FastMCP constructor, and
+    this server is constructed at import — before any command line has been read.
+    Left to that, a deliberate non-loopback bind would serve behind a
+    loopback-only allow-list and refuse every request it accepted.
+    """
+    monkeypatch.setenv("THREAD_ARCHIVE_MCP_NONLOCAL", "1")
+    exposed = server.plan_serve(["--http", "--host", "1.2.3.4"])
+    server.apply_settings(exposed)
+    # Deliberately exposed: this server cannot know the names it is legitimately
+    # reached by, so the check comes off rather than refusing every real client.
+    assert mcp.settings.transport_security.enable_dns_rebinding_protection is False
+
+    server.apply_settings(server.plan_serve(["--http", "--host", "127.0.0.1"]))
+    assert mcp.settings.transport_security.enable_dns_rebinding_protection is True
+
+
 def test_plan_http_refuses_nonloopback_host_without_optin(monkeypatch, capsys) -> None:
     # The server is unauthenticated full read of the archive: binding beyond
     # loopback must be an explicit opt-in, exactly like the web viewer.
@@ -557,6 +594,24 @@ def test_http_server_serves_the_shared_streamable_transport(archive_home) -> Non
                         "params": {"name": "thread_read",
                                    "arguments": {"thread_id": ta.search("hello")[0]["thread_id"]}}})
         assert "hello mcp" in json.dumps(called["result"])
+
+        # DNS rebinding, on the real transport: a page on any domain can resolve
+        # that domain to 127.0.0.1 and reach this port through the victim's
+        # browser — which still sends the attacking domain as Host. The whole
+        # archive is behind this port with no auth, so the request must not be
+        # served. Asserted against a running server rather than the settings
+        # object: what matters is that the transport enforces it.
+        rebound = urllib.request.Request(
+            f"http://127.0.0.1:{port}/mcp",
+            data=json.dumps({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}).encode(),
+            headers={"Content-Type": "application/json",
+                     "Accept": "application/json, text/event-stream",
+                     "Host": "archive.evil.example.com"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(rebound, timeout=30)
+        assert caught.value.code in (400, 421, 403)
+        caught.value.close()  # the error response holds the socket open
     finally:
         proc.terminate()
         proc.wait(timeout=30)

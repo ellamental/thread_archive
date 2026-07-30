@@ -3,14 +3,15 @@ import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 
 /**
- * Stamps the shell with the dev-panel marker `src/dev.ts` reads.
+ * Stamps the shell with the marker `src/dev.ts` reads — the one that decides
+ * whether the rail offers a link over to the dev panels.
  *
- * In the shipped viewer that stamp comes from the server, off the operator's
- * config line, so a production build must not carry it — the whole point is
- * that an install has no dev panels. Two places want it anyway: `npm run dev`,
- * where working on those pages is the reason the dev server is up, and the
- * browser suite's build (`ARCHIVE_DEV_PANELS=1`, set by playwright.config.ts),
- * which drives them through a real production bundle.
+ * In a served viewer that stamp comes from the server, off the operator's config
+ * line, so a production build must not carry it: an install has no dev panels to
+ * link to. Two places want it anyway — `npm run dev`, where working on the rail
+ * is the reason the dev server is up, and the browser suite's build
+ * (`ARCHIVE_DEV_PANELS=1`, set by playwright.config.ts), which drives the link
+ * through a real production bundle.
  */
 function devPanelsMeta(): Plugin {
   return {

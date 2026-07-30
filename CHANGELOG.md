@@ -2,6 +2,107 @@
 
 ## Unreleased
 
+- **The dev panels are their own server now — `python -m devweb` on :8789.**
+  `/retrieval`, `/telemetry` and `/lab` report on how the archive is *doing*
+  rather than what it holds, and they were routes inside the archive's own
+  viewer, mounted by a `dev_panels` line in `config.json`. That flag was doing
+  two jobs badly: the viewer's bundle carried all four views whether or not
+  anyone had asked, and the watcher serving the archive also served the
+  instruments. The split is structural now — different app, different bundle,
+  different process, different port, `devweb/` rather than
+  `src/thread_archive/_web/`. The viewer's `/api/retrieval`, `/api/telemetry` and
+  `/api/search-lab*` answer `404`, its bundle carries none of those views, and its
+  app has no routes for the addresses — stamped or not.
+
+  `_dev/` went with them. It existed only as a fail-soft bridge from inside the
+  shipped package to `search_lab/` in the source tree; devweb sits beside the lab
+  and imports it directly, which is what a tool that ships with neither is free
+  to do. The other direction is untouched: nothing in `src/thread_archive`
+  imports `devweb`, and devweb reuses the viewer's request guards
+  (`_host_allowed`, the security headers) rather than keeping a second copy of
+  the DNS-rebinding defense.
+
+  The viewer's bundle drops 646 KB → 592 KB. That is the smaller half of the
+  win — `_web` already shipped in no wheel — and the point is the boundary: the
+  archive's server serves the archive.
+
+  `dev_panels` survives, doing one job instead of two. It no longer mounts
+  anything — nothing in the viewer's bundle could mount a different app — it
+  decides whether the viewer's rail carries a `dev panels ↗` link over to
+  `http://127.0.0.1:8789`. Same line in `config.json`, same `web dev` /
+  `web --no-dev` verbs that write it, same per-request shell stamp, same strict
+  `True` (a key holding the string `"false"` still reads as off). Without it the
+  rail does not name the panels at all, which for someone who came to read their
+  conversations is one less unexplained word; with it the link is an absolute
+  href, because it leaves the origin. The switch moves a link and nothing else:
+  it cannot start that server, and it cannot bring the pages back.
+
+  devweb's own bundle is deliberately **not** committed, unlike the viewer's. The
+  viewer commits one because an install must serve a UI without node; nothing
+  installs this, so a committed bundle would be diff noise on every frontend edit
+  and nothing more. `devweb/static/` is gitignored and the server names the build
+  command when it is missing. Suites: `tests/test_devweb.py` drives the router
+  socket-free under the `viewer` marker (so the install lane stands it down with
+  every other test of a surface that does not ship), plus `devweb-typecheck`,
+  `devweb-test` and `devweb-e2e` rows — the browser lane came across with the
+  spec that drills from the lab's run ledger into one run, on preview port 4175
+  so it runs beside the viewer's. No committed-bundle byte check, though: that
+  row exists for the viewer because an install has to serve the bundle it
+  committed, and nothing installs this.
+
+- **Security pass over the edges — the untrusted inputs that reach a daemon.** A
+  review of the surfaces where something outside the single-user trust model gets
+  a say, and six fixes for the places the code and `SECURITY.md` had drifted
+  apart:
+
+  - **A dropped export can no longer be a decompression bomb.** Every loader read
+    a ZIP member whole so a parser could see it, and the only size check anywhere
+    was the upload endpoint's disk-headroom test against the *compressed* body.
+    Measured: a 204 KB ZIP took classification alone to 857 MB resident, and
+    classification runs inline in the web server's request thread — so the
+    process it kills is the watcher, which also cohosts the viewer and every
+    other source's ingest. Members are now read in chunks against a ceiling and
+    an expansion ratio, measured on bytes actually decompressed rather than on
+    what the entry declares. A bomb classifies as no provider's export, which
+    the upload refuses and the drop watcher quarantines.
+  - **`archive-mcp --http` owns its DNS-rebinding allow-list instead of
+    inheriting one.** The SDK derives its allow-list from the host handed to the
+    `FastMCP` constructor, and this server is constructed at import — before a
+    command line has been read. So the deliberate `THREAD_ARCHIVE_MCP_NONLOCAL`
+    bind was serving behind a loopback-only allow-list and answering `421` to
+    every request it accepted, and the protection on the ordinary bind was an
+    accident of construction order rather than a decision. The allow-list is now
+    built from the planned host, and the `mcp` floor moved to `>=1.10` — the
+    first release carrying `transport_security` at all, below which the whole
+    check silently did not exist.
+  - **The code axis no longer takes instructions from the repository it reads.**
+    Resolving a commit to the sessions that built it means running `git` in a
+    directory named by a `repo=` tool argument or by a `cwd` some archived
+    session recorded — the one place archived content reaches a program that
+    reads config files for commands to run. The keys that can name one are pinned
+    off on the command line, which outranks any config file, and a path naming no
+    directory is refused without spawning anything. `SECURITY.md` now says this
+    surface exists rather than leaving "the tools are read-only" to cover it.
+  - **A blob is served as the type its URL named, and is sandboxed when
+    navigated to.** One content can be stored under several extensions (the same
+    bytes are one message's `image/png` and another's `image/svg+xml`), and the
+    route resolved by hash alone — so a link that said `.png` could be answered
+    with the SVG's Content-Type. Blob responses also carry `sandbox`, because a
+    stored SVG opened at full size is a document on the viewer's own origin and
+    the page policy only stops it scripting, not painting.
+  - **A declared provider's `path` joins the end of `sys.path`, not the front.**
+    A declaration is already a grant of code execution; prepending also made it a
+    grant over every later import in the daemon, which turns any file dropped in
+    that directory into an import hijack.
+  - **Unit rendering refuses a newline, and the release workflow passes its
+    version by environment.** Both are operator-supplied values interpolated into
+    something that parses line by line, where a newline stops being an awkward
+    argument and becomes the next directive.
+
+  Also documentation: the viewer's write guard is `X-Archive-Write`, which is
+  what the server has always enforced and not what two documents said; and PyPI's
+  build attestation is a check available to you, not one `self-update` performs.
+
 - **A repaired drift stops asking to be repaired — `thread-archive source recheck`.**
   Degradation verdicts were derived from a 7-day rolling window over an append-only
   ledger, and nothing in the system could ever say a record had been *dealt with*.
@@ -166,6 +267,21 @@
   a process whose configured model changes cannot be served a vector from the space it
   left. Only successful embeds are cached — `None` is the degrade path and every way of
   reaching it is a condition that resolves.
+- **A warm pass now counts itself as competing for the machine, and records what it
+  was competing with.** Warming loads a torch model, reads the vector pack end to end
+  and runs a real search — the heaviest thing a process ever does — but it was the one
+  retrieval caller that never entered `_contention.in_flight()`. That breaks the
+  invariant the module documents rather than just leaving a field blank: the field is a
+  *peak* across everything in flight, so a search running beside a warm pass reported an
+  idle box, and startup is exactly the window where that reading is wrong most often.
+  The pass enters the span inside its turn, not around it — a pass asleep on the warm
+  lock is queued, not competing, which is `wait_ms`' reading and not the peak's. Its own
+  row now carries the same sample searches and reads carry, which is what separates a
+  model load that regressed from one that ran beside a test suite: on this machine the
+  same load measures 4.8s on a quiet box and 105s on a busy one, and until now those
+  were the same row. `uptime_s` rides along too, so `at - uptime_s` joins a warm row to
+  the searches of its own process — the only way to ask whether a slow search ran before
+  its own warm pass had finished.
 - **Concurrent callers share one disk walk instead of racing for the same disk.** The
   walk is ~0.3s at rest and tens of seconds when two overlap, and a polled endpoint is
   a machine for producing that overlap — the web ledger caught the two worst walks

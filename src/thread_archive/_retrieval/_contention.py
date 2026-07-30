@@ -49,9 +49,11 @@ The other fields are omitted unless they say something (no in-flight peers, no
 refresh, a long-quiet WAL), so a search on an idle machine records nothing and
 their presence carries the signal. That economy has a cost worth naming: an absent
 field means *nothing to report*, never *not measured*, and the two are only the
-same as long as every surface that records a search also enters the in-flight span.
-A surface that samples without entering it makes its own calls invisible to
-everyone else's peak, and the ledger then reads idle on a machine that was not.
+same as long as every caller that competes for the machine enters the in-flight
+span — not only the ones serving a request. A warm pass loads a model and runs a
+real search, and is the heaviest thing a process ever does; a caller that samples
+without entering makes its own work invisible to everyone else's peak, and the
+ledger then reads idle on a machine that was not.
 ``uptime_s`` is the exception and is always present: there is no reading of it that
 means *nothing to report*, and it is the denominator the others are read against.
 """

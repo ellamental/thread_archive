@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 
-import { MODEL, RUN_ID, THREAD_ID } from './helpers'
+import { MODEL, THREAD_ID } from './helpers'
 
 export interface SmokeRoute {
   path: string
@@ -39,32 +39,6 @@ export const ROUTES: SmokeRoute[] = [
   {
     path: '/health',
     landmark: (page) => page.getByRole('heading', { name: 'Your archive is protected' }),
-  },
-  {
-    // A dev panel: it exists only for a viewer whose operator asked for the
-    // panels, which is what this suite's build stamps into the shell (see
-    // playwright.config.ts). Off, the route does not resolve at all — that case
-    // is App's, in the vitest suite, since there is nothing here to navigate to.
-    path: '/retrieval',
-    landmark: (page) => page.getByRole('heading', { name: 'Retrieval', level: 1 }),
-  },
-  {
-    // Operational histories that are useful only while developing the archive —
-    // same dev-panel gate, same shell stamp.
-    path: '/telemetry',
-    landmark: (page) => page.getByRole('heading', { name: 'Telemetry', level: 1 }),
-  },
-  {
-    // The benchmark inventory — the third dev panel, under the same gate.
-    path: '/lab',
-    landmark: (page) => page.getByRole('heading', { name: 'Search lab', level: 1 }),
-  },
-  {
-    // One recorded run off the lab's ledger — reached by clicking a row there,
-    // and addressable on its own so a configuration worth arguing about can be
-    // linked to rather than described.
-    path: `/lab/run/${RUN_ID}`,
-    landmark: (page) => page.getByRole('heading', { name: 'What it measured' }),
   },
   {
     path: '/upload',

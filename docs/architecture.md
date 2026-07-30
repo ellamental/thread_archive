@@ -58,13 +58,16 @@ src/thread_archive/
   _watcher/         # local-source watcher (self-feeding ingest)
   _mcp/             # the library-native read MCP server
   _web/             # the viewer: stdlib server + built bundle (cohosted by `watch --web`);
-                      #   DEV-ONLY — excluded from the wheel, like _dev
+                      #   DEV-ONLY — excluded from the wheel
   _service/         # `thread-archive service`: the watcher / MCP / nightly-backup agents behind a
                       #   platform registry — launchd (macOS) and systemd --user (Linux) backends
   _thread_import/   # vendored provider parsers (a clean, dependency-free island)
   _providers/       # the provider registry: built-in descriptors + plugin discovery
   provider/         # PUBLIC: the plugin API a third-party provider is written against
 frontend/           # the viewer's React+Vite source (dev-only; builds into _web/static/)
+devweb/             # the dev panels (retrieval / telemetry / lab): their own server,
+                      #   their own app, their own port — `python -m devweb`. Ships in
+                      #   nothing; see docs/devweb.md
 host/               # operator layer: Makefile over `thread-archive service`, family-manifest writer
 scripts/            # repo tooling (coverage gate, frontend-build check, license notices)
 search_lab/         # the search lab (never shipped): the scoring core, quality + calibration

@@ -80,10 +80,11 @@ describe('Sidebar search filters', () => {
   })
 })
 
-// The retrieval report is a maintainer's instrument, not something a person who
-// came to read their conversations has a use for — so the rail names it only for
-// a viewer whose operator asked for the dev panels (`thread-archive web dev`,
-// which stamps the served shell).
+// The retrieval report, telemetry and the lab are maintainer's instruments, not
+// something a person who came to read their conversations has a use for. They
+// are a different app on a different server now (devweb/, port 8789), and there
+// is no switch that could put them back in this rail: the links, the routes and
+// the components all left together.
 describe('dev panels in the rail', () => {
   afterEach(() => {
     document.head
@@ -91,21 +92,38 @@ describe('dev panels in the rail', () => {
       .forEach((m) => m.remove())
   })
 
-  it('keeps the retrieval report out of the navigation by default', () => {
+  function stampDevPanels(): void {
+    const meta = document.createElement('meta')
+    meta.setAttribute('name', 'thread-archive-dev-panels')
+    meta.setAttribute('content', '1')
+    document.head.appendChild(meta)
+  }
+
+  it('offers no way to the dev panels by default', () => {
     renderAt('/')
+    expect(screen.queryByRole('link', { name: /dev panels/ })).not.toBeInTheDocument()
+    // Nor the pages themselves, under any name: they are not this app's to route.
     expect(screen.queryByRole('link', { name: 'retrieval' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'telemetry' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'lab' })).not.toBeInTheDocument()
   })
 
-  it('names the developer panels once the shell says the operator asked for them', () => {
-    const meta = document.createElement('meta')
-    meta.setAttribute('name', 'thread-archive-dev-panels')
-    meta.setAttribute('content', '1')
-    document.head.appendChild(meta)
+  it('links out to the panels once the shell says the operator asked', () => {
+    stampDevPanels()
     renderAt('/')
-    expect(screen.getByRole('link', { name: 'retrieval' })).toHaveAttribute('href', '/retrieval')
-    expect(screen.getByRole('link', { name: 'telemetry' })).toHaveAttribute('href', '/telemetry')
-    expect(screen.getByRole('link', { name: 'lab' })).toHaveAttribute('href', '/lab')
+    // An absolute href, not a client route: the panels are a different origin,
+    // so this leaves the app rather than asking it for a page it lacks.
+    expect(screen.getByRole('link', { name: /dev panels/ })).toHaveAttribute(
+      'href',
+      'http://127.0.0.1:8789',
+    )
+  })
+
+  it('still routes none of the panels itself, stamped or not', () => {
+    stampDevPanels()
+    renderAt('/')
+    expect(screen.queryByRole('link', { name: 'retrieval' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'telemetry' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'lab' })).not.toBeInTheDocument()
   })
 })

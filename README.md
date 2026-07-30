@@ -76,6 +76,7 @@ import from account exports you download by hand.
 - [CLI](https://github.com/ellamental/thread_archive/blob/main/docs/cli.md) — every verb, grouped by what it acts on
 - [MCP](https://github.com/ellamental/thread_archive/blob/main/docs/mcp.md) — server modes and client wiring
 - [Web viewer](https://github.com/ellamental/thread_archive/blob/main/docs/web-viewer.md) — the dev-only local UI, run from a clone
+- [Dev panels](https://github.com/ellamental/thread_archive/blob/main/docs/devweb.md) — retrieval / telemetry / lab, their own server
 - [How it works](https://github.com/ellamental/thread_archive/blob/main/docs/architecture.md) — the event model, durability, platform assumptions, repo layout
 - [Stability](https://github.com/ellamental/thread_archive/blob/main/docs/stability.md) — the four public interfaces and what may change
 - [When an import drifts](https://github.com/ellamental/thread_archive/blob/main/docs/import-drift.md) — the support tier and the repair loop

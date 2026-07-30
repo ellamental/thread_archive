@@ -27,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .._store import Thread, use_session
-from . import _probe, fts, pool_cache
+from . import _contention, _probe, fts, pool_cache
 from . import embed_graph as _embed_graph
 from . import rank as _rank
 from ._classify import resolve_relative_date
@@ -265,6 +265,8 @@ def warm_models(embedder=None) -> None:
     started = perf_counter()
     stage_ms: dict[str, float] = {}
     failed: list[str] = []
+    context: dict = {}
+    span: Optional[_contention.Span] = None
 
     if embedder is None:
         from . import embed as _embed
@@ -276,54 +278,70 @@ def warm_models(embedder=None) -> None:
     # slow restart was slow work or a queue, and the two want opposite fixes.
     with _warm_turn() as wait_ms:
         stage_ms["wait_ms"] = wait_ms
-        for name, stage in (("embed", embedder),):
+        # A warm pass loads a model and runs a real search, so it competes for the box
+        # exactly as a request does. :mod:`._contention` records a *peak* across
+        # everything in flight, which is only true for every other caller if callers
+        # like this one enter it too — a surface that competes without entering leaves
+        # the ledger reading idle on a machine that was not, and warming is the
+        # heaviest thing this process ever does.
+        #
+        # Entered inside the turn rather than around it: a pass asleep on the lock is
+        # queued, not competing, and counting it there would attribute contention to a
+        # process that is doing nothing. That reading is ``wait_ms``'s job.
+        with _contention.in_flight() as span:
+            context = _contention.sample()
+            for name, stage in (("embed", embedder),):
+                _t = perf_counter()
+                try:
+                    stage.warm()
+                except Exception:  # noqa: BLE001 — warming is best-effort; never raise into a caller
+                    failed.append(name)
+                    logger.debug("warm_models: a model stage failed to preload", exc_info=True)
+                stage_ms[name + "_ms"] = (perf_counter() - _t) * 1000.0
+
+            # Run one throwaway search end to end: it loads the vector matrix and runs a first
+            # cross-encoder inference, both of which cache process-globally for the real queries.
+            # Scoped to :data:`DEFAULT_CONTENT_TYPES` so the matrix this primes is keyed the
+            # same as the real queries reuse (the matrix cache is keyed by content-type scope;
+            # a mismatched scope would prime a matrix the real query never touches).
             _t = perf_counter()
             try:
-                stage.warm()
-            except Exception:  # noqa: BLE001 — warming is best-effort; never raise into a caller
-                failed.append(name)
-                logger.debug("warm_models: a model stage failed to preload", exc_info=True)
-            stage_ms[name + "_ms"] = (perf_counter() - _t) * 1000.0
+                from .. import _api as api
 
-        # Run one throwaway search end to end: it loads the vector matrix and runs a first
-        # cross-encoder inference, both of which cache process-globally for the real queries.
-        # Scoped to :data:`DEFAULT_CONTENT_TYPES` so the matrix this primes is keyed the
-        # same as the real queries reuse (the matrix cache is keyed by content-type scope;
-        # a mismatched scope would prime a matrix the real query never touches).
-        _t = perf_counter()
-        try:
-            from .. import _api as api
+                api.search(_WARM_QUERY, limit=1, content_types=DEFAULT_CONTENT_TYPES)
+            except Exception:  # noqa: BLE001 — a store that isn't ready just warms the models, not the caches
+                failed.append("search")
+                logger.debug("warm_models: dummy warm search skipped", exc_info=True)
+            stage_ms["search_ms"] = (perf_counter() - _t) * 1000.0
 
-            api.search(_WARM_QUERY, limit=1, content_types=DEFAULT_CONTENT_TYPES)
-        except Exception:  # noqa: BLE001 — a store that isn't ready just warms the models, not the caches
-            failed.append("search")
-            logger.debug("warm_models: dummy warm search skipped", exc_info=True)
-        stage_ms["search_ms"] = (perf_counter() - _t) * 1000.0
+            # Bring up the corpus graph while we're already off the request path — the
+            # coherence re-rank serves from this cache and never builds during a search (a
+            # stale graph refreshes in the background; a build, when one is needed at all, is
+            # the warm pass's job). Last of the stages: a search runs correctly without it, so
+            # every second spent here before the steps above would be a second of cold search
+            # latency.
+            if _embed_graph.coherence_gamma() > 0.0:
+                _t = perf_counter()
+                try:
+                    _embed_graph.warm()
+                except Exception:  # noqa: BLE001 — warming is best-effort
+                    failed.append("graph")
+                    logger.debug("warm_models: corpus graph build skipped", exc_info=True)
+                stage_ms["graph_ms"] = (perf_counter() - _t) * 1000.0
 
-        # Bring up the corpus graph while we're already off the request path — the
-        # coherence re-rank serves from this cache and never builds during a search (a
-        # stale graph refreshes in the background; a build, when one is needed at all, is
-        # the warm pass's job). Last of the stages: a search runs correctly without it, so
-        # every second spent here before the steps above would be a second of cold search
-        # latency.
-        if _embed_graph.coherence_gamma() > 0.0:
-            _t = perf_counter()
-            try:
-                _embed_graph.warm()
-            except Exception:  # noqa: BLE001 — warming is best-effort
-                failed.append("graph")
-                logger.debug("warm_models: corpus graph build skipped", exc_info=True)
-            stage_ms["graph_ms"] = (perf_counter() - _t) * 1000.0
+            # The priming search ran a real encode, so the torch allocator is now holding that
+            # batch's peak — and on a unified-memory box that peak is dirty anonymous memory.
+            # A restart is exactly when the host can least afford it: the next process's turn
+            # is next, and it will want the same memory this one is no longer using. Hand it
+            # back before releasing the lock; the first real search re-acquires what it needs.
+            from .embed import release_accelerator_cache
 
-        # The priming search ran a real encode, so the torch allocator is now holding that
-        # batch's peak — and on a unified-memory box that peak is dirty anonymous memory.
-        # A restart is exactly when the host can least afford it: the next process's turn
-        # is next, and it will want the same memory this one is no longer using. Hand it
-        # back before releasing the lock; the first real search re-acquires what it needs.
-        from .embed import release_accelerator_cache
+            release_accelerator_cache()
 
-        release_accelerator_cache()
-
+    # Folded after the span closes, for the reason :func:`._contention.peak_inflight`
+    # documents: the peers that made this pass slow include the ones that arrived
+    # while it ran, so the peak is only known once it is over.
+    context.update(_contention.peak_inflight(span))
     try:
         from .._tools import _served_by
         from . import usage as _usage
@@ -333,6 +351,7 @@ def warm_models(embedder=None) -> None:
             stages=stage_ms,
             failed=failed,
             surface=_served_by(),
+            context=context,
         )
     except Exception:  # noqa: BLE001 — telemetry is advisory; warming stays fail-soft
         logger.debug("warm_models: could not record the warm pass", exc_info=True)

@@ -44,9 +44,12 @@ dependencies = [
     "sqlalchemy>=2.0",
     "numpy>=1.26",
     "networkx>=3.2",  # kNN graph container + the seeded Louvain engine
+    # >=1.10: the first release carrying mcp.server.transport_security, which the
+    # HTTP server's DNS-rebinding allow-list is built from — a lower resolve would
+    # serve an unauthenticated full read of the archive with no Host validation.
     # <2: the server is written against the 1.x FastMCP API; mcp 2.0 removes
     # mcp.server.fastmcp, so an unpinned resolve breaks archive-mcp at import.
-    "mcp>=1.0,<2",
+    "mcp>=1.10,<2",
 ]
 
 [project.optional-dependencies]

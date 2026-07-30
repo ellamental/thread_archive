@@ -25,11 +25,18 @@ threat model is correspondingly narrow, and these are its load-bearing walls:
   `POST /api/upload` puts an account-export ZIP into `<home>/dumps/`, where the
   watcher imports it. The Host check does not cover this: a page on any domain
   can post a form at this port, and the browser sends the *server's* name as
-  Host. So a write also requires a loopback `Origin` and an `X-Archive-Upload`
+  Host. So a write also requires a loopback `Origin` and an `X-Archive-Write`
   header — unsettable by a form, which forces a preflight this server never
   answers. What lands is bounded too: a `.zip` under a sanitized name, refused
-  unless a registered provider's `detect` claims it, and refused before spooling
-  if it would not leave a gigabyte of disk free.
+  unless a registered provider's `detect` claims it, refused before spooling if
+  it would not leave a gigabyte of disk free, and refused while being read if any
+  member expands past a ceiling and a compression ratio — an upload is judged on
+  what it decompresses to, not on what it weighs or on what its header claims.
+- **The HTTP MCP transport rejects a non-loopback `Host`.** `archive-mcp --http`
+  is the same unauthenticated full read as the viewer, over one loopback port, so
+  it carries the same DNS-rebinding defense — built from the host actually being
+  bound, and off only under the deliberate `THREAD_ARCHIVE_MCP_NONLOCAL` opt-in,
+  where this server can no longer know the names it is legitimately reached by.
 - **The MCP tools are read-only, and the process defaults to read-only.** The
   one server this package ships exposes only `thread_search` / `thread_read`.
   `THREAD_ARCHIVE_MCP_INGEST=1` is a separate, explicit process-level opt-in to
@@ -46,6 +53,17 @@ threat model is correspondingly narrow, and these are its load-bearing walls:
   came from models, tools, and web content. An agent consuming
   `thread_search` output should treat it like any other retrieved document:
   data, not instructions. The archive never executes archived content itself.
+- **The code axis runs `git` in directories it did not choose.** Resolving a
+  commit to the sessions that built it means reading the repository, so
+  `thread_search`'s `commit` scope shells out to read-only `git` — in the
+  directory a caller passed as `repo=`, or, without one, in the working
+  directories archived sessions recorded. Both are caller- or content-named, so
+  the tools are read-only with respect to *the archive*, not with respect to the
+  machine: they will tell you whether a given path is a repository and what is in
+  it. Git takes instructions from the config of whatever repository it is pointed
+  at, so the keys that can name a command to run are pinned off on the command
+  line, which outranks any config file, and a path that is not an existing
+  directory is refused without spawning anything.
 - **`thread-archive source fix` collects your transcripts into a scaffold.** It copies
   real drifted source files into `<home>/plugins/<provider>/samples/` so the
   fix can be diagnosed against them — private conversation content, sitting in
@@ -70,10 +88,11 @@ Its trust anchor is PyPI plus transport security to it. The artifacts are built
 and uploaded by this repo's own Publish workflow, triggered by the release tag,
 authenticated to PyPI by Trusted Publishing (OIDC) — no long-lived API token
 exists to leak or rotate. PyPI records a published attestation for each file,
-binding it to that workflow and tag, so what the index serves is verifiably
-what the tagged build produced. A compromise of the repo or the tag still
-reaches you, which is the risk the attestation does not cover — applying a
-release is the exposure, and its timing is yours to choose. The updater never
+binding it to that workflow and tag; that is a check available to you, not one
+this updater performs — what self-update trusts is pip's transport to the index,
+and nothing here verifies a signature. A compromise of the repo or the tag still
+reaches you, which is the risk the attestation would not cover either — applying
+a release is the exposure, and its timing is yours to choose. The updater never
 crosses a truth-format bump without an explicit flag, and it reads that gate
 out of the wheel it is about to install rather than off any other artifact.
 

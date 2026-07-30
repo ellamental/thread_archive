@@ -69,10 +69,18 @@ def from_config(cfg: dict) -> Iterator[tuple[str, Provider]]:
     """Providers declared under config.json's ``providers`` key.
 
     Each entry is ``{"module": "pkg.mod:ATTR", "path": "<dir>"}``. ``path``, when
-    given, is prepended to ``sys.path`` before the import, so a provider can be
-    loaded straight out of a source tree with no install step — the shape a
-    plugin takes while it is being written, and the shape one takes when it lives
-    beside the harness it serves rather than being published on its own.
+    given, joins ``sys.path`` before the import, so a provider can be loaded
+    straight out of a source tree with no install step — the shape a plugin takes
+    while it is being written, and the shape one takes when it lives beside the
+    harness it serves rather than being published on its own.
+
+    Appended, never prepended. The front of ``sys.path`` decides every *later*
+    import in the process too, so a directory placed there shadows the standard
+    library and site-packages for the whole daemon — a much wider grant than
+    "load this module from here", and one that turns any file dropped in that
+    directory into an import hijack. A plugin that must override an installed
+    distribution of the same name wants an editable install of the checkout, not
+    a search-path race.
     """
     declared = cfg.get("providers")
     if not isinstance(declared, dict):
@@ -95,7 +103,7 @@ def from_config(cfg: dict) -> Iterator[tuple[str, Provider]]:
             if isinstance(raw_path, str) and raw_path:
                 resolved = str(Path(raw_path).expanduser())
                 if resolved not in sys.path:
-                    sys.path.insert(0, resolved)
+                    sys.path.append(resolved)
             yield origin, resolve_provider(_load_target(target))
         except Exception:  # noqa: BLE001 — one bad declaration must not take the rest down
             logger.exception("provider discovery: %s failed to load — skipped", origin)

@@ -295,6 +295,7 @@ def record_warm(
     stages: dict[str, float],
     failed: Optional[list[str]] = None,
     surface: Optional[str] = None,
+    context: Optional[dict[str, Any]] = None,
 ) -> None:
     """Record one :func:`thread_archive._retrieval.warm_models` pass — how long a
     process took to become useful, split by stage (``embed_ms``, ``graph_ms``,
@@ -318,7 +319,22 @@ def record_warm(
     rows use. These rows are the only count of process starts there is, and
     several daemons warm independently — without it a restart rate is a total over
     services that restart for unrelated reasons, and cannot be lined up with the
-    latency of the one front door a reader is looking at."""
+    latency of the one front door a reader is looking at.
+
+    ``context`` is the same contention sample searches and reads carry. A stage
+    total says how long the model took to load; it cannot say whether that number
+    is the load or the machine, and the two want opposite fixes. The spread is not
+    subtle — the same load measures seconds on a quiet box and over a minute beside
+    a test suite — so without this a regression in the load and an afternoon of
+    heavy traffic are the same row. ``wait_ms`` does not cover it: that separates
+    work from *this* queue, and the competition worth naming here is mostly not
+    other warm passes.
+
+    It also carries ``uptime_s``, which is what joins a warm row to the searches of
+    its own process — ``at - uptime_s`` is the process start, shared by every row
+    that process writes. That join is the only way to ask whether a slow search ran
+    before its own warm pass finished, which is a different fault from a slow
+    search on a warmed process."""
     if not _enabled():
         return
     record: dict[str, Any] = {
@@ -331,4 +347,6 @@ def record_warm(
     record.update({k: round(v, 1) for k, v in stages.items()})
     if failed:
         record["failed_stages"] = failed
+    if context:
+        record.update(context)
     _append(record)

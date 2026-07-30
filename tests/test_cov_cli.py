@@ -1784,21 +1784,22 @@ def test_web_opens_the_viewer_url(monkeypatch, capsys, archive_home) -> None:
 
 
 @pytest.mark.viewer
-def test_web_dev_turns_the_dev_panels_on(monkeypatch, capsys, archive_home) -> None:
+def test_web_dev_puts_the_dev_panel_link_in_the_rail(monkeypatch, capsys, archive_home) -> None:
     """The switch is a line in the config, not a URL: the server reads it for
-    every shell it serves, so the choice outlives this browser and this tab."""
+    every shell it serves, so the choice outlives this browser and this tab. It
+    does not start the panels' server — it decides whether the rail names it."""
     from thread_archive._config import load_config
 
     monkeypatch.setenv("BROWSER", "true")
     assert cli.main(["web", "dev", "--port", "9999"]) == 0
     assert load_config(home=archive_home)["dev_panels"] is True
     out = capsys.readouterr().out
-    assert "dev panels on" in out
+    assert "dev-panel link on" in out
     assert out.strip().endswith("http://127.0.0.1:9999")
 
 
 @pytest.mark.viewer
-def test_web_no_dev_puts_them_away(monkeypatch, capsys, archive_home) -> None:
+def test_web_no_dev_takes_the_link_back_out(monkeypatch, capsys, archive_home) -> None:
     from thread_archive._config import load_config, save_config
 
     monkeypatch.setenv("BROWSER", "true")
@@ -1809,7 +1810,7 @@ def test_web_no_dev_puts_them_away(monkeypatch, capsys, archive_home) -> None:
     assert cfg["dev_panels"] is False
     # The switch edits one line; everything else the operator has decided stays.
     assert cfg["sources"] == {"claude-code": {"enabled": False}}
-    assert "dev panels off" in capsys.readouterr().out
+    assert "dev-panel link off" in capsys.readouterr().out
 
 
 @pytest.mark.viewer

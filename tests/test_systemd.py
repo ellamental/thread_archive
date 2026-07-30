@@ -104,6 +104,22 @@ def test_watcher_unit_home_and_web_options() -> None:
     assert "--web-port 9000" in custom_port
 
 
+def test_a_newline_in_a_path_cannot_write_a_second_directive() -> None:
+    """A unit file is parsed line by line, and a newline ends a directive whatever
+    quoting surrounds it — so a value carrying one would not become an awkward
+    argument, it would become the *next directive*, chosen by whoever supplied the
+    value. These paths come from the operator's own command line, so this guards a
+    mistake rather than an adversary; either way the render refuses, because the
+    alternative is a unit that installs cleanly and runs something else."""
+    home = "/data/arc\nExecStartPre=/bin/sh -c anything"
+    with pytest.raises(ValueError, match="newline"):
+        systemd.watcher_units(ENTRY, LOG_DIR, home=home)
+    with pytest.raises(ValueError, match="newline"):
+        systemd.watcher_units(Path("/opt/venv/bin/thread-archive\nUser=root"), LOG_DIR)
+    with pytest.raises(ValueError, match="newline"):
+        systemd.watcher_units(ENTRY, Path("/logs\nRestart=no"))
+
+
 # ── pure render: mcp ──────────────────────────────────────────────────────────
 
 

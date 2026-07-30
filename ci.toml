@@ -54,6 +54,31 @@ name = "frontend-test"
 argv = ["npx", "vitest", "run", "--coverage"]
 cwd = "frontend"
 
+# ── the dev panels (devweb/) ────────────────────────────────────────────────
+# A second, smaller app: the retrieval report, telemetry and the search lab,
+# served by `python -m devweb` on :8789. It ships in nothing — no wheel, no
+# sdist — so unlike the viewer there is no committed-bundle row to compare bytes
+# against. What still has to hold is that it compiles and its views work, since
+# nothing else would notice them rotting.
+[[suite]]
+name = "devweb-typecheck"
+argv = ["npx", "tsc", "--noEmit"]
+cwd = "devweb/frontend"
+
+[[suite]]
+name = "devweb-test"
+argv = ["npx", "vitest", "run"]
+cwd = "devweb/frontend"
+
+# Real-browser coverage for the panels, on its own preview port (4175) so it can
+# run beside the viewer's lane. Same mocked-at-the-network-boundary shape: the
+# bench's real run ledger is never read.
+[[suite]]
+name = "devweb-e2e"
+argv = ["npm", "run", "e2e"]
+cwd = "devweb/frontend"
+timeout = 600
+
 [[suite]]
 name = "pytest"
 # Branch coverage rides every sweep: the term report keeps blind spots visible in

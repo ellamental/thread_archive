@@ -88,3 +88,7 @@ The web viewer is a third door onto the same archive, cohosted by
 `web` and `watch --web` are registered only in a clone. An install's `--help`
 does not list them, which is why the listing above may show fewer verbs than
 yours ([web-viewer.md](web-viewer.md)).
+
+The maintainer's instruments — the retrieval report, telemetry, the search lab —
+are not a verb here at all. They are their own app on their own server, run with
+`python -m devweb` from a clone ([devweb.md](devweb.md)).

@@ -20,7 +20,8 @@ which WAL makes safe (`_store/_base.py`). No second daemon: the viewer exists
 where the persistent URL is.
 
 `thread-archive web` opens that URL in a browser. An opener, not a server.
-`thread-archive web dev` turns on the dev panels (below) and opens it.
+`thread-archive web dev` puts a link to the dev panels in the rail first (below);
+`web --no-dev` takes it back out.
 
 **The URLs are steady within a clone.** Other programs link into the viewer —
 editor "open in archive" buttons, sibling consoles' navbars, health probes — so
@@ -45,29 +46,32 @@ navigation per route, asserting its landmark renders with no console errors and
 no unmocked fetch — and `route-coverage.spec.ts` keeps that a bijection, so a
 new route without a browser case reds the suite.
 
-**Dev panels** are the exception to the table above, and deliberately not part of
-its contract. `/retrieval` reports on the search *pipeline* — served latency per
-front door and by warm/cold regime, per-stage costs; `/telemetry` reports web endpoint latency,
-ingest cost, folded ingest faults, and retained ledger size; and `/lab` reports
-on what the bench has to measure it with. These are maintainer instruments rather
-than anything the archive is for, so **a viewer does not have them unless its
-operator asks**: one line in the home's `config.json`,
+**The maintainer's instruments are not here.** `/retrieval` (how search is
+performing), `/telemetry` (the operational ledgers read together) and `/lab`
+(what the bench has to measure with) are a separate app on a separate server —
+`devweb/`, run with `python -m devweb`, on `127.0.0.1:8789`. See
+[devweb.md](devweb.md). This server routes none of them and serves none of their
+endpoints: `/api/retrieval`, `/api/telemetry` and `/api/search-lab*` answer `404`
+here, and their page addresses fall through to a shell whose app has no route for
+them.
+
+What this viewer *can* do is point at them, and it does that only when asked:
 
 ```json
 { "dev_panels": true }
 ```
 
-which `thread-archive web dev` writes and `web --no-dev` clears. The server
-stamps that answer onto every shell it serves and the app mounts their routes
-only when it is there, so without the line those addresses route nowhere — not
-hidden behind an unadvertised link, absent. It is read per request: flipping the
-line lands on the next page load, with nothing to restart. Retrieval and lab data
-come from `search_lab/`, which lives in the source repo and not in an install, so
-a `pip install` serves a `404` for those endpoints even with the line set, and
-their pages say so. Telemetry reads the package's own operational ledgers.
+one line in the home's `config.json`, which `thread-archive web dev` writes and
+`web --no-dev` clears. The server stamps that answer onto every shell it serves
+and the rail grows a `dev panels ↗` link to `http://127.0.0.1:8789` — an absolute
+href, since it leaves this origin. Without the line the rail simply does not name
+them, which for someone who came here to read their conversations is one less
+unexplained word. It is read per request: flipping the line lands on the next
+page load, with nothing to restart. The switch moves a link and nothing else —
+it cannot start that server, and it cannot bring the pages back here.
 
-Everything under `/api/` other than those three backs the viewer's own bundle and
-is private — it changes with the frontend. So is the markup: the interface is
+Everything under `/api/` other than the two named above backs the viewer's own
+bundle and is private — it changes with the frontend. So is the markup: the interface is
 the URL, not the DOM. No page view touches the conversation record; the stats
 pages do fold a derived rollup into the index, which is the rebuildable
 projection. The server binds loopback only, since it serves the whole archive
@@ -78,7 +82,7 @@ it in the drop zone the cohosting watcher already imports from, which is what
 `/upload` is a page for — the import itself stays the watcher's, with the settle
 and retain/quarantine rules it already owns. Reading is what a `GET` can do; every
 other method on every other path is a `405`. A write carries two guards past the
-Host check every request passes: a loopback `Origin`, and an `X-Archive-Upload`
+Host check every request passes: a loopback `Origin`, and an `X-Archive-Write`
 header — which no cross-origin form can set, so a page this server did not serve
 must first win a preflight that is never answered.
 

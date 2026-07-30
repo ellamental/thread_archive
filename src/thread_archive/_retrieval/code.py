@@ -9,11 +9,19 @@ turns "which conversations edited rank.py" from a text search that happens to ma
 a path into an indexed lookup that can't miss the session that spelled the path
 differently.
 
-The three strands are evidence of different strengths, and the queries say so. A
-path is a fact (the tool named the file). A commit is an inference (file overlap
-inside an authorship window). A pull request is *testimony* — the harness recorded
-which PR the session was on — so it needs no window and no corroboration, and it is
-the only one of the three that can be wrong only by the harness being wrong.
+Two projections, three questions. Paths land in
+:class:`~thread_archive._store.EventPath`; commits and pull requests are both git
+refs a session's transcript *stated*, so they share
+:class:`~thread_archive._store.EventGitRef` — same six columns, one fold, one set
+of indexes, and somewhere for the next ref kind to land.
+
+What differs is the strength of the answer built on top, and the queries say so. A
+path is a fact: the tool named the file. A commit's *contributors* are an inference
+— file overlap inside an authorship window — because the rows alone name only the
+session that ran ``git commit``, and a commit usually carries work from several
+sittings. A pull request needs no such widening: the harness recorded which PR the
+session was on, so the rows already are the answer, and it can only be wrong by the
+harness being wrong. That asymmetry lives in the lookups, not the storage.
 
 **The fold** (:func:`refresh_code_index`) is a cursor projection over the event log,
 the same shape as ``_store._metrics``: append-only monotonic ids mean folding only
@@ -42,6 +50,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+from pathlib import Path
 from typing import Iterable, Optional
 
 from sqlalchemy import text as sa_text
@@ -66,7 +75,13 @@ logger = logging.getLogger(__name__)
 #: Bump when the extraction rules change: a fold that finds a trailing version
 #: discards every projection and rebuilds, because rows written under older rules
 #: cannot be added to by newer ones.
-PROJECTION_VERSION = 2
+PROJECTION_VERSION = 3
+
+#: The ``kind`` values :class:`~thread_archive._store.EventGitRef` carries. Named
+#: rather than spelled inline: every query filters on one, and a typo would return
+#: an empty result set rather than an error.
+COMMIT_KIND = "commit"
+PR_KIND = "pr"
 
 #: Event types the fold reads. Paths come from the tool *call* (which names the
 #: file); commits come from the tool *result* (which prints the sha); pull requests
@@ -132,8 +147,7 @@ def _reset(s: Session) -> None:
     """Drop every projection and rewind the cursor — the response to a version
     change or a shrunken log. Safe because nothing here is truth."""
     s.execute(sa_text("DELETE FROM event_paths"))
-    s.execute(sa_text("DELETE FROM event_commits"))
-    s.execute(sa_text("DELETE FROM event_prs"))
+    s.execute(sa_text("DELETE FROM event_git_refs"))
     s.execute(sa_text(
         "UPDATE code_cursor SET through_event_id = 0, projection_version = :v WHERE id = 1"
     ), {"v": PROJECTION_VERSION})
@@ -160,14 +174,19 @@ def _fold_window(s: Session, lo: int, hi: int, cwds: dict[str, str]) -> tuple[in
                 "tool_name": tool_name[:200] if tool_name else None, "occurred_at": oa,
             })
 
-    # Commits: the payload pre-filter keeps this from being a Python parse of every
-    # tool result in the window (they are the fattest rows in the archive).
+    # Both git-ref kinds land in one list and one insert, but they are gathered
+    # apart: a commit has to be dug out of tool *output* under a payload pre-filter
+    # (those are the fattest rows in the archive, and parsing every one of them in
+    # Python is the thing the filter exists to avoid), while a pull request arrives
+    # already structured on an event type of its own. Same rows, different digs.
+    ref_rows: list[dict] = []
+
     prefilter = " OR ".join(
         "payload LIKE :like" + str(i) for i in range(len(COMMIT_PREFILTER_LIKES))
     )
     params: dict = {"lo": lo, "hi": hi}
     params.update({"like" + str(i): v for i, v in enumerate(COMMIT_PREFILTER_LIKES)})
-    commit_rows: list[dict] = []
+    commits = 0
     for eid, tid, etype, occurred_at, payload in s.execute(sa_text(
         "SELECT id, thread_id, event_type, occurred_at, payload FROM events "
         "WHERE id > :lo AND id <= :hi AND event_type IN "
@@ -175,14 +194,14 @@ def _fold_window(s: Session, lo: int, hi: int, cwds: dict[str, str]) -> tuple[in
     ), params):
         p = payload if isinstance(payload, dict) else json.loads(payload or "{}")
         for sha, subject in extract_commits(etype, p):
-            commit_rows.append({
-                "event_id": eid, "thread_id": tid, "sha": sha, "subject": subject,
-                "repo": cwds.get(tid), "occurred_at": str(occurred_at) if occurred_at else None,
+            commits += 1
+            ref_rows.append({
+                "event_id": eid, "thread_id": tid, "kind": COMMIT_KIND, "ref": sha,
+                "label": subject, "url": None, "repo": cwds.get(tid),
+                "occurred_at": str(occurred_at) if occurred_at else None,
             })
 
-    # Pull requests: already structured on the event, so this is a narrow read of
-    # one event type rather than a parse of anything.
-    pr_rows: list[dict] = []
+    prs = 0
     for eid, tid, occurred_at, payload in s.execute(sa_text(
         "SELECT id, thread_id, occurred_at, payload FROM events "
         "WHERE id > :lo AND id <= :hi AND event_type = 'pr_link' ORDER BY id"
@@ -192,9 +211,11 @@ def _fold_window(s: Session, lo: int, hi: int, cwds: dict[str, str]) -> tuple[in
         if not found:
             continue
         number, repo, url = found
-        pr_rows.append({
-            "event_id": eid, "thread_id": tid, "number": number, "repo": repo,
-            "url": url, "occurred_at": str(occurred_at) if occurred_at else None,
+        prs += 1
+        ref_rows.append({
+            "event_id": eid, "thread_id": tid, "kind": PR_KIND, "ref": number,
+            "label": None, "url": url, "repo": repo,
+            "occurred_at": str(occurred_at) if occurred_at else None,
         })
 
     if path_rows:
@@ -203,17 +224,13 @@ def _fold_window(s: Session, lo: int, hi: int, cwds: dict[str, str]) -> tuple[in
             "(event_id, thread_id, path, basename, op, tool_name, occurred_at) VALUES "
             "(:event_id, :thread_id, :path, :basename, :op, :tool_name, :occurred_at)"
         ), path_rows)
-    if commit_rows:
+    if ref_rows:
         s.execute(sa_text(
-            "INSERT INTO event_commits (event_id, thread_id, sha, subject, repo, occurred_at) "
-            "VALUES (:event_id, :thread_id, :sha, :subject, :repo, :occurred_at)"
-        ), commit_rows)
-    if pr_rows:
-        s.execute(sa_text(
-            "INSERT INTO event_prs (event_id, thread_id, number, repo, url, occurred_at) "
-            "VALUES (:event_id, :thread_id, :number, :repo, :url, :occurred_at)"
-        ), pr_rows)
-    return len(path_rows), len(commit_rows), len(pr_rows)
+            "INSERT INTO event_git_refs "
+            "(event_id, thread_id, kind, ref, repo, label, url, occurred_at) VALUES "
+            "(:event_id, :thread_id, :kind, :ref, :repo, :label, :url, :occurred_at)"
+        ), ref_rows)
+    return len(path_rows), commits, prs
 
 
 def refresh_code_index(
@@ -291,11 +308,16 @@ def code_index_status(session: Optional[Session] = None) -> dict:
         through, version = _read_cursor(s)
         paths = s.execute(sa_text("SELECT count(*) FROM event_paths")).scalar() or 0
         distinct = s.execute(sa_text("SELECT count(DISTINCT path) FROM event_paths")).scalar() or 0
-        commits = s.execute(sa_text("SELECT count(*) FROM event_commits")).scalar() or 0
-        prs = s.execute(sa_text("SELECT count(*) FROM event_prs")).scalar() or 0
+        commits = s.execute(sa_text(
+            "SELECT count(*) FROM event_git_refs WHERE kind = :k"
+        ), {"k": COMMIT_KIND}).scalar() or 0
+        prs = s.execute(sa_text(
+            "SELECT count(*) FROM event_git_refs WHERE kind = :k"
+        ), {"k": PR_KIND}).scalar() or 0
         distinct_prs = s.execute(sa_text(
-            "SELECT count(*) FROM (SELECT DISTINCT repo, number FROM event_prs)"
-        )).scalar() or 0
+            "SELECT count(*) FROM (SELECT DISTINCT repo, ref FROM event_git_refs "
+            "WHERE kind = :k)"
+        ), {"k": PR_KIND}).scalar() or 0
         upto = s.execute(sa_text("SELECT MAX(id) FROM events")).scalar() or 0
         if session is None:
             s.commit()
@@ -529,12 +551,13 @@ def _commit_rows(s: Session, sha: str) -> list[dict]:
     prints 7 characters and callers paste 40, so neither side can assume it holds
     the longer string."""
     rows = s.execute(sa_text(
-        "SELECT c.event_id, c.thread_id, c.sha, c.subject, c.repo, c.occurred_at, "
+        "SELECT c.event_id, c.thread_id, c.ref, c.label, c.repo, c.occurred_at, "
         "       t.title, t.source "
-        "FROM event_commits c JOIN threads t ON t.id = c.thread_id "
-        "WHERE c.sha = :sha OR c.sha GLOB :pfx OR :sha GLOB c.sha || '*' "
+        "FROM event_git_refs c JOIN threads t ON t.id = c.thread_id "
+        "WHERE c.kind = :kind "
+        "  AND (c.ref = :sha OR c.ref GLOB :pfx OR :sha GLOB c.ref || '*') "
         "ORDER BY c.occurred_at DESC LIMIT 20"
-    ), {"sha": sha, "pfx": sha + "*"}).all()
+    ), {"kind": COMMIT_KIND, "sha": sha, "pfx": sha + "*"}).all()
     return [
         {"event_id": eid, "thread_id": tid, "sha": found, "subject": subject,
          "repo": repo, "occurred_at": oa, "title": title, "source": source}
@@ -542,12 +565,44 @@ def _commit_rows(s: Session, sha: str) -> list[dict]:
     ]
 
 
+#: Repository-local config this process refuses to be talked into.
+#:
+#: ``git -C <dir>`` reads that directory's own ``.git/config``, and the directory
+#: is *caller-named*: the ``repo`` argument on the search tool, or a ``cwd``
+#: recorded in an archived session. Those are the two places the archive's own
+#: rule — archived content is data, never instructions — meets a program that
+#: takes instructions from files. Git's config can name commands to run, so the
+#: keys that can are pinned off on the command line, which outranks any config
+#: file. None of the read-only commands below is known to reach them today; the
+#: point is that the next command added here inherits the guard rather than
+#: re-deciding it. ``--no-optional-locks`` keeps a read out of the index of a
+#: repository this process does not own.
+_GIT_SAFE = [
+    "-c", "core.fsmonitor=false",
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "core.pager=cat",
+    "-c", "core.alternateRefsCommand=",
+    "-c", "diff.external=",
+    "-c", "protocol.ext.allow=never",
+    "--no-optional-locks",
+]
+
+
 def _git(args: list[str], cwd: str, timeout: float = 5.0) -> Optional[str]:
-    """Read-only git, or None. Never a shell; never fatal — an unreadable repo is a
-    missing answer, not an error."""
+    """Read-only git in ``cwd``, or None. Never a shell; never fatal — an
+    unreadable repo is a missing answer, not an error.
+
+    ``cwd`` must already exist and be a directory: it arrives from a tool
+    argument or from archived session metadata, so a value that names no
+    directory is answered here rather than spent on a subprocess that would fail
+    anyway. See :data:`_GIT_SAFE` for what the directory is not allowed to tell
+    git to do."""
     try:
+        if not Path(cwd).is_dir():
+            return None
         proc = subprocess.run(
-            ["git", "-C", cwd, *args], capture_output=True, text=True, timeout=timeout,
+            ["git", *_GIT_SAFE, "-C", cwd, *args],
+            capture_output=True, text=True, timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -830,8 +885,8 @@ def blame_pr(
     scope = (repo or ref_repo or "").strip() or None
     limit = max(1, min(int(limit), 100))
 
-    params: dict = {"num": number}
-    clause = "p.number = :num"
+    params: dict = {"num": number, "kind": PR_KIND}
+    clause = "p.kind = :kind AND p.ref = :num"
     if scope:
         # Escaped, not interpolated: `thread_archive` is an ordinary repository name
         # and `_` is a LIKE wildcard, so an unescaped suffix silently also matches
@@ -845,7 +900,7 @@ def blame_pr(
             "SELECT p.thread_id, t.title, t.source, p.repo, p.url, "
             "       min(p.occurred_at) AS first_at, max(p.occurred_at) AS last_at, "
             "       max(p.event_id) AS last_event "
-            "FROM event_prs p JOIN threads t ON t.id = p.thread_id "
+            "FROM event_git_refs p JOIN threads t ON t.id = p.thread_id "
             "WHERE " + clause + " GROUP BY p.thread_id, p.repo, p.url "
             "ORDER BY last_at DESC"
         ), params).all()

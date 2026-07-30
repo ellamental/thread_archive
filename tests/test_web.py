@@ -7,7 +7,6 @@ exercise it directly (no sockets) against a seeded throwaway archive.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 
 import pytest
@@ -170,212 +169,27 @@ def test_disk_endpoint(archive_home):
     assert "disk" not in _get("/api/status")[2]
 
 
-def test_telemetry_endpoint_assembles_web_ingest_faults_and_ledger_cost(archive_home):
-    """The developer page reads the retained ledgers without moving their data
-    into a second metrics store."""
-    from datetime import datetime, timezone
-
-    from thread_archive._ops import ingest_errors, ledger
-    from thread_archive._watcher import ingest_log
-    from thread_archive._web import metrics
-
-    at = datetime.now(timezone.utc).isoformat()
-    for row in (
-        {"at": at, "path": "/api/status", "status": 200,
-         "duration_ms": 10.0, "size": 100},
-        {"at": at, "path": "/api/status", "status": 503,
-         "duration_ms": 50.0, "size": 20, "concurrent": 2},
-        {"at": at, "path": "/api/upload", "method": "POST", "status": 201,
-         "duration_ms": 100.0, "size": 10},
-    ):
-        ledger.append(archive_home / metrics.LEDGER_FILE, row, max_bytes=1 << 20)
-    ledger.append(
-        archive_home / ingest_log.LEDGER_FILE,
-        {
-            "at": at,
-            "kind": "ingest-pass",
-            "source": "codex",
-            "pass_ms": 25.0,
-            "items": 1,
-            "events": 8,
-            "lines": 20,
-            "bytes": 400,
-            "parse_ms": 5.0,
-            "write_ms": 10.0,
-            "total_ms": 15.0,
-        },
-        max_bytes=1 << 20,
-    )
-    ingest_errors.record(["codex: could not parse /tmp/session-123.jsonl"], home=archive_home)
-
-    status, ctype, payload = _get("/api/telemetry", hours=24)
-
-    assert status == 200 and ctype == "application/json"
-    assert payload["hours"] == 24
-    assert payload["web"]["requests"] == 3
-    assert payload["web"]["errors"] == 1
-    assert payload["web"]["concurrent"] == 1
-    assert payload["web"]["endpoints"][0]["path"] == "/api/upload"
-    status_row = next(
-        row for row in payload["web"]["endpoints"] if row["path"] == "/api/status"
-    )
-    assert status_row["n"] == 2 and status_row["errors"] == 1
-    assert payload["ingest"]["sources"]["codex"]["events"] == 8
-    assert payload["ingest"]["stages"]["write_ms"] == 10.0
-    assert payload["faults"][0]["source"] == "codex"
-    ledgers = {row["file"]: row for row in payload["ledgers"]}
-    assert ledgers["web-requests.jsonl"]["bytes"] > 0
-    assert ledgers["ingest-runs.jsonl"]["segments"] == 1
-
-
-def test_telemetry_endpoint_honors_its_window(archive_home):
-    from datetime import datetime, timezone
-
-    from thread_archive._ops import ledger
-    from thread_archive._web import metrics
-
-    for at in ("2020-01-01T00:00:00+00:00", datetime.now(timezone.utc).isoformat()):
-        ledger.append(
-            archive_home / metrics.LEDGER_FILE,
-            {"at": at, "path": "/api/status", "status": 200,
-             "duration_ms": 10.0, "size": 1},
-            max_bytes=1 << 20,
-        )
-
-    payload = _get("/api/telemetry", hours=1)[2]
-    assert payload["web"]["requests"] == 1
-
-
-#: The dev pages are fed by the search lab, which ships in the source tree and is
-#: excluded from the wheel, so a packaged install serves none of them and the routes
-#: below 404 by design — the shape ``tests/install/`` runs this suite in. Gate on
-#: whether the dev tree is importable at all, which is the same fact the endpoint
-#: itself turns on; the install side is asserted by
-#: ``test_the_dev_page_is_a_source_tree_thing_only``.
-_dev_pages = pytest.mark.skipif(
-    importlib.util.find_spec("thread_archive._dev") is None,
-    reason="no dev tree: packaged install, not a checkout",
-)
-
-
-@_dev_pages
-def test_retrieval_endpoint_serves_the_dev_report(archive_home):
-    """The dev page's source. Its subject is the search pipeline rather than the
-    corpus, so it reads the ledgers and answers whether or not the index is
-    usable — and it comes from the search lab, so a checkout has it."""
-    _seed(archive_home)
-    status, ctype, payload = _get("/api/retrieval")
-    assert status == 200 and ctype == "application/json"
-    assert payload["hours"] > 0 and payload["bucket"] in ("hour", "day")
-
-
-@_dev_pages
-def test_search_lab_endpoint_serves_the_bench_inventory(archive_home):
-    """The other dev page's source: what the bench has to measure with. Its rows
-    come off the lab's registries and the corpora on disk, so it answers on a box
-    where nothing has ever been built — an empty bench is a state, not an error."""
-    _seed(archive_home)
-    status, ctype, payload = _get("/api/search-lab")
-    assert status == 200 and ctype == "application/json"
-    assert payload["benchmarks"] and payload["datasets"]
-    assert {b["state"] for b in payload["benchmarks"]} <= {
-        "missing", "fresh", "stale", "never-run"}
-
-
-@_dev_pages
-def test_the_run_ledger_is_its_own_route(archive_home):
-    """Every recorded benchmark run, rather than the newest of each row the
-    inventory carries. Its own route because it is a file read and the inventory
-    is a cached filesystem walk — a run that just finished has to appear here
-    now, and must not wait out the walk's cache to do it. An empty ledger is a
-    box nothing has run on, which is a state and not an error."""
-    _seed(archive_home)
-    status, ctype, payload = _get("/api/search-lab/runs")
-    assert status == 200 and ctype == "application/json"
-    assert set(payload) >= {"code_id", "total", "returned", "runs"}
-    assert payload["returned"] == len(payload["runs"]) <= payload["total"]
-    for run in payload["runs"]:
-        assert run["id"] and run["row"] and run["at"]
-        assert isinstance(run["on_bench"], bool)
-        assert run["code_current"] in (True, False, None)
-
-
-@_dev_pages
-def test_a_runs_per_query_detail_is_its_own_route(archive_home):
-    """Off the run's own sidecar, so opening one run reads one file and the runs
-    list above reads none. A run with no detail kept answers empty rather than
-    404 — pruned by the cap, never recorded, and never run are all "nothing
-    here", and the page says so the same way for each."""
-    _seed(archive_home)
-    status, ctype, payload = _get("/api/search-lab/runs/deadbeef0000/queries")
-    assert status == 200 and ctype == "application/json"
-    assert set(payload) >= {"run_id", "order", "total", "misses", "rows"}
-    assert payload["rows"] == []
-
-
-@_dev_pages
-def test_a_run_id_in_the_url_cannot_reach_out_of_the_store(archive_home):
-    """The id is a URL segment reaching a filename. The viewer is unauthenticated
-    and binds to localhost, so this is the request nobody gets to make."""
-    _seed(archive_home)
-    for hostile in ("..%2F..%2Fetc%2Fpasswd", "....%2F%2Fconfig", "index.db"):
-        status, _, payload = _get(f"/api/search-lab/runs/{hostile}/queries")
-        assert status == 200 and payload["rows"] == []
-
-
-@_dev_pages
-def test_the_ledger_read_is_bounded(archive_home):
-    """The ledger is append-only and never pruned, and the viewer is
-    unauthenticated — so no request gets to ask for an unbounded read."""
-    _seed(archive_home)
-    _, _, payload = _get("/api/search-lab/runs", limit=1)
-    assert payload["returned"] <= 1
-
-
-@_dev_pages
-def test_the_inventory_is_assembled_once_and_served_from_cache(archive_home):
-    """Assembling it walks the eval cache root — tens of GB across the built
-    corpora — so a page that refreshes must not turn into a filesystem sweep per
-    request. Identity, not equality: two equal payloads would also be two walks."""
-    from thread_archive._web.server import _dev_surface, _inventory_payload
-
-    _seed(archive_home)
-    module = _dev_surface("lab_inventory")
-    assert module is not None, "a checkout has the lab"
-    assert _inventory_payload(module) is _inventory_payload(module)
-
-
-def test_the_served_shell_carries_no_dev_panels_by_default(archive_home):
-    """The pages ship in the bundle; what puts them in an app is this stamp. No
-    config line, no stamp — so a viewer nobody asked reaches none of them, and
-    the routes are simply absent rather than hidden behind a link."""
-    _seed(archive_home)
-    status, ctype, body = _get("/lab")
-    assert status == 200 and ctype.startswith("text/html")
-    shell = body.decode()
-    assert "thread-archive-dev-panels" not in shell
-    assert "<head>" in shell, "the stamp has an anchor to land on"
-
-
 def test_the_config_line_stamps_the_shell(archive_home):
     """``"dev_panels": true`` is the whole switch (``thread-archive web dev``
-    writes it). Read per request, so flipping it lands on the next page load
-    rather than at the next restart of the watcher serving this."""
+    writes it). It decides whether the rail offers a link over to the panels'
+    own server — it cannot mount them, since they are a different app. Read per
+    request, so flipping it lands on the next page load rather than at the next
+    restart of the watcher serving this."""
     from thread_archive._config import load_config, save_config
 
     _seed(archive_home)
     save_config({"dev_panels": True}, home=archive_home)
-    assert '<meta name="thread-archive-dev-panels" content="1">' in _get("/lab")[2].decode()
+    assert '<meta name="thread-archive-dev-panels" content="1">' in _get("/")[2].decode()
 
     save_config({"dev_panels": False}, home=archive_home)
-    assert "thread-archive-dev-panels" not in _get("/lab")[2].decode()
+    assert "thread-archive-dev-panels" not in _get("/")[2].decode()
     assert load_config(home=archive_home)["dev_panels"] is False
 
 
-def test_a_config_that_only_looks_true_leaves_the_panels_off(archive_home):
-    """The switch is a JSON ``true``, not truthiness: a viewer that showed the
-    dev panels because the key held the string ``"false"`` would be a switch
-    that only looks like one. A config too broken to parse fails closed too."""
+def test_a_config_that_only_looks_true_leaves_the_link_out(archive_home):
+    """The switch is a JSON ``true``, not truthiness: a rail that grew the link
+    because the key held the string ``"false"`` would be a switch that only
+    looks like one. A config too broken to parse fails closed too."""
     from thread_archive._config import save_config
 
     _seed(archive_home)
@@ -387,18 +201,33 @@ def test_a_config_that_only_looks_true_leaves_the_panels_off(archive_home):
     assert "thread-archive-dev-panels" not in _get("/")[2].decode()
 
 
-def test_the_dev_page_is_a_source_tree_thing_only():
-    """What makes an install answer 404 there is packaging, not a runtime check:
-    ``_dev`` is excluded from the wheel, so the import behind the endpoint fails
-    and the page is simply absent. Assert the exclusion itself — the guard in
-    the server is unreachable if this ever silently stops being true."""
-    import tomllib
-    from pathlib import Path
+def test_the_stamp_never_brings_the_panels_back(archive_home):
+    """The link is the whole of what the flag buys. Even stamped, this server has
+    no dev endpoints and its app has no dev routes — they are devweb's."""
+    from thread_archive._config import save_config
 
-    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
-    cfg = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    excluded = cfg["tool"]["hatch"]["build"]["targets"]["wheel"]["exclude"]
-    assert "src/thread_archive/_dev" in excluded
+    _seed(archive_home)
+    save_config({"dev_panels": True}, home=archive_home)
+    for path in ("/api/retrieval", "/api/telemetry", "/api/search-lab"):
+        assert _get(path)[0] == 404, path
+
+
+def test_the_viewer_routes_none_of_the_dev_panels(archive_home):
+    """The instruments are a different server (``devweb/``). Their addresses are
+    not hidden here, they are absent — and their endpoints 404 rather than
+    falling through to the SPA shell, so a caller that still points at the old
+    URL gets an error it can see instead of HTML parsed as JSON."""
+    _seed(archive_home)
+    for path in ("/api/retrieval", "/api/telemetry", "/api/search-lab",
+                 "/api/search-lab/runs", "/api/search-lab/runs/abc/queries"):
+        assert _get(path)[0] == 404, path
+
+    # The page addresses fall through to the shell, as any unknown path does —
+    # and the shell is the archive's app, which has no route for them.
+    status, ctype, body = _get("/lab")
+    assert status == 200 and ctype.startswith("text/html")
+    shell = body.decode()
+    assert "thread-archive-dev-panels" not in shell, "the stamp is gone with the flag"
 
 
 def test_health_endpoint(archive_home):
@@ -1729,3 +1558,52 @@ def test_upload_over_real_http(archive_home, tmp_path):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+# ── blob responses ───────────────────────────────────────────────────────────
+# Blob content is untrusted twice over: the bytes came out of an archived
+# payload, and so did the media type that decides how they are served.
+
+
+def _store_blob(raw: bytes, media_type: str) -> str:
+    from thread_archive._truth.blobs import store_bytes
+
+    return store_bytes(raw, media_type)
+
+
+def test_a_blob_is_served_as_the_type_its_url_named(archive_home):
+    """One content can be stored under several extensions — the same bytes are
+    one message's image/png and another's image/svg+xml, and a hash addresses
+    both. A link that said .png must not be answered with the SVG's type."""
+    ta.open_archive()
+    raw = b"<svg xmlns='http://www.w3.org/2000/svg'></svg>" + b" " * 2048
+    digest = _store_blob(raw, "image/svg+xml")
+    assert _store_blob(raw, "image/png") == digest  # same content, second file
+
+    status, ctype, body, _ = route("GET", f"/api/blob/{digest}.png", {})
+    assert (status, ctype) == (200, "image/png")
+    status, ctype, body, _ = route("GET", f"/api/blob/{digest}.svg", {})
+    assert (status, ctype, body) == (200, "image/svg+xml", raw)
+
+    # An extension nothing was stored under resolves to nothing, rather than to
+    # whichever twin a glob reached first.
+    assert route("GET", f"/api/blob/{digest}.pdf", {})[0] == 404
+
+
+def test_a_navigated_blob_is_sandboxed(archive_home):
+    """A stored SVG opened at full size is a *document* on this origin, and the
+    page-level policy only stops it scripting, not painting a convincing copy of
+    the viewer. `sandbox` puts it in an opaque origin instead. Documents only: a
+    response policy does not apply to a subresource, so the <img> that renders
+    the same blob inline is unaffected."""
+    ta.open_archive()
+    digest = _store_blob(b"<svg xmlns='http://www.w3.org/2000/svg'></svg>" + b" " * 2048,
+                         "image/svg+xml")
+    _, _, _, headers = route("GET", f"/api/blob/{digest}.svg", {})
+    assert headers["Content-Security-Policy"] == "sandbox"
+
+
+def test_a_bad_blob_name_never_reaches_the_store(archive_home):
+    ta.open_archive()
+    for bad in ("../../../etc/passwd", "nothex" * 10, "", "a" * 63, "%2e%2e"):
+        assert route("GET", f"/api/blob/{bad}", {})[0] == 404

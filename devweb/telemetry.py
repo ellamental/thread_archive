@@ -1,4 +1,4 @@
-"""Developer telemetry survey for the web viewer.
+"""Developer telemetry survey — the data behind the ``/telemetry`` panel.
 
 The archive's operational ledgers are intentionally separate: web requests,
 ingest passes, retrieval calls, load runs, and ingest faults have different
@@ -8,7 +8,10 @@ to read together without turning those ledgers into a second metrics store.
 The report is read-only and windowed. Detail comes from the two ledgers that do
 not already have a dedicated web view: web request timings and ingest timings.
 Retrieval and load runs are represented in the ledger inventory and keep their
-deeper views at ``/retrieval`` and ``/health``.
+deeper views at ``/retrieval`` here and ``/health`` on the archive's viewer.
+
+``metrics`` is imported rather than owned: the web-request ledger's *producer*
+is the viewer, which writes a row per request it serves. This reads that file.
 """
 
 from __future__ import annotations
@@ -18,10 +21,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .._ops import ingest_errors, ledger, load_runs
-from .._retrieval import usage
-from .._watcher import ingest_log
-from . import metrics
+from thread_archive._ops import ingest_errors, ledger, load_runs
+from thread_archive._retrieval import usage
+from thread_archive._watcher import ingest_log
+from thread_archive._web import metrics
 
 
 def _percentile(values: Iterable[float], q: float) -> float:

@@ -51,7 +51,7 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
 # — ``_metrics.refresh_metrics`` rebuilds whatever is still needed on the next stats
 # read — so they are dropped rather than migrated. Leaving them would strand a stale
 # shape that reads like the live one.
-_DROPPED_TABLES: tuple[str, ...] = ("request_cache_metrics",)
+_DROPPED_TABLES: tuple[str, ...] = ("request_cache_metrics", "event_commits", "event_prs")
 _DROPPED_COLUMNS: tuple[tuple[str, str], ...] = (("metrics_cursor", "cache_requests_ready"),)
 
 

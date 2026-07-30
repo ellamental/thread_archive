@@ -6,6 +6,19 @@ venv/
 # the root, e.g. a vitest cache from a run invoked with the wrong cwd)
 /node_modules/
 
+# devweb/ — the dev panels' server and its app (python -m devweb). Its bundle is
+# NOT committed, unlike the viewer's: nothing ships it, so there is no install
+# that needs a pre-built copy, and a committed bundle in a dev directory is diff
+# noise on every frontend edit. `cd devweb/frontend && npm run build` makes it,
+# and the server says so if it is missing. Declared at the root rather than in a
+# nested ignore because hatchling only reads this one.
+/devweb/static/
+/devweb/frontend/node_modules/
+/devweb/frontend/dist/
+/devweb/frontend/.e2e-dist/
+/devweb/frontend/playwright-report/
+/devweb/frontend/test-results/
+
 # python
 __pycache__/
 *.py[cod]

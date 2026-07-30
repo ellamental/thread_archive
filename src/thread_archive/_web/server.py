@@ -217,20 +217,21 @@ def _serve_file(p: Path, *, headers: Optional[dict] = None) -> Response:
     return 200, ctype, p.read_bytes(), headers or {}
 
 
-#: Stamped into the served shell when the operator has asked for the dev panels.
-#: The bundle ships them like every other page; this tag is the whole difference
-#: between a viewer that mounts their routes and one that does not — see
-#: ``frontend/src/dev.ts``, which reads it, and :func:`.._config.dev_panels`.
+#: Stamped into the served shell when the operator has asked for the dev-panel
+#: link. The panels are a different app on a different server; this tag is the
+#: whole difference between a rail that offers a way over to them and one that
+#: does not — see ``frontend/src/dev.ts``, which reads it, and
+#: :func:`.._config.dev_panels`.
 _DEV_PANELS_META = b'\n    <meta name="thread-archive-dev-panels" content="1">'
 
 
 def _serve_shell() -> Response:
-    """The SPA shell, carrying the operator's dev-panel choice.
+    """The SPA shell, carrying the operator's dev-link choice.
 
     A meta tag rather than an inline script or a JSON endpoint. Inline script is
     out because the CSP forbids it, and an endpoint is out because the answer is
-    needed at the first render: a route table that arrives a fetch later would
-    flash a page the viewer does not have.
+    wanted at the first render: a rail that grew a link a fetch later would shift
+    the navigation under a cursor already moving.
 
     The config is read per request — it is one small JSON file, and the point of
     a switch in a file is that flipping it shows up on the next page load rather
@@ -592,52 +593,6 @@ def _list_threads(
     }
 
 
-#: Probed dev surfaces, by :mod:`.._dev` function name. ``False`` is the negative
-#: cache — distinct from a name that has not been asked for yet — so a page
-#: polling a dev endpoint pays the probe once rather than per request.
-_DEV_SURFACES: dict = {}
-
-
-def _dev_surface(name: str):
-    """A dev page's data module out of :mod:`.._dev`, or None.
-
-    Both dev pages are fed by the search lab, not the product — the retrieval
-    report reads the bench's latency ledgers, and the inventory reads the bench's
-    registries — and the lab ships in the source tree, never in a wheel.
-    So the viewer reaches them only through :mod:`.._dev`, which is excluded from
-    the wheel for the same reason: an install has neither, this import fails, and
-    the endpoint 404s.
-    """
-    if name in _DEV_SURFACES:
-        return _DEV_SURFACES[name] or None
-    try:
-        from .. import _dev
-
-        module = getattr(_dev, name)()
-    except ImportError:  # an install: no dev tree, so no dev page
-        module = None
-    _DEV_SURFACES[name] = module or False
-    return module
-
-
-#: How long an assembled inventory is served before it is walked again. The read
-#: is a filesystem walk over tens of GB of corpora, and what it describes changes
-#: on the timescale of a benchmark run — so a page that refreshes must not turn
-#: into a sweep per refresh, and a corpus built a minute ago still shows up while
-#: the operator is still looking at the page.
-_INVENTORY_TTL_S = 30.0
-
-
-def _inventory_payload(module):
-    """The bench inventory, assembled at most once per :data:`_INVENTORY_TTL_S`."""
-    cached = getattr(_inventory_payload, "_cached", None)
-    if cached is not None and time.time() - cached[0] < _INVENTORY_TTL_S:
-        return cached[1]
-    payload = module.inventory()
-    _inventory_payload._cached = (time.time(), payload)  # type: ignore[attr-defined]
-    return payload
-
-
 def _list_thread_types() -> list[dict]:
     """Distinct thread types with counts, biggest first — the vocabulary for the
     all-threads page's type filter. Archived threads don't vote (they don't
@@ -993,18 +948,6 @@ def route(
         limit = int(models) if models and models.isdigit() else None
         return _ok(api.stats(model_limit=limit))
 
-    if path == "/api/telemetry":
-        # Developer instrument over the append-only operational ledgers. This is
-        # intentionally separate from status/stats: it reads retained histories,
-        # which is useful on demand and wasteful on every ordinary page load.
-        from .telemetry import report as telemetry_report
-
-        paths = api.open_archive()
-        return _ok(telemetry_report(
-            paths.home,
-            hours=_int(params, "hours", 24, hi=365 * 24),
-        ))
-
     if path.startswith("/api/stats/model/"):
         # Per-model drill-down. The tail is the model name — taken whole (model ids
         # like 'deepseek/deepseek-v4-pro' contain slashes) and percent-decoded (the
@@ -1047,7 +990,11 @@ def route(
         api.open_archive()
         from .._truth.blobs import blob_file, media_type_for_path
 
-        bp = blob_file(m.group(1))
+        # The URL's extension, when it carries one, is what resolves the file: the
+        # same bytes can be stored under several (one message's image/png is
+        # another's image/svg+xml), and a link that said .png must not be answered
+        # with an SVG's Content-Type.
+        bp = blob_file(m.group(1), ext=m.group(2))
         if bp is None:
             return _text(404, "no such blob")
         try:
@@ -1056,6 +1003,15 @@ def route(
             return _text(404, "no such blob")
         return 200, media_type_for_path(bp), blob, {
             "Cache-Control": "public, max-age=31536000, immutable",
+            # Blob content is untrusted: its bytes and its declared media type both
+            # came out of an archived payload. Most of it is inert as an image, but
+            # a stored SVG *navigated to* — the reader's images link through to
+            # full size — is a document on this origin, and the page-level policy
+            # only stops it scripting, not painting. `sandbox` drops it into an
+            # opaque origin, so what it can impersonate is nothing. Documents only:
+            # a response CSP does not apply to a subresource, so the <img> that
+            # renders the same blob inline is unaffected.
+            "Content-Security-Policy": "sandbox",
         }
 
     if path == "/api/search":
@@ -1125,57 +1081,6 @@ def route(
 
     if path == "/api/thread-types":
         return _ok({"types": _list_thread_types()})
-
-    if path == "/api/retrieval":
-        # Read straight off the ledgers rather than the index — this is the one
-        # view whose subject is the *search pipeline*, not the corpus, so it must
-        # keep answering while a rebuild has the index unavailable.
-        report = _dev_surface("retrieval_report")
-        if report is None:
-            return _text(404, "the retrieval report ships with the search lab, "
-                              "which is in the source repo and not in an install")
-        # Hours, not days: the short windows are where a regression shows up the
-        # same afternoon it lands, and a day is the coarsest thing they can say.
-        return _ok(report.report(
-            hours=_int(params, "hours", report.DEFAULT_HOURS, hi=365 * 24)))
-
-    if path == "/api/search-lab":
-        # What the bench has to measure with — benchmark rows and corpora.
-        # Read off the lab's own registries and the cache root on disk, so it
-        # describes the box rather than the index, and answers during a rebuild.
-        module = _dev_surface("lab_inventory")
-        if module is None:
-            return _text(404, "the bench inventory ships with the search lab, "
-                              "which is in the source repo and not in an install")
-        return _ok(_inventory_payload(module))
-
-    if path == "/api/search-lab/runs":
-        # Every recorded benchmark run, not the newest per row. Deliberately
-        # outside the inventory's cache: that one is a walk over tens of GB held
-        # for minutes, and a run that just finished has to appear here now.
-        module = _dev_surface("lab_inventory")
-        if module is None:
-            return _text(404, "the benchmark ledger ships with the search lab, "
-                              "which is in the source repo and not in an install")
-        return _ok(module.runs(
-            row=_first(params, "row"),
-            limit=_int(params, "limit", module.RUNS_LIMIT, hi=100_000),
-        ))
-
-    if path.startswith("/api/search-lab/runs/") and path.endswith("/queries"):
-        # One run's per-query detail — which queries it failed, and (with `vs`)
-        # which ones moved against another run. Read from that run's own sidecar,
-        # so this costs one file open and the runs list above costs none.
-        module = _dev_surface("lab_inventory")
-        if module is None:
-            return _text(404, "the benchmark ledger ships with the search lab, "
-                              "which is in the source repo and not in an install")
-        run_id = path[len("/api/search-lab/runs/"):-len("/queries")]
-        return _ok(module.queries(
-            run_id,
-            vs=_first(params, "vs"),
-            limit=_int(params, "limit", module.QUERIES_LIMIT, hi=5_000),
-        ))
 
     # unmatched API path — don't fall through to the SPA shell
     if path.startswith("/api/"):
