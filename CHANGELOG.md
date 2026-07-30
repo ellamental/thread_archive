@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **One warm pass at a time per machine, and the queue is recorded.** Warming loads a
+  torch model, reads the vector pack end to end and pulls the graph off disk, and none
+  of it is shareable — the model has to end up resident in the process doing the
+  warming, so unlike the corpus graph these passes cannot be deduplicated, only kept
+  from thrashing each other. They overlapped by default: several services warm
+  independently and restarts arrive in bursts, and the ledger caught two passes 1.9s
+  apart taking ~303s each against ~4s for one with the box to itself, because
+  concurrent passes evict each other's page cache and contend for the accelerator.
+  `warm_models` now takes a turn on an flock over `<home>/.warm.lock`. Three processes
+  started in the same instant serialize to 5.3s / 9.2s / 13.1s — and the queued ones
+  spend *less* time working than the first (`search_ms` 2.0s → 0.34s) because a
+  serialized pass inherits the page cache its predecessor warmed. Waiting is safe
+  because a warm pass is off the request path by construction; every failure mode ends
+  in a warmed process instead — flock releases on death, a wedged holder times out
+  after 120s and warms unserialized, and a lock that cannot be opened at all is skipped
+  rather than waited on. `wait_ms` rides in the warm record beside the stages, because
+  a slow restart that was slow *work* and one that was a slow *turn* want opposite
+  fixes and are indistinguishable in a total.
 - **A starting process loads the corpus graph instead of rebuilding it: 8.9s → 0.12s.**
   `graph_cache` has persisted the graph for exactly this, but the warm pass asked for
   it through `get(block=True)`, which routes to `build()` — the authoritative path,

@@ -298,7 +298,13 @@ def record_warm(
 ) -> None:
     """Record one :func:`thread_archive._retrieval.warm_models` pass — how long a
     process took to become useful, split by stage (``embed_ms``, ``graph_ms``,
-    ``search_ms``).
+    ``search_ms``, and ``wait_ms`` for the queue in front of them).
+
+    ``duration_ms`` covers the wait as well as the work, because the question it
+    answers is when the process started being useful and a queued process is not
+    useful yet. ``wait_ms`` is what separates the two readings of a slow pass — work
+    that got slower against a turn that came late — which want opposite fixes and are
+    indistinguishable in a total.
 
     A ``warm`` row is the counterpart to the cold flags on a search: those say a
     request paid a load, this says what the load costs when it is paid where it
