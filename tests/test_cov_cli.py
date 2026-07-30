@@ -1768,6 +1768,34 @@ def test_status_says_nothing_about_silences_when_there_are_none(capsys) -> None:
     assert "silenced:" not in capsys.readouterr().out
 
 
+def test_status_names_the_ingest_faults_on_record(archive_home, capsys) -> None:
+    """The question a green daemon cannot answer about itself: was ingest ever
+    broken. The ``watch:`` line clears the moment a poll comes back green, while
+    the conversations a two-day fault dropped stay dropped — so the ledger's own
+    record is reported beside it, worst first and only the worst three."""
+    from thread_archive._ops import ingest_errors
+
+    ingest_errors.reset_tally()
+    for _ in range(10):  # rows land on powers of ten: this one records itself at 10
+        ingest_errors.record(["cursor: scan failed: database is locked"], home=archive_home)
+    ingest_errors.record(["codex: could not parse /tmp/session-1.jsonl"], home=archive_home)
+    ingest_errors.record(["grok: unreadable export /tmp/export-2.zip"], home=archive_home)
+    ingest_errors.record(["opencode: missing store /tmp/store-3"], home=archive_home)
+
+    assert cli.report_status(_status_base()) == 0
+    out = capsys.readouterr().out
+    # "at least", because the count is a floor — the 200 sightings after a fault
+    # last recorded itself at 1,000 are real and unwritten.
+    assert "faults:  at least 13 ingest error(s) on record across 4 distinct fault(s)" in out
+    assert "10x [cursor]" in out
+    assert out.count("1x [") == 2  # the other three tie at one; three rows printed in all
+
+
+def test_status_is_quiet_about_faults_on_an_install_that_had_none(archive_home, capsys) -> None:
+    assert cli.report_status(_status_base()) == 0
+    assert "faults:" not in capsys.readouterr().out
+
+
 # ── `web`: the opener ────────────────────────────────────────────────────────
 # Driven with $BROWSER pointed at a no-op command, so these run the real
 # `webbrowser` path — the URL is genuinely handed off — without a window opening
@@ -1833,6 +1861,18 @@ def test_web_refuses_to_write_over_a_config_it_could_not_read(
 def test_source_ingest_on_an_archive_that_recorded_nothing(archive_home, capsys) -> None:
     assert cli.main(["source", "ingest"]) == 0
     assert "no ingest recorded in the last 24h" in capsys.readouterr().out
+
+
+def test_source_ingest_says_when_the_ledger_is_the_reason_it_is_empty(
+    archive_home, monkeypatch, capsys
+) -> None:
+    """A quiet window and an install that writes no ledger render identically, and
+    only one of them is fixed by asking for a longer window."""
+    monkeypatch.setenv("THREAD_ARCHIVE_INGEST_LOG", "0")
+    assert cli.main(["source", "ingest"]) == 0
+    out = capsys.readouterr().out
+    assert "no ingest recorded in the last 24h" in out
+    assert '"dev_mode": true' in out
 
 
 def test_source_ingest_reports_sources_stages_and_upkeep(archive_home, capsys) -> None:
