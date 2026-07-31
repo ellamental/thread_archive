@@ -15,7 +15,7 @@ import pytest
 from sqlalchemy import text
 
 # The /api/stats survey is read through the viewer's router, which is dev-only
-# and ships in no wheel — see docs/web-viewer.md.
+# and ships in no wheel — see docs/public/web-viewer.md.
 pytest.importorskip("thread_archive._web", reason="the viewer is dev-only (no wheel carries it)")
 
 from thread_archive import _api as ta  # noqa: E402

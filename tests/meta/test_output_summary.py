@@ -9,7 +9,7 @@ actually has: agents and CI rows, which verify a run by piping it through
 byte-identical to a command that failed to launch — so the reader can't tell a
 passing suite from a broken invocation, and re-runs it, harder, several times.
 
-Callers own their own quiet: ``-q`` belongs on the command line (docs/install.md's
+Callers own their own quiet: ``-q`` belongs on the command line (docs/public/install.md's
 run line, the ci.toml rows), never in ``addopts``, so a caller who asks for
 quiet gets quiet *with* its counts line.
 """

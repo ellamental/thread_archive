@@ -1,7 +1,7 @@
 """Tier-0 search-quality eval: relevance floors + ranking invariants, offline.
 
 The fast tier of the search-quality ladder (the tiers are mapped in
-docs/search-quality.md): every pytest run scores the
+docs/public/search-quality.md): every pytest run scores the
 production lexical pipeline against the checked-in synthetic corpus and case
 set in ``quality_corpus.py`` — deterministic, model-free, seconds. The metric
 floors are a ratchet against the corpus's known relevance structure; the

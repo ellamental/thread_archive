@@ -16,7 +16,7 @@ spelling still resolves (``_LEGACY_VERBS``, and ``backup <dest>`` via
 :func:`_normalize`): the installed service manifests carry them, and a rename
 that strands a running agent is not a rename.
 
-**The whole tree is public surface** (``docs/stability.md``). This is the
+**The whole tree is public surface** (``docs/public/stability.md``). This is the
 process seam: the service manifests, lab's cron script, the /ci skill, the
 monitor's heartbeat contract and an operator's shell history all name these
 verbs, and none of them can follow a rename. What a verb is called and what
@@ -528,7 +528,7 @@ def cmd_docs(args: argparse.Namespace) -> int:
     if not listing:
         print(
             "this installation carries no manual — read it at\n"
-            "https://github.com/ellamental/thread_archive/tree/main/docs",
+            "https://github.com/ellamental/thread_archive/tree/main/docs/public",
             file=sys.stderr,
         )
         return 1

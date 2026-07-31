@@ -8,7 +8,7 @@ export interface SmokeRoute {
 }
 
 /**
- * The page routes archive commits to (docs/web-viewer.md). Editor buttons,
+ * The page routes archive commits to (docs/public/web-viewer.md). Editor buttons,
  * sibling consoles' navbars and bookmarks link these from outside this repo, so
  * a rename strands a URL living in someone else's source. Adding a route is
  * free; dropping one of these is a deliberate act that edits this list.

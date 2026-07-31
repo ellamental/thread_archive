@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- The KNN matrix's cold-cache inline build honors the deferred-construction policy: a warmed server's request
+  thread never assembles a pack (it kicks the single-flight background refresh, serves lexical-only, and stamps
+  `matrix_deferred` on the search row), which closes the last inline-build hole — measured in the ledger at up to
+  24s inside a request racing the warm pass. The warm pass now primes the matrix as its own recorded stage
+  (`matrix_ms`) rather than as a side effect buried in the priming search's time. Base-pack builds serialize on a
+  machine-wide flock (two rivals measured ~156s each against ~20-40s alone; the loser now usually mmaps the
+  winner's published files), and pack assembly decodes all vector blobs in one `frombuffer` pass instead of an
+  ndarray per row fed to `vstack`.
+
+- The docs tree is inverted: the shipped manual is `docs/public/`, and `docs/*.md` is the maintainer's half
+  (releasing, benchmarks, the dev panels). The wheel names `docs/public` in its include rather than excluding an
+  internal directory, so the artifact is default-closed — a new page ships only if it was deliberately written under
+  `public/`, where before a maintainer's page shipped unless someone remembered to exclude it. Both readers
+  (`thread-archive docs`, the viewer's `/docs`) and the viewer's link rewriter follow the move; the rewriter now
+  resolves a page-relative path against the manual's location rather than assuming one level below the repo root.
+
 - The claude-science incremental slice counts raw store rows, matching the watermark: it sliced the *filtered* line
   list with the raw-row offset, so any row the importer skips (a non-user/assistant role, undecodable JSON) shifted
   every later pass by one and silently dropped that many of its newest messages — permanently, since the watermark

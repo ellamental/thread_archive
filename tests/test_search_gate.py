@@ -25,7 +25,7 @@ root), but the suite is sandboxed off *every* machine location, so the ledger
 resolves into a tmpdir here just as the archive home does. That is the isolation
 working. The gate is answerable only once the bench has run at the code under
 test anyway, so it runs as a command from the release preflight
-(``python -m search_lab gate``, see ``docs/internal/releasing.md``) — the same shape
+(``python -m search_lab gate``, see ``docs/releasing.md``) — the same shape
 ci.toml's ``retrieval-gate`` row already takes.
 """
 

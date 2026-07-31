@@ -31,7 +31,7 @@ automatically and ``--update`` is a verb somebody types.
 **What this can and cannot certify.** Every gated row is a public benchmark whose
 labels somebody else made, so a breach is real evidence that the retrieval
 components got worse. It is still not evidence about *this archive* — see
-``docs/search-quality.md`` on why no protocol scoring this corpus qualifies. The
+``docs/public/search-quality.md`` on why no protocol scoring this corpus qualifies. The
 gate detects damage on other people's labels. That is the whole claim.
 
 **A stale row fails.** Not being measured at the code under release is

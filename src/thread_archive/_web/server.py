@@ -1086,7 +1086,7 @@ def route(
     # ---- the manual: the same pages `thread-archive docs` prints ----
     # Markdown source, rendered in the browser by the renderer the transcripts
     # already use. Served from the resolver rather than the static bundle, so a
-    # clone's edit to docs/ is live on the next request with no rebuild.
+    # clone's edit to docs/public/ is live on the next request with no rebuild.
     if path == "/api/docs":
         return _ok({"pages": [
             {"slug": p.slug, "title": p.title, "summary": p.summary} for p in _docs.pages()

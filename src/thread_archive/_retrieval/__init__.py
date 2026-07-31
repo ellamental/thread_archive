@@ -306,11 +306,27 @@ def warm_models(embedder=None) -> None:
                     logger.debug("warm_models: a model stage failed to preload", exc_info=True)
                 stage_ms[name + "_ms"] = (perf_counter() - _t) * 1000.0
 
-            # Run one throwaway search end to end: it loads the vector matrix,
-            # which caches process-globally for the real queries.
-            # Scoped to :data:`DEFAULT_CONTENT_TYPES` so the matrix this primes is keyed the
-            # same as the real queries reuse (the matrix cache is keyed by content-type scope;
-            # a mismatched scope would prime a matrix the real query never touches).
+            # Assemble the KNN matrix synchronously, as its own stage. Under deferred
+            # construction the request path never builds it (:func:`.vectors._load_matrix`
+            # kicks a background refresh and serves lexical-only), so the warm pass is
+            # what pays the build — explicitly, rather than as a side effect buried in
+            # the priming search's time. Scoped to :data:`DEFAULT_CONTENT_TYPES` so the
+            # entry this primes is keyed the same as the real queries reuse (the matrix
+            # cache is keyed by content-type scope; a mismatched scope would prime a
+            # matrix the real query never touches).
+            _t = perf_counter()
+            try:
+                from . import vectors as _vectors
+
+                _vectors.prime_matrix(DEFAULT_CONTENT_TYPES)
+            except Exception:  # noqa: BLE001 — warming is best-effort
+                failed.append("matrix")
+                logger.debug("warm_models: matrix prime skipped", exc_info=True)
+            stage_ms["matrix_ms"] = (perf_counter() - _t) * 1000.0
+
+            # Run one throwaway search end to end: it fills the remaining
+            # process-global caches the first real query reuses (FTS pages, the
+            # hydration path) and serves the primed matrix rather than building one.
             _t = perf_counter()
             try:
                 from .. import _api as api

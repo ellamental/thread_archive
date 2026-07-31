@@ -88,7 +88,7 @@ describe('one manual page', () => {
     mswJson('/api/docs/cli', {
       slug: 'cli',
       title: 'CLI',
-      markdown: '# CLI\n\nSee [the policy](../SECURITY.md).\n',
+      markdown: '# CLI\n\nSee [the policy](../../SECURITY.md).\n',
     })
     renderAt('/docs/cli')
 
@@ -137,18 +137,23 @@ describe('link resolution', () => {
       to: 'https://example.org/x',
       external: true,
     })
-    // A path out of docs/, and a docs page this install does not carry: both
-    // resolve upstream rather than 404 into the app shell.
-    expect(resolveDocHref('../search_lab/beir_eval.py', slugs).to).toBe(
+    // A path out of docs/public/, and a docs page this install does not carry:
+    // both resolve upstream rather than 404 into the app shell. Relative walks
+    // resolve from where the manual sits in the repo, however many levels up.
+    expect(resolveDocHref('../../search_lab/beir_eval.py', slugs).to).toBe(
       'https://github.com/ellamental/thread_archive/blob/main/search_lab/beir_eval.py',
     )
-    expect(resolveDocHref('gone.md', slugs).to).toBe(
-      'https://github.com/ellamental/thread_archive/blob/main/docs/gone.md',
+    expect(resolveDocHref('../../SECURITY.md', slugs).to).toBe(
+      'https://github.com/ellamental/thread_archive/blob/main/SECURITY.md',
     )
-    // The manual's internal half is in the repo and in no install, so a public
-    // page linking one sends the reader upstream rather than to a dead route.
-    expect(resolveDocHref('internal/devweb.md', slugs)).toEqual({
-      to: 'https://github.com/ellamental/thread_archive/blob/main/docs/internal/devweb.md',
+    expect(resolveDocHref('gone.md', slugs).to).toBe(
+      'https://github.com/ellamental/thread_archive/blob/main/docs/public/gone.md',
+    )
+    // The manual's internal half is one level up, in the repo and in no install,
+    // so a public page linking one sends the reader upstream rather than to a
+    // dead route.
+    expect(resolveDocHref('../devweb.md', slugs)).toEqual({
+      to: 'https://github.com/ellamental/thread_archive/blob/main/docs/devweb.md',
       external: true,
     })
   })

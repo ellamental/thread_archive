@@ -216,7 +216,7 @@ and narration included. Releasing rewrites them for readers of the release:
 
 Pick the number (semver; pre-0.1.0, all/breaking changes bump the minor). Edit
 `__version__` in `src/thread_archive/__init__.py`. If the truth-directory
-layout changed incompatibly, the format version in `docs/format.md` moves on
+layout changed incompatibly, the format version in `docs/public/format.md` moves on
 its own rules — that is a separate, deliberate decision, not part of the
 package bump.
 

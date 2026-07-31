@@ -243,6 +243,94 @@ def test_knn_pack_mmap_lifecycle(archive_home) -> None:
     assert [eid for eid, _, _ in res][0] == 1  # sees the upserted vector
 
 
+def test_cold_matrix_defers_to_background_under_construction_policy(archive_home) -> None:
+    """A process that defers construction (a warmed server) never assembles a pack on
+    the request thread: a cold-cache search sits the vector arm out (None — lexical
+    degrade), flags ``matrix_deferred``, and kicks the single-flight background
+    refresh; once that lands, the same search serves semantically."""
+    import time as _time
+
+    from thread_archive._retrieval import _probe
+    from thread_archive._retrieval.model_slot import set_defer_construction
+
+    init_db()
+    vectors.ensure_index()
+    vectors.reset_matrix_cache()
+    a = _unit((0, 1.0))
+    vectors.index_vectors([(1, "user", a)])
+    emb = _FixedEmbedder(a)
+
+    set_defer_construction(True)
+    try:
+        with _probe.install() as probe:
+            assert vectors.search("anything", embedder=emb) is None  # arm sat out
+        assert probe.matrix_deferred is True
+        assert probe.matrix_built is False
+        # The kick was a background refresh; wait for the single-flight to land.
+        deadline = _time.monotonic() + 10.0
+        while vectors.is_refreshing() and _time.monotonic() < deadline:
+            _time.sleep(0.02)
+        with _probe.install() as probe:
+            res = vectors._knn(a.tolist(), ("user", "text", "title"), cand=10)
+        assert res is not None and [eid for eid, _, _ in res] == [1]  # the arm rejoined
+        assert probe.matrix_deferred is False
+        assert probe.matrix_built is False  # …off the refreshed cache, not an inline build
+    finally:
+        set_defer_construction(False)
+
+
+def test_prime_matrix_builds_synchronously_for_the_default_scope(archive_home) -> None:
+    """The warm pass's prime: after ``prime_matrix``, a deferring process serves the
+    vector arm on its first search — no inline build, no lexical-only window."""
+    from thread_archive._retrieval import _probe
+    from thread_archive._retrieval.model_slot import set_defer_construction
+
+    init_db()
+    vectors.ensure_index()
+    vectors.reset_matrix_cache()
+    a = _unit((0, 1.0))
+    vectors.index_vectors([(1, "user", a)])
+    emb = _FixedEmbedder(a)
+
+    vectors.prime_matrix(None)  # the default scope, as warm_models primes it
+    set_defer_construction(True)
+    try:
+        with _probe.install() as probe:
+            res = vectors._knn(emb.vec, ("user", "text", "title"), cand=10)
+        assert res is not None and [eid for eid, _, _ in res] == [1]
+        assert probe.matrix_deferred is False
+        assert probe.matrix_built is False
+    finally:
+        set_defer_construction(False)
+
+
+def test_pack_turn_serializes_and_releases(archive_home) -> None:
+    """The pack-build turn: exclusive while held (a second taker waits out its bound),
+    reacquirable once released, and fail-soft — it must never leave the lock held."""
+    import fcntl
+    import os as _os
+    import time as _time
+
+    init_db()
+    vectors.ensure_index()
+    d = vectors._pack_dir()
+    with vectors._pack_turn(d):
+        lock_path = d / vectors._PACK_LOCK_FILE
+        assert lock_path.exists()
+        # A rival on its own fd cannot take the flock while the turn is held.
+        fd = _os.open(lock_path, _os.O_RDWR)
+        try:
+            with pytest.raises(OSError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            _os.close(fd)
+    # Released on exit: the next taker gets it immediately, not after the timeout.
+    started = _time.monotonic()
+    with vectors._pack_turn(d):
+        pass
+    assert _time.monotonic() - started < 1.0
+
+
 def test_split_matrix_matmul_and_gather() -> None:
     """_SplitMatrix presents base + delta as one matrix: the matvec concatenates across
     the split, a row gather spans both halves in the requested order, and shape/len

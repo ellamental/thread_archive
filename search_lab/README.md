@@ -53,7 +53,7 @@ none is ever cited as evidence a change helped.
 ## The quality ladder
 
 Fastest tier first — climb until the evidence matches the stakes.
-(`docs/search-quality.md` tells the same story with the measured numbers.)
+(`docs/public/search-quality.md` tells the same story with the measured numbers.)
 
 (`python -m search_lab benchmark` runs tier 4 for you, skipping what a run has
 already measured at this configuration — see "Running the whole bench".)

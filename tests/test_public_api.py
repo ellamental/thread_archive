@@ -3,16 +3,16 @@
 The public API is exactly four things: the retrieval tools
 (``thread_search`` / ``thread_read`` — served to agents by ``archive-mcp`` and
 to a person by the ``thread-archive search`` / ``thread-archive read`` verbs),
-the ``thread-archive`` CLI (docs/cli.md), the on-disk truth format
-(docs/format.md), and the provider plugin API (``thread_archive.provider``,
-docs/providers.md). Everything else — the ``_api`` coordination layer, every
+the ``thread-archive`` CLI (docs/public/cli.md), the on-disk truth format
+(docs/public/format.md), and the provider plugin API (``thread_archive.provider``,
+docs/public/providers.md). Everything else — the ``_api`` coordination layer, every
 underscore-prefixed module — is private support machinery. These tests make
 widening the surface a deliberate act (edit the pinned sets here) instead of
 a naming accident.
 
 The viewer's URLs are pinned here too, but as a promise to this machine's own
 family rather than a public one: the viewer is dev-only and ships in no wheel,
-so that test stands down where it isn't (docs/web-viewer.md).
+so that test stands down where it isn't (docs/public/web-viewer.md).
 """
 
 from __future__ import annotations
@@ -172,7 +172,7 @@ def test_committed_web_endpoints_are_served(archive_home) -> None:
 
 
 def test_retrieval_tools_expose_no_extension_region_surface() -> None:
-    """The extension region (docs/format.md) is storage, not product.
+    """The extension region (docs/public/format.md) is storage, not product.
 
     ``archive-mcp`` generates its tool schema from these signatures and
     docstrings, so a parameter or a paragraph here is shipped to every install

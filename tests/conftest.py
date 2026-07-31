@@ -174,7 +174,7 @@ def pytest_collection_modifyitems(config, items):
     """Stand the ``viewer`` marker down where there is no viewer.
 
     The viewer is dev-only: ``thread_archive._web`` and its built bundle are
-    excluded from the wheel (docs/web-viewer.md), so `web`, `watch --web`, and
+    excluded from the wheel (docs/public/web-viewer.md), so `web`, `watch --web`, and
     the setup wizard's browser step exist in a checkout and not in an install.
     This suite runs both ways — from the source tree, and against the installed
     wheel in the Docker install lane — and the marked tests describe behaviour

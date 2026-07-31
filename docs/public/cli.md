@@ -87,10 +87,11 @@ is not, except where a flag names a machine-readable shape
 implementation `archive-mcp` serves, so a query typed here and the same query
 asked mid-conversation return the same answer.
 
-`docs` reads this directory — the pages ship as package data inside the wheel,
-so an install answers for itself with no clone and no network. Same pages the
-viewer serves at `/docs`. Only this directory: `docs/internal/` is written for
-whoever works on the repo, ships in no wheel, and is listed by neither reader.
+`docs` reads this directory — `docs/public/`, whose pages ship as package data
+inside the wheel, so an install answers for itself with no clone and no network.
+Same pages the viewer serves at `/docs`. Only this directory: `docs/*.md` one
+level up is written for whoever works on the repo, ships in no wheel, and is
+listed by neither reader.
 
 The web viewer is a third door onto the same archive, cohosted by
 `thread-archive watch --web` — but it is dev-only and ships in no wheel, so
@@ -100,4 +101,4 @@ yours ([web-viewer.md](web-viewer.md)).
 
 The maintainer's instruments — the retrieval report, telemetry, the search lab —
 are not a verb here at all. They are their own app on their own server, run with
-`python -m devweb` from a clone ([internal/devweb.md](internal/devweb.md)).
+`python -m devweb` from a clone ([../devweb.md](../devweb.md)).

@@ -89,24 +89,23 @@ def test_wheel_carries_the_manual(dist) -> None:
     wheel, _ = dist
     names = set(zipfile.ZipFile(wheel).namelist())
     shipped = {n for n in names if n.startswith("thread_archive/_docs/") and n.endswith(".md")}
-    on_disk = {f"thread_archive/_docs/{p.name}" for p in (REPO / "docs").glob("*.md")}
+    on_disk = {f"thread_archive/_docs/{p.name}" for p in (REPO / "docs" / "public").glob("*.md")}
     assert shipped == on_disk, f"the wheel's manual is not the repo's: {shipped ^ on_disk}"
     # And the resolver that reads them, beside them.
     assert "thread_archive/_docs/__init__.py" in names
 
 
 def test_wheel_carries_no_internal_docs(dist) -> None:
-    # docs/internal/ is the maintainer's half — the release process, the bench
+    # docs/*.md is the maintainer's half — the release process, the bench
     # landscape, the dev panels. It names branches and instruments no install
-    # has, and an ordinary include (not force-include, which ignores `exclude`)
-    # is what keeps it out of the artifact.
+    # has, and the wheel's include naming `docs/public` by path is what keeps it
+    # out of the artifact: a page ships only if it was written under public/.
     wheel, _ = dist
     names = zipfile.ZipFile(wheel).namelist()
-    leaked = [n for n in names if "internal" in n]
+    internal = sorted(p.stem for p in (REPO / "docs").glob("*.md"))
+    assert internal, "docs/*.md is empty — this test proves nothing"
+    leaked = [n for n in names if any(n.endswith(f"/{stem}.md") for stem in internal)]
     assert not leaked, f"internal docs leaked into the wheel: {leaked}"
-    internal = sorted(p.stem for p in (REPO / "docs" / "internal").glob("*.md"))
-    assert internal, "docs/internal/ is empty — this test proves nothing"
-    assert not [n for n in names if any(f"/{stem}.md" in n for stem in internal)]
 
 
 def test_wheel_carries_no_viewer(dist) -> None:

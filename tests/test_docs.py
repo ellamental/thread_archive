@@ -1,6 +1,6 @@
 """The manual as data: what ships, how a page is addressed, and what reads it.
 
-``docs/*.md`` is package data (the wheel renames the tree to
+``docs/public/*.md`` is package data (the wheel renames the tree to
 ``thread_archive/_docs``), so the pages have two readers that must agree — the
 ``thread-archive docs`` verb and the viewer's ``/docs`` — and one resolver
 under them. Pinned here: the resolver's contract, the public/internal boundary
@@ -20,7 +20,10 @@ import pytest
 from thread_archive import _docs
 from thread_archive.cli import build_parser, main
 
-REPO_DOCS = Path(__file__).resolve().parent.parent / "docs"
+#: The maintainer's half — ``docs/*.md``, which ships nowhere.
+REPO_INTERNAL = Path(__file__).resolve().parent.parent / "docs"
+#: The manual proper — the pages the wheel carries and both readers serve.
+REPO_DOCS = REPO_INTERNAL / "public"
 
 
 def test_this_installation_resolves_a_manual() -> None:
@@ -37,15 +40,15 @@ def test_every_markdown_file_is_a_page() -> None:
 
 
 def test_the_internal_half_of_the_manual_is_not_served() -> None:
-    """``docs/internal/`` is the maintainer's, and neither reader offers it.
+    """``docs/*.md`` is the maintainer's, and neither reader offers it.
 
     Those pages name branches, release gates and a dev-panel server no install
     has. The split is the directory and nothing else — no list to keep in sync —
-    so this asserts the mechanism: whatever is under ``internal/`` today is
+    so this asserts the mechanism: whatever sits beside ``public/`` today is
     absent from the index and unreachable by slug.
     """
-    internal = sorted(p.stem for p in (REPO_DOCS / "internal").glob("*.md"))
-    assert internal, "docs/internal/ is empty — the split has nothing behind it"
+    internal = sorted(p.stem for p in REPO_INTERNAL.glob("*.md"))
+    assert internal, "docs/*.md is empty — the split has nothing behind it"
     served = {p.slug for p in _docs.pages()}
     assert served.isdisjoint(internal), served & set(internal)
     for slug in internal:
@@ -53,9 +56,9 @@ def test_the_internal_half_of_the_manual_is_not_served() -> None:
 
 
 def test_no_reference_reaches_into_the_internal_half() -> None:
-    # The slug arrives from a URL path segment and a CLI argument, so the one
-    # spelling that names a real file inside `internal/` must not resolve.
-    for ref in ("internal/devweb", "internal/devweb.md", "internal"):
+    # The slug arrives from a URL path segment and a CLI argument, so the
+    # spellings that name a real file one level up must not resolve.
+    for ref in ("../devweb", "../devweb.md", "..", "../README.md"):
         assert _docs.find(ref) is None, ref
 
 
@@ -168,7 +171,7 @@ def test_docs_verb_lists_every_page(capsys) -> None:
     out = capsys.readouterr().out
     for page in _docs.pages():
         assert page.slug in out
-    for internal in (REPO_DOCS / "internal").glob("*.md"):
+    for internal in REPO_INTERNAL.glob("*.md"):
         assert internal.stem not in out, internal.stem
 
 
@@ -208,14 +211,14 @@ def test_the_docs_verb_is_registered_unconditionally() -> None:
 # docs` prints it offline, and the viewer serves it. A dangling link or a stale
 # quoted number is a shipped defect, not a repo blemish.
 
-REPO_ROOT = REPO_DOCS.parent
+REPO_ROOT = REPO_INTERNAL.parent
 _LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 
 
 def _markdown_sources() -> list[Path]:
     return [
         *sorted(REPO_DOCS.glob("*.md")),
-        *sorted((REPO_DOCS / "internal").glob("*.md")),
+        *sorted(REPO_INTERNAL.glob("*.md")),
         REPO_ROOT / "README.md",
         REPO_ROOT / "CONTRIBUTING.md",
         REPO_ROOT / "SECURITY.md",

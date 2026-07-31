@@ -13,7 +13,7 @@ import pytest
 
 # The viewer is dev-only and ships in no wheel, so these run from a checkout and
 # stand down against an installed package (the Docker install lane runs this
-# suite against the wheel). See docs/web-viewer.md.
+# suite against the wheel). See docs/public/web-viewer.md.
 pytest.importorskip("thread_archive._web", reason="the viewer is dev-only (no wheel carries it)")
 
 from thread_archive import _api as ta  # noqa: E402
@@ -1638,11 +1638,11 @@ def test_docs_page_accepts_the_filename_its_own_cross_links_use(archive_home):
 
 
 def test_the_internal_half_of_the_manual_is_not_served(archive_home):
-    # docs/internal/ is the maintainer's — release process, bench landscape, the
+    # docs/*.md is the maintainer's — release process, bench landscape, the
     # dev panels. The viewer serves the manual, not the repo's own paperwork.
     _, _, payload = _get("/api/docs")
     assert "releasing" not in {p["slug"] for p in payload["pages"]}
-    for path in ("/api/docs/releasing", "/api/docs/internal/devweb"):
+    for path in ("/api/docs/releasing", "/api/docs/../devweb"):
         assert route("GET", path, {})[0] == 404, path
 
 

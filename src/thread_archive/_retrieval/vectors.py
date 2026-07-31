@@ -48,6 +48,7 @@ from . import _probe
 from ._types import EventHit
 from .embed import EMBEDDING_CHAR_CAP
 from .fts import build_event_hit
+from .model_slot import defer_construction
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,51 @@ _matrix_checked_at: dict = {}  # {cache key: monotonic ts of the last staleness 
 # stays valid; the age is grace, not correctness).
 _PACK_STALE_AGE_S = 3600
 
+# flock on ``<pack_dir>/.pack.lock``: one base-pack build at a time per machine.
+# A base build streams the whole vector table off disk and writes it back out, so
+# two of them thrash each other for the same I/O and page cache — measured on this
+# archive, two rival rebuilds took ~156s each against ~20-40s for one alone. Rival
+# builders of one token write byte-identical files, so the loser of the race
+# usually finds the winner's base already published when its turn comes and mmaps
+# it instead of building at all. Bounded wait, then build anyway: a wedged holder
+# must degrade this to the unserialized behavior, never leave a process matrixless.
+_PACK_LOCK_FILE = ".pack.lock"
+_PACK_LOCK_TIMEOUT_S = 300.0
+_PACK_LOCK_POLL_S = 0.5
+
+
+@contextmanager
+def _pack_turn(d: Path):
+    """Take this machine's base-pack build turn (see :data:`_PACK_LOCK_FILE`).
+    Fail-soft: if the lock cannot be taken (read-only filesystem, no flock) the
+    build proceeds unserialized — serialization is an optimization, never a gate."""
+    import fcntl
+
+    fd = None
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        fd = os.open(d / _PACK_LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o644)
+        deadline = time.monotonic() + _PACK_LOCK_TIMEOUT_S
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    logger.debug("vectors: waited out the pack-build lock; building anyway")
+                    break
+                time.sleep(_PACK_LOCK_POLL_S)
+    except Exception:  # noqa: BLE001 — never let the lock break a build
+        logger.debug("vectors: could not take the pack-build lock", exc_info=True)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)  # closing the fd releases the flock
+            except OSError:
+                pass
+
 # The pack is a base + delta: a large on-disk base pack (mmap) plus the vectors
 # written since it was built, held in RAM. Continuous ingest moves the store token
 # every few minutes, but a single new vector does not invalidate the ~GB base — it
@@ -246,7 +292,7 @@ def _corpus_arrays(s) -> tuple:
     ids: list[int] = []
     cts: list[str] = []
     occ: list = []
-    vecs: list[np.ndarray] = []
+    vecs: list[bytes] = []
     result = s.execute(sa_text(
         "SELECT v.event_id, v.content_type, v.vec, e.occurred_at FROM event_vectors v "
         "LEFT JOIN events e ON e.id = v.event_id "
@@ -255,14 +301,27 @@ def _corpus_arrays(s) -> tuple:
     for r in result:
         ids.append(int(r[0]))
         cts.append(str(r[1]))
-        vecs.append(np.frombuffer(r[2], dtype=np.float32))
+        vecs.append(r[2])
         occ.append(r[3])
     ct_names = sorted(set(cts))
     codes = {c: i for i, c in enumerate(ct_names)}
-    mat = np.vstack(vecs) if vecs else np.empty((0, _DIM), dtype=np.float32)
+    mat = _stack_blobs(vecs)
     ids_arr = np.asarray(ids, dtype=np.int64)
     ct_codes = np.asarray([codes[c] for c in cts], dtype=np.int16)
     return mat, ids_arr, ct_codes, _occurred_array(occ), ct_names
+
+
+def _stack_blobs(vecs: list[bytes]) -> np.ndarray:
+    """The row-major matrix of ``vecs``' float32 blobs, decoded in one pass.
+
+    One join + one ``frombuffer`` over the concatenation, not an ndarray per row
+    fed to ``np.vstack`` — the per-row form spends most of a base build's CPU on
+    273k tiny allocations. Ragged input (a blob whose length disagrees with the
+    rest) fails the reshape, exactly as it failed the vstack: the writers enforce
+    one dimensionality, and a corrupt row must stay an error, never a misalignment."""
+    if not vecs:
+        return np.empty((0, _DIM), dtype=np.float32)
+    return np.frombuffer(b"".join(vecs), dtype=np.float32).reshape(len(vecs), -1)
 
 
 def _delta_arrays(s, watermark: int) -> tuple:
@@ -274,7 +333,7 @@ def _delta_arrays(s, watermark: int) -> tuple:
     ids: list[int] = []
     cts: list[str] = []
     occ: list = []
-    vecs: list[np.ndarray] = []
+    vecs: list[bytes] = []
     for r in s.execute(sa_text(
         "SELECT v.event_id, v.content_type, v.vec, e.occurred_at FROM event_vectors v "
         "LEFT JOIN events e ON e.id = v.event_id "
@@ -282,10 +341,9 @@ def _delta_arrays(s, watermark: int) -> tuple:
     ), {"wm": int(watermark)}):
         ids.append(int(r[0]))
         cts.append(str(r[1]))
-        vecs.append(np.frombuffer(r[2], dtype=np.float32))
+        vecs.append(r[2])
         occ.append(r[3])
-    mat = np.vstack(vecs) if vecs else np.empty((0, _DIM), dtype=np.float32)
-    return mat, np.asarray(ids, dtype=np.int64), _occurred_array(occ), cts
+    return _stack_blobs(vecs), np.asarray(ids, dtype=np.int64), _occurred_array(occ), cts
 
 
 def _sweep_packs(d: Path, keep_tag: str) -> None:
@@ -383,17 +441,32 @@ def _ensure_pack(s, store_token: tuple[int, int]) -> tuple:
     d = _pack_dir()
     if d is None:
         return _corpus_arrays(s)  # non-file DSN: no disk base, full in-RAM arrays
+
+    def _build_fresh() -> tuple:
+        """Pack a fresh base under the machine-wide build turn, as
+        ``(mmap'd arrays, watermark)``. A rival may publish this token's base while
+        this builder queues, so the turn re-checks for a reusable one first — the
+        common way to 'build' after a wait is to mmap the winner's files."""
+        with _pack_turn(d):
+            again = _reusable_base(s, d, cur_count)
+            if again is not None:
+                try:
+                    return _mmap_base(d, f"{again[0]}-{again[1]}"), again[1]
+                except FileNotFoundError:  # swept between selection and load
+                    pass
+            return _write_base(s, d, store_token), cur_max_rowid
+
     base = _reusable_base(s, d, cur_count)
     if base is None:
-        base_mat, base_ids, base_codes, base_ts, base_names = _write_base(s, d, store_token)
-        watermark = cur_max_rowid  # fresh base spans the whole snapshot → empty delta
+        arrays, watermark = _build_fresh()
+        base_mat, base_ids, base_codes, base_ts, base_names = arrays
     else:
         bc, bw = base
         try:
             base_mat, base_ids, base_codes, base_ts, base_names = _mmap_base(d, f"{bc}-{bw}")
         except FileNotFoundError:  # swept between selection and load — pack fresh
-            base_mat, base_ids, base_codes, base_ts, base_names = _write_base(s, d, store_token)
-            watermark = cur_max_rowid
+            arrays, watermark = _build_fresh()
+            base_mat, base_ids, base_codes, base_ts, base_names = arrays
         else:
             watermark = bw
     delta_mat, delta_ids, delta_ts, delta_cts = _delta_arrays(s, watermark)
@@ -1020,8 +1093,15 @@ def _load_matrix(cts: tuple[str, ...]):
     the request thread. A cached entry returns immediately — stale is acceptable, the
     lexical arm covers the freshest vectors — while staleness is probed at most once
     per :data:`_MATRIX_REFRESH_COOLDOWN_S` and any rebuild runs in a single-flight
-    background thread. Only a cold cache (the process's first query for this scope,
-    before the warm pass primes it) builds inline."""
+    background thread.
+
+    A cold cache splits by process policy, exactly as the model load does
+    (:func:`.model_slot.defer_construction`). A process that defers construction —
+    a long-running server, which warms in the background — never assembles a pack
+    on a request thread: the build is kicked into the single-flight background
+    refresh and ``None`` comes back, so the caller serves lexical-only now and the
+    vector arm rejoins once the refresh lands. Everything else (a one-shot CLI, a
+    test) builds inline — there is no other thread that would."""
     key = _matrix_key(cts)
     cached = _MATRIX_CACHE.get(key)
     if cached is not None:
@@ -1030,6 +1110,13 @@ def _load_matrix(cts: tuple[str, ...]):
             _matrix_checked_at[key] = now
             _refresh_matrix_async(key, tuple(sorted(cts)))
         return cached[1:]
+    if defer_construction():
+        # Flagged so the ledger can tell a search that sat the arm out waiting for
+        # the build from one whose scope simply embeds nothing.
+        _probe.flag("matrix_deferred")
+        _matrix_checked_at[key] = time.monotonic()
+        _refresh_matrix_async(key, tuple(sorted(cts)))
+        return None
     # The inline build — the one path that reads the whole pack on the request
     # thread. Flagged, not just timed: it is the difference between a search that
     # was slow and a search that was slow *because it was the first one*.
@@ -1038,6 +1125,24 @@ def _load_matrix(cts: tuple[str, ...]):
     _store_matrix_entry(key, entry)
     _matrix_checked_at[key] = time.monotonic()
     return entry[1:]
+
+
+def prime_matrix(content_types: Optional[list[str]] = None) -> None:
+    """Build (or refresh) the KNN matrix for ``content_types``' embedded scope,
+    synchronously, in the caller's thread — the warm pass's half of the deferred-
+    construction bargain. A server that defers construction never assembles a pack
+    on a request thread (:func:`_load_matrix`), so something off the request path
+    has to, and this is that call: it keys the cache exactly as a real query will,
+    so the first search after it serves the cached entry. A no-op when vectors are
+    unavailable or the scope embeds nothing."""
+    if not is_available():
+        return
+    cts = _scope_content_types(content_types)
+    if not cts:
+        return
+    ensure_index()
+    canonical = tuple(sorted(cts))
+    _refresh_matrix(_matrix_key(canonical), canonical)
 
 
 def reset_matrix_cache() -> None:
@@ -1071,7 +1176,8 @@ def _time_rows(ts_arr, since: Optional[str], until: Optional[str]):
 
 
 def _knn(qvec, cts: tuple[str, ...], cand: int, allowed_ids=None,
-         since: Optional[str] = None, until: Optional[str] = None) -> list[tuple[int, str, float]]:
+         since: Optional[str] = None,
+         until: Optional[str] = None) -> Optional[list[tuple[int, str, float]]]:
     """Brute-force cosine KNN over the cached matrix, **max-pooled per document
     before the top-k cut**: the matrix holds one row per chunk, and a doc's score
     is its best chunk's, so a long message matches on whichever slice is relevant.
@@ -1084,14 +1190,21 @@ def _knn(qvec, cts: tuple[str, ...], cand: int, allowed_ids=None,
 
     ``since``/``until`` express a *purely* temporal scope, which the pack answers
     itself (see :func:`_time_rows`) with no id list at all. They compose with
-    ``allowed_ids`` by intersection, so a caller that has both narrows by both."""
+    ``allowed_ids`` by intersection, so a caller that has both narrows by both.
+
+    Returns ``None`` — not an empty list — when the matrix is cold and this process
+    defers construction (see :func:`_load_matrix`): the arm did not run, which the
+    caller must distinguish from an arm that ran and matched nothing."""
     # Split the matrix load off the arithmetic: serving a warm cached matrix is
     # free, while a cold one builds the pack inline (see :func:`_load_matrix`) and
     # reads the whole corpus off disk. Charging both to one number makes the
     # expensive case indistinguishable from a slow matvec.
     _t = time.perf_counter()
-    ids, ct_arr, mat, doc_inverse, doc_rep, scope_rows, ts_arr = _load_matrix(cts)
+    loaded = _load_matrix(cts)
     _probe.record("matrix_ms", _t)
+    if loaded is None:
+        return None
+    ids, ct_arr, mat, doc_inverse, doc_rep, scope_rows, ts_arr = loaded
     n = len(ids)
     if n == 0:
         return []
@@ -1158,7 +1271,8 @@ def search(
     """Embedded semantic search: embed the query, brute-force cosine KNN, hydrate.
 
     Returns None when this isn't SQLite, the scope has no embedded pool, nothing's
-    indexed, or the embed fails — so search degrades to the lexical arm.
+    indexed, the embed fails, or the matrix is cold in a process that defers
+    construction — so search degrades to the lexical arm.
 
     ``embedder`` is the model the query is embedded with (default: the process
     embedder). It must be the one that indexed the vectors — they're only
@@ -1282,6 +1396,10 @@ def search(
         allowed_ids = np.fromiter((r[0] for r in rows), dtype=np.int64, count=len(rows))
     cand = max(limit * 3, 100)
     candidates = _knn(qvec, tuple(cts), cand, allowed_ids=allowed_ids, since=since, until=until)
+    if candidates is None:
+        # Matrix deferred to the background refresh — the arm sat out, which is
+        # the lexical-degrade None, not an arm that ran and found nothing.
+        return None
     if not candidates:
         return []
     sim_by: dict[tuple[int, str], float] = {(eid, ct): sim for eid, ct, sim in candidates}

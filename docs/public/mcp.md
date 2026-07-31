@@ -48,7 +48,7 @@ rather than by command:
 The HTTP transport is the same unauthenticated full read as the stdio one, over
 a loopback port, so it rejects a non-loopback `Host` (DNS-rebinding defense) and
 refuses a non-loopback bind unless `THREAD_ARCHIVE_MCP_NONLOCAL` is set
-deliberately. See [SECURITY.md](../SECURITY.md).
+deliberately. See [SECURITY.md](../../SECURITY.md).
 
 ## Catch-up ingest
 

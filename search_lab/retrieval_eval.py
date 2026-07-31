@@ -3,7 +3,7 @@
 Neither produces a relevance label, and that is the point. **No protocol that
 labels this archive's own corpus can certify that search is good** — labels made
 by searching are circular, and labels fixed against a record outside search come
-with queries nobody asked (``docs/search-quality.md`` → "The admission rule").
+with queries nobody asked (``docs/public/search-quality.md`` → "The admission rule").
 Quality claims live on the public benchmarks (``python -m search_lab benchmark``);
 what runs here answers narrower questions that have honest answers.
 

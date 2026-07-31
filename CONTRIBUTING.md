@@ -18,7 +18,7 @@ What does help:
   discussion as input.
 - **Provider support is the sanctioned extension point.** A new or fixed
   provider doesn't need a PR at all: the plugin API
-  ([docs/providers.md](docs/providers.md)) lets you write and maintain a
+  ([docs/public/providers.md](docs/public/providers.md)) lets you write and maintain a
   provider in your own repo, and `thread-archive source fix` scaffolds a local
   repair when a built-in one drifts.
 - **Fork it.** MIT license, no CLA, genuinely encouraged — if you want to take

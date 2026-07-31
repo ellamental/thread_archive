@@ -310,8 +310,8 @@ def record_warm(
     context: Optional[dict[str, Any]] = None,
 ) -> None:
     """Record one :func:`thread_archive._retrieval.warm_models` pass — how long a
-    process took to become useful, split by stage (``embed_ms``, ``graph_ms``,
-    ``search_ms``, and ``wait_ms`` for the queue in front of them).
+    process took to become useful, split by stage (``embed_ms``, ``matrix_ms``,
+    ``graph_ms``, ``search_ms``, and ``wait_ms`` for the queue in front of them).
 
     ``duration_ms`` covers the wait as well as the work, because the question it
     answers is when the process started being useful and a queued process is not

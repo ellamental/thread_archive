@@ -130,7 +130,7 @@ class SearchProbe:
 
     __slots__ = (
         "fts_ms", "semantic_ms", "set_ms", "pool_size",
-        "embed_cold", "embed_cached", "matrix_built", "fts_passes",
+        "embed_cold", "embed_cached", "matrix_built", "matrix_deferred", "fts_passes",
         *SEMANTIC_SUBSTAGES, *FTS_SUBSTAGES, *SHAPE_SUBSTAGES, *SET_OUTCOMES,
     )
 
@@ -142,6 +142,7 @@ class SearchProbe:
         self.embed_cold = False
         self.embed_cached = False
         self.matrix_built = False
+        self.matrix_deferred = False
         self.fts_passes = 0
         for name in (*SEMANTIC_SUBSTAGES, *FTS_SUBSTAGES, *SHAPE_SUBSTAGES):
             setattr(self, name, 0.0)
@@ -204,6 +205,11 @@ class SearchProbe:
                 rec[name] = round(getattr(self, name), 1)
         if self.matrix_built:
             rec["matrix_built"] = True
+        # The other end of the same fork: the matrix was cold but this process
+        # defers construction, so the search served lexical-only while the
+        # background refresh assembled it. Present-only, like the cold bits.
+        if self.matrix_deferred:
+            rec["matrix_deferred"] = True
         if self.cold:
             rec["cold"] = True
             if self.embed_cold:
