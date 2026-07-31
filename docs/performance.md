@@ -150,6 +150,28 @@ fixed by the build flock plus pid+thread-id tmp names.
   last refresh cooldown isn't semantically searchable yet. Accepted on purpose —
   the lexical arm covers the freshest rows.
 
+## Where the numbers stand (baseline 2026-07-31)
+
+The regimes have different honest numbers; quote them separately or the quote is
+noise. As measured after the 07-31 round (bench: `latency_replay.py --limit 40
+--reps 2`, baseline pinned in `<home>/latency-baseline-observed.json`):
+
+| regime | p50 | tail | what moves it |
+|---|---|---|---|
+| pipeline (warm bench, quiet) | ~110 ms | p95 ~1.1 s | code changes — this is the regression number |
+| shared server, warm, live | expect 0.1-1 s | 1-3 s | contention, wide sets, broad OR/substring asks |
+| shared server, first ~10 s after restart | lexical-only, fast | — | queries no longer pay the matrix build; `matrix_deferred` marks them |
+| any process, warm pass | ~5-10 s once | — | model load ~5 s dominates; matrix ~0.1 s, graph from disk |
+| CLI one-shot | ~5 s | ~10 s+ | structural (in-process model load) until CLI delegates to :8788 |
+
+The bench p50 halved against the 07-26 baseline (230 → 109 ms; semantic arm
+-70%, hydrate -66%) — read the exact delta loosely, since the observed query set
+drifts between baselines. The served-side ledger over any window that spans a
+code change is a mixed population; for "what are agents getting *now*", filter
+served rows to dates after the last entry in the CHANGELOG's latency work and
+split by `surface` and the cold flags, or just run the replay and read its
+served panel against the bands it prints.
+
 ## Working on this
 
 Same-day before/after only (the corpus grows under any longer comparison), split
