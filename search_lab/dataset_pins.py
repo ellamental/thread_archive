@@ -321,7 +321,7 @@ def verify(dataset: str, path: Path = PINS_PATH,
         f"Scoring this would compare numbers across different data. Re-fetch the "
         f"pinned corpus, or accept the new one with "
         f"`python -m search_lab pins --update` and re-baseline the rows it feeds "
-        f"(`python -m search_lab gate --quick --run --update`)."
+        f"(`python -m search_lab gate --run --quick --update`)."
     )
 
 

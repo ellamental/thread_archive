@@ -10,7 +10,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const appSource = readFileSync(resolve(here, '..', 'src', 'App.tsx'), 'utf8')
 
 function routePattern(path: string): RegExp {
-  const escaped = path.replace(/[.+?()|^$\[\]{}]/g, '\\$&')
+  const escaped = path.replace(/[.*+?()|^$\[\]{}\\]/g, '\\$&')
   return new RegExp(
     '^' + escaped.replace(/:[A-Za-z_][A-Za-z0-9_]*/g, '[^/?]+') + '(?:\\?.*)?$',
   )

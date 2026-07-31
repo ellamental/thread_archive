@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.0.11 — 2026-07-30
+
+- The bench's quick tier is sized against this box's slow days rather than its median — the same row measures a factor
+  of two apart across runs, so a sample fitted to a good day is one busy afternoon from blowing `QUICK_ROW_BUDGET_MIN`.
+  PerLTQA's arms sample 1,200 of 8,588 and `cdr[vectors]` 350 of 1,583 (rows `~1200`, `~350`), each landing near three
+  minutes under load; baselines re-accepted at those sizes and the published tables read from them.
+- Every workflow's `GITHUB_TOKEN` is read-only by default; the publish job alone widens it, for Trusted Publishing.
+
 ## 0.0.10 — 2026-07-30
 
 - Retrieval cost: warm passes serialize per machine and load the persisted graph rather than rebuild it (8.9s → 0.12s),

@@ -163,6 +163,8 @@ def route(method: str, path: str, params: dict) -> Response:
     rel = path.lstrip("/")
     if rel:
         candidate = (STATIC_DIR / rel).resolve()
+        # Equality-or-ancestor rather than `is_relative_to` — same decision, but
+        # CodeQL's path-injection query recognizes this form as a sanitizer.
         if (candidate == STATIC_DIR or STATIC_DIR in candidate.parents) and candidate.is_file():
             # Vite emits content-hashed filenames under assets/, so those are
             # immutable; anything else must be revalidated.

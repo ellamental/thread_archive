@@ -283,20 +283,26 @@ def manifest() -> list[Row]:
         # the bench. Neither dataset is slow per query — they are simply large, and
         # between them they are most of the full tier's cost: cdr scores 1,583
         # queries in ~11 min whole, perltqa 8,588 in ~19 min per arm, against under
-        # two minutes for every other row. The samples are sized from those
-        # measured per-query rates to land inside QUICK_ROW_BUDGET_MIN; the
-        # remaining nine rows already fit and are scored whole in both tiers.
+        # two minutes for every other row. The remaining nine rows already fit and
+        # are scored whole in both tiers.
+        #
+        # Sized against the *slow* end of this box's spread, not its median. The
+        # bench shares a working machine, and the same row has been measured a
+        # factor of two apart across runs; a sample fitted to a good day puts the
+        # budget one busy afternoon away from being blown, and a budget that is
+        # sometimes true is one nobody trusts. Each of these lands near 3 minutes
+        # when the box is slow, half that when it is not.
         Row(name="cdr[vectors]", cost_min=20,
             argv=[cdr, "--vectors"],
             home=homes / "cdr", build_hint=first_run, measure_keys=ir,
-            quick_sample=500),
+            quick_sample=350),
         Row(name="perltqa[lexical]", cost_min=19,
             argv=[perltqa], home=homes / "perltqa",
-            build_hint=first_run, measure_keys=ir, quick_sample=1500),
+            build_hint=first_run, measure_keys=ir, quick_sample=1200),
         Row(name="perltqa[vectors]", cost_min=20,
             argv=[perltqa, "--vectors"],
             home=homes / "perltqa", build_hint=first_run, measure_keys=ir,
-            quick_sample=1500),
+            quick_sample=1200),
     ]
 
 

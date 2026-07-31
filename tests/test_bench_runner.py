@@ -102,8 +102,8 @@ def test_perltqa_is_scored_whole_and_sampled_only_in_the_quick_tier() -> None:
     assert {r.name for r in rows} == {"perltqa[lexical]", "perltqa[vectors]"}
     assert all(r.quick_sample for r in rows)
     assert {r.quick().name for r in rows} == {
-        "perltqa[lexical]~1500",
-        "perltqa[vectors]~1500",
+        "perltqa[lexical]~1200",
+        "perltqa[vectors]~1200",
     }
 
 

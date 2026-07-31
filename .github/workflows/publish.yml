@@ -18,6 +18,11 @@ on:
   push:
     tags: ["v*"]
 
+# Default the token to read-only; the publish job's own permissions block
+# (id-token: write) replaces this wholesale for that job.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
