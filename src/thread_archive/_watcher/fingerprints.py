@@ -48,8 +48,8 @@ def reverify_after_s() -> float:
     """Age at which a persisted cache is ignored, forcing a full re-verify pass.
 
     Read per call from ``THREAD_ARCHIVE_FINGERPRINT_TTL_S`` so an operator can
-    tighten it (or set ``0`` to disable persistence entirely and re-verify on
-    every poll cycle, the pre-persistence behavior)."""
+    tighten it (or set ``0`` to disable persistence entirely, which re-verifies
+    on every poll cycle)."""
     raw = os.environ.get("THREAD_ARCHIVE_FINGERPRINT_TTL_S")
     if raw is None:
         return 6 * 3600.0

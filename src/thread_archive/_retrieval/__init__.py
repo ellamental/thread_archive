@@ -59,10 +59,11 @@ logger = logging.getLogger(__name__)
 #: thread summaries), because a query-time exclusion is a filter every caller can
 #: drop while the index keeps paying to store and embed what it hides.
 #:
-#: Defined here rather than at the agent surface because two callers must agree on
-#: it: the surface, and :func:`warm_models` — the vector matrix caches per
-#: content-type scope, so a warm pass primed against a different scope leaves the
-#: first real query to build a matrix inside the request.
+#: Defined here rather than at the agent surface because every caller must agree on
+#: it: the surface, :func:`warm_models`, and :func:`_keepalive_touch` — the vector
+#: matrix caches per content-type scope, so a warm or keepalive pass primed against
+#: a different scope leaves the first real query to build a matrix inside the
+#: request.
 DEFAULT_CONTENT_TYPES: Optional[list[str]] = None
 
 

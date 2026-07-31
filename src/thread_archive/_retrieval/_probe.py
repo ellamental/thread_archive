@@ -93,9 +93,9 @@ FTS_SUBSTAGES = ("match_ms", "scan_ms", "rescan_ms", "build_ms")
 
 #: The post-pool half of a search, in the order it runs. ``rank_ms`` is the weighted
 #: lexical ranker, which runs over the *whole* pool rather than just the cut, since
-#: the pool is what a walk pages over; ``coherence_ms`` the corpus-graph head re-order; ``group_ms`` the
-#: anchor collapse; ``extend_ms`` a saturated pool's exact-set count
-#: (and so the outer bound on ``set_ms``); ``enrich_ms`` the per-hit
+#: the pool is what a walk pages over; ``coherence_ms`` the corpus-graph head
+#: re-order; ``group_ms`` the anchor collapse; ``extend_ms`` a saturated pool's
+#: exact-set count (and so the outer bound on ``set_ms``); ``enrich_ms`` the per-hit
 #: thread columns, titles, and context windows. Sequential, so unlike the arms these
 #: sum — to whatever a search spent after its pool was fused.
 SHAPE_SUBSTAGES = ("rank_ms", "coherence_ms", "group_ms", "extend_ms", "enrich_ms")

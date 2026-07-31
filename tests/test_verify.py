@@ -297,7 +297,7 @@ def test_shallow_verify_fails_on_kg_drift(archive_home, tmp_path) -> None:
 
     create_topic("Auth")
     # Empty the log: the table holds a kg event the truth lacks — the forbidden
-    # direction, previously invisible until the deep pass.
+    # direction, and the shallow pass must catch it without the deep one.
     (archive_home / "truth" / "kg_events.jsonl").write_text("", encoding="utf-8")
     v = ta.verify()
     assert v["drift"]["kg_events"] == 1

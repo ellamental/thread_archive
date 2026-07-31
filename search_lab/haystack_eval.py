@@ -150,8 +150,8 @@ REFERENCE = {
     # BEAM's paper reports end-to-end QA accuracy under a memory framework, not
     # retrieval recall, so there is no baseline to print beside this row. Left
     # empty rather than borrowed: a number from a different task is worse than no
-    # number, because it reads as a comparison. `bm25_baseline.py` is what would
-    # give this row a local reference if one is wanted.
+    # number, because it reads as a comparison. A local lexical-only run is the
+    # reference available for this row.
     "beam": {"metric": "no published retrieval baseline"},
     "locomo": {"metric": "DRAGON dialog Recall@k",
                "recall": {5: 0.567, 10: 0.662, 25: 0.767, 50: 0.827}},

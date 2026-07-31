@@ -94,11 +94,6 @@ def _isolate_archive(tmp_path, monkeypatch):
     # deterministic coverage (test_embed_graph.py builds inline and injects
     # gamma explicitly; tests that need the env set their own).
     monkeypatch.setenv("THREAD_ARCHIVE_COHERENCE", "off")
-    # The known-archives registry records every home open_archive touches into
-    # ~/.thread/archives.json. Off suite-wide so hundreds of tmp homes don't
-    # accumulate there and each open stays a pure store op; the registry has its
-    # own coverage (test_archives_registry.py opts back in with a tmp path).
-    monkeypatch.setenv("THREAD_ARCHIVE_REGISTRY", "0")
     # Runtime telemetry records only on a dev install (_ops/telemetry.py), and a
     # tmp home has no config.json — so every ledger assertion in this suite would
     # otherwise be asserting over a file nothing writes, and pass for the wrong

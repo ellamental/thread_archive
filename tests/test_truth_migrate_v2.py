@@ -385,10 +385,11 @@ def test_migration_shards_when_over_flat_max(archive_home, monkeypatch) -> None:
 
 
 def test_migration_repairs_mixed_v1_and_ulid_truth(archive_home) -> None:
-    """The historical bug could append a v2 thread under a v1 manifest.
+    """A tree can hold a v2 thread under a v1 manifest — a failed SQLite commit
+    leaves the ULID truth file behind with the manifest never advanced.
 
-    Recovery must migrate the integer files without discarding the already-ULID
-    truth-only file that the failed SQLite commit left behind.
+    Recovery must migrate the integer files without discarding that already-ULID
+    truth-only file.
     """
     make_legacy_home(archive_home, with_unindexed=False, with_kg=False)
     existing = "01ARZ3NDEKTSV4RRFFQ69G5FAV"

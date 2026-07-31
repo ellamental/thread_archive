@@ -268,7 +268,7 @@ def test_partially_errored_import_is_quarantined_not_retained(archive_home) -> N
 
 
 def test_dropped_chatgpt_zip_imports_as_chatgpt(archive_home) -> None:
-    """The historical failure shape: a ChatGPT export ZIP (which also carries a
+    """The failure shape this guards: a ChatGPT export ZIP (which also carries a
     root ``conversations.json``) must import as ChatGPT — not classify as
     claude.ai, import nothing, and be deleted."""
     init_db()

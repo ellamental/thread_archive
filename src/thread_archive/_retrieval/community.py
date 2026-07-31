@@ -44,7 +44,7 @@ def leiden_available() -> bool:
     A failed probe logs at info, not warning. Absent is the correct state for a
     lexical-only install, which never builds the graph this engine partitions; whether
     it is a *fault* depends on what else is installed, and that judgment belongs to
-    :func:`thread_archive.libraries`, which can see the vector arm from here."""
+    :func:`thread_archive._api.libraries`, which can see the vector arm from here."""
     global _LEIDEN_AVAILABLE
     if _LEIDEN_AVAILABLE is None:
         try:
@@ -64,7 +64,7 @@ def leiden_available() -> bool:
 def engine() -> str:
     """The live community engine: ``"leiden"`` or ``"louvain"``.
 
-    Reported by :func:`thread_archive.status` so which one is running is a fact an
+    Reported by :func:`thread_archive._api.status` so which one is running is a fact an
     operator can read rather than infer — the module docstring covers what the
     difference costs."""
     return "leiden" if leiden_available() else "louvain"

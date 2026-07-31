@@ -1041,11 +1041,11 @@ def _dated_events(stamps: list[str], tag: str = "a") -> list[int]:
 
 
 def test_a_time_window_is_read_off_the_pack_not_queried_from_events(archive_home) -> None:
-    """The scope query this replaces had to name every in-scope event id — millions of
-    them for a wide window, against a pack holding a fraction as many rows, because
-    most events carry no vector at all. The pack already knows each row's date, so the
-    window is a comparison over an array it holds. Same rows either way: that
-    equivalence is the whole claim, and it is what this pins."""
+    """Naming every in-scope event id costs millions of them for a wide window,
+    against a pack holding a fraction as many rows, because most events carry no
+    vector at all. The pack already knows each row's date, so the window is a
+    comparison over an array it holds. Same rows either way: that equivalence is the
+    whole claim, and it is what this pins."""
     init_db()
     vectors.ensure_index()
     ids = _dated_events(["2026-01-01T10:00:00+00:00", "2026-03-01T10:00:00+00:00",
@@ -1065,8 +1065,8 @@ def test_a_time_window_is_read_off_the_pack_not_queried_from_events(archive_home
                                           until="2026-04-01T00:00:00+00:00")]
     assert both == [ids[1]]
 
-    # And it agrees with the id-mask path it replaced, which is the only thing that
-    # makes the substitution safe — the two narrow the same pool to the same rows.
+    # And it agrees with the id-mask path, which is the only thing that makes the
+    # substitution safe — the two narrow the same pool to the same rows.
     masked = [e for e, _, _ in vectors._knn(
         a.tolist(), ("user",), cand=10, allowed_ids=np.asarray(ids[1:], dtype=np.int64))]
     assert masked == windowed
@@ -1084,8 +1084,8 @@ def test_an_undated_row_is_in_no_time_window_including_an_open_ended_one(
     """A vector whose event is missing packs to an empty timestamp, and empty bytes
     sort below every real one. Ordering alone would therefore place it *before* any
     ``until`` bound and sweep it into every open-ended window — so exclusion is
-    explicit. The id-query this replaces got the same answer for free: an event that
-    isn't in ``events`` was never in its result."""
+    explicit. The id-mask path gets the same answer for free: an event that isn't in
+    ``events`` is never in its result."""
     init_db()
     vectors.ensure_index()
     dated = _dated_events(["2026-01-01T10:00:00+00:00"])

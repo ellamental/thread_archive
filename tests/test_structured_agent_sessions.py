@@ -4,7 +4,7 @@ A subagent transcript imports as its own ``thread_type='system'`` thread, soft-l
 back to its spawning session only through ``source_metadata`` (``parent_session_id`` +
 ``project_dir``). ``_agent_sessions_for`` reverses that link and tallies the runs by
 model, feeding the viewer's reader-header "N agent sessions" line. See
-``_agent_sessions_for`` in ``retrieval/read.py``.
+``_agent_sessions_for`` in ``_retrieval/read.py``.
 """
 
 from __future__ import annotations

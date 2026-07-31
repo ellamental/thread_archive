@@ -1,7 +1,7 @@
 """The retrieval tools — ``thread_search`` and ``thread_read``, one implementation
 behind both front doors.
 
-Retrieval is served two ways: as MCP tools (:mod:`.._mcp.server`, what an agent
+Retrieval is served two ways: as MCP tools (:mod:`._mcp.server`, what an agent
 calls mid-conversation) and as the ``thread-archive search`` / ``thread_archive
 read`` CLI verbs (what a person types at a terminal). Both call the functions
 here, so there is one contract rather than two that drift: the same default
@@ -10,7 +10,7 @@ text, and one usage-ledger record per call.
 
 These signatures *are* the MCP tool schema — FastMCP builds it from the
 annotations — so a parameter added here reaches both surfaces, and the CLI's
-flags mirror it one for one (:func:`..cli.cmd_search`, :func:`..cli.cmd_read`).
+flags mirror it one for one (:func:`.cli.cmd_search`, :func:`.cli.cmd_read`).
 
 What an agent *reads* is tiered, because a tool description is paid for out of
 every session's context whether or not the tool is ever called. The compact

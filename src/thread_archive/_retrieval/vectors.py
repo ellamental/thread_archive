@@ -1381,11 +1381,11 @@ def search(
         # fetched to be discarded: a broad scope like ``source='claude-code'``
         # selects 3.5M event ids to mask a pack of 272k, and 94% of them name rows
         # the matrix does not contain. Restricting the fetch to embedded ids is the
-        # same intersection :func:`_knn` would compute anyway — the id set it ends
-        # up with is identical — moved to where it is an index probe instead of
-        # millions of rows through the driver and a numpy membership test over
-        # them. It is the id-scope twin of what :func:`_time_rows` does for a
-        # window, and for the same reason.
+        # same intersection :func:`_knn` would compute anyway — the id set is
+        # identical — taken as an index probe rather than as millions of rows
+        # through the driver and a numpy membership test over them. It is the
+        # id-scope twin of what :func:`_time_rows` does for a window, and for the
+        # same reason.
         awhere.append("EXISTS (SELECT 1 FROM event_vectors v WHERE v.event_id = e.id)")
         # Bulk-fetch the in-scope ids in one buffered round-trip, not row-by-row:
         # fetchone-per-row through the ORM spends seconds on Python overhead the

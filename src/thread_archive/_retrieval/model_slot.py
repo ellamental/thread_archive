@@ -1,8 +1,9 @@
 """One lazily-constructed heavy model + its cached-failure flag.
 
-Used by :mod:`.embed`, whose torch model is far too heavy to construct twice. The slot takes its loader at construction, so it holds any
-model, and accepts an already-loaded one — a caller that already has a
-SentenceTransformer hands it in rather than paying for a second copy.
+Used by :mod:`.embed`, whose torch model is far too heavy to construct twice. The
+slot takes its loader at construction, so it holds any model, and accepts an
+already-loaded one — a caller that already has a SentenceTransformer hands it in
+rather than paying for a second copy.
 """
 
 from __future__ import annotations

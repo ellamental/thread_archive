@@ -397,7 +397,7 @@ def test_persistence_can_be_turned_off(archive_home, monkeypatch) -> None:
     embed_graph.build()
     assert not _cache_dir().exists() or not list(_cache_dir().glob("graph-*.json"))
     _restart()
-    assert embed_graph.get() is None, "off is the pre-persistence behavior"
+    assert embed_graph.get() is None, "off means a restart reads no cache"
     _wait_for_refresh()
 
 

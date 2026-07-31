@@ -266,14 +266,13 @@ def read_thread(
     ``thread_id`` is the archive's thread id or a provider **session id**
     (the uuid/source_id a tool knows the conversation by). ``mode`` picks the view —
     ``user`` (default), ``chat``, ``full``, ``last`` (final assistant text only), or
-    ``ends`` (first + last ``context_turns`` turns) —
-    and the read is turn-paginated +
-    size-budgeted (``max_chars``, default ~48k). ``tool_results`` (default off) adds
+    ``ends`` (first + last ``context_turns`` turns) — and the read is turn-paginated
+    + size-budgeted (``max_chars``, default ~48k). ``tool_results`` (default off) adds
     tool output under each call in ``full``. ``summary`` swaps in a summary view:
     ``True``/``'toc'`` = compact TOC, ``'short'`` / ``'indexed'`` = the stored thread
     summaries, ``'files'`` = the files this session touched (the code axis, read
-    backwards from :func:`search`'s ``path`` scope). ``around_event`` opens a search-result event with
-    ``context_turns`` turns of surrounding context; see
+    backwards from :func:`search`'s ``path`` scope). ``around_event`` opens a
+    search-result event with ``context_turns`` turns of surrounding context; see
     :func:`thread_archive._retrieval.read_thread` for the full contract."""
     open_archive(home)
     from ._retrieval import read_thread as _read

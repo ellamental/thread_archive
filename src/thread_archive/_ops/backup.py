@@ -381,8 +381,9 @@ def _snapshot_generation(dest: Path) -> dict:
     newest ``_GEN_KEEP_RECENT`` distinct UTC days is kept (pruning a same-day
     sibling would discard exactly the pre-bad-run state generations exist
     for), plus the newest generation of each distinct month until
-    ``_GEN_KEEP_MONTHS`` months are covered. Failure to snapshot degrades to
-    the pre-generations behavior (reported, never blocks the mirror itself)."""
+    ``_GEN_KEEP_MONTHS`` months are covered. Failure to snapshot degrades to a
+    mirror with no generation behind it (reported, never blocks the mirror
+    itself)."""
     import logging
     import shutil
     from datetime import datetime, timezone

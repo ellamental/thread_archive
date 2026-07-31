@@ -220,7 +220,7 @@ def test_assistant_completed_preserves_cost_and_extra_usage_fields() -> None:
     assert completed.payload["cost"] == 0.012075
     assert completed.payload["cache_read_tokens"] == 80
     assert completed.payload["cache_write_tokens"] == 5
-    # the flat trio stays for readers that only know the old shape
+    # the flat trio stays for readers that don't read the structured usage
     assert (completed.payload["input_tokens"], completed.payload["output_tokens"]) == (100, 20)
 
 

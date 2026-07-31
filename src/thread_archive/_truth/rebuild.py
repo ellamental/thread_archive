@@ -656,7 +656,7 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
     readers reconnect on the next ``get_engine()`` call (the live engine's pools are
     disposed before the swap); *cross-process* readers keep serving the old inode
     until they reconnect or restart — an accepted stale-read window (long-lived
-    readers converge via :func:`thread_archive._api._reconnect_if_swapped`).
+    readers converge via :func:`thread_archive._store.reconnect_if_swapped`).
 
     Bulk loading targets the build file through a **FK-OFF Core** loader so
     dependency-agnostic inserts need no ordering and the conversation truth-log

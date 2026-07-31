@@ -518,9 +518,10 @@ def search_events(
     within-token substrings MATCH can't see). The MATCH pass is what keeps *old*
     hits reachable for common identifiers — a single recency-ordered LIKE pass
     caps out on the newest ``limit`` matches. The LIKE pass is a full-table scan,
-    so it only runs when the MATCH pass left the pool short (see the pass list). ``startswith`` overrides the query
-    mode entirely with a structural prefix scan (content LIKE 'prefix%',
-    recency-ordered) — the query text is not matched, only the structural filters.
+    so it only runs when the MATCH pass left the pool short (see the pass list).
+    ``startswith`` overrides the query mode entirely with a structural prefix scan
+    (content LIKE 'prefix%', recency-ordered) — the query text is not matched, only
+    the structural filters.
 
     A plain natural-language query (no operators, no quotes) is implicitly
     conjunctive — FTS5 MATCH requires *every* token, stopwords included, so
@@ -1303,7 +1304,7 @@ def index_thread_meta(session: Optional[Session] = None, thread_ids: Optional[li
     docs. Diff-based: an unchanged thread writes nothing, a changed title replaces
     its rows (and drops its stale vector so the embed cohost re-embeds it), a
     vanished one is deleted — as is any other thread-meta doc the desired set does
-    not name, so a stale doc of a kind this no longer writes is collected too.
+    not name, so a stale doc of a kind this does not write is collected too.
     ``thread_ids=None`` syncs every
     thread — cheap enough for the watcher's maintenance cadence. Returns the
     number of rows written."""

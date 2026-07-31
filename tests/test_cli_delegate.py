@@ -21,8 +21,6 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import pytest
-
 from thread_archive import _config as config
 from thread_archive import _delegate
 

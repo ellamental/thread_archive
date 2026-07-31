@@ -358,8 +358,8 @@ def test_installed_cli_advertises_only_verbs_an_install_can_run(installed, tmp_p
         assert r.returncode == 0, f"{verb} --help failed: {r.stdout}\n{r.stderr}"
         assert "Traceback" not in r.stderr, f"{verb}: {r.stderr}"
 
-    # And a removed verb is an argparse error, never an ImportError from a module
-    # the wheel no longer carries.
+    # And an unregistered verb is an argparse error, never an ImportError from a
+    # module the wheel does not carry.
     gone = _run(installed, ["thread_archive", "mine"], tmp_path)
     assert gone.returncode == 2
     assert "invalid choice" in gone.stderr and "Traceback" not in gone.stderr

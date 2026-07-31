@@ -31,10 +31,10 @@ Three readings, all cheap enough to take on any path that records a duration:
 
 All three return ``None`` rather than raising where the platform has no such
 concept, because every caller here is recording telemetry and none may fail for it.
-Lives in ``_ops`` because three unrelated callers need it — the retrieval
-contention sample, the watcher's idle rollup, the lab's latency gate — and the
-alternative is what it replaced: a copy each, quietly rounding differently, so two
-reports over one machine disagreed about what its load was.
+Lives in ``_ops`` because unrelated callers need it — the retrieval contention
+sample and the watcher's idle rollup — and one definition is what keeps their
+numbers comparable: a copy per caller rounds differently, and two reports over one
+machine then disagree about what its load was.
 """
 
 from __future__ import annotations

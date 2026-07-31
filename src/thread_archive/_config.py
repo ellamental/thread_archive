@@ -22,8 +22,8 @@ Truth and index paths can be overridden individually (e.g. for tests).
 ``thread_archive`` setup flow — which sources to ingest, what setup decided —
 and every ingest path (the watcher daemon, opted-in MCP catch-up, ``archive
 watch``) consults it via :func:`source_enabled`. A missing file means "all
-defaults": every source enabled, exactly the pre-config behavior. An existing
-file that cannot be trusted disables every source until it is repaired.
+defaults": every source enabled. An existing file that cannot be trusted
+disables every source until it is repaired.
 """
 
 from __future__ import annotations
@@ -210,7 +210,7 @@ def dev_mode(cfg: dict) -> bool:
 
     Two things turn on it. **Runtime telemetry** — the ledgers of served requests,
     retrieval calls, ingest passes and load runs — records only here
-    (:mod:`.._ops.telemetry`): they are instruments for whoever maintains
+    (:mod:`._ops.telemetry`): they are instruments for whoever maintains
     thread-archive, nothing in the product reads them, and an install that is
     merely run should not be accumulating a row per page someone opened. Fault
     records are not part of that and never stop: an operator is owed the news that

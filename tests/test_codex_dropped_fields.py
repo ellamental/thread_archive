@@ -1,5 +1,5 @@
-"""Codex importer maps source fields it previously dropped: per-turn token
-usage, user-message images, session_meta git provenance, and turn_context
+"""Codex importer maps the source fields easiest to drop: per-turn token usage,
+user-message images, session_meta git provenance, and turn_context
 effort/personality — all through the sanctioned channels (structured usage on
 api_request_completed, image content blocks, annotations) without perturbing
 dedup identity.
@@ -205,12 +205,11 @@ def test_non_data_url_image_kept_as_reference() -> None:
 # ── Dedup identity ───────────────────────────────────────────────────────────
 
 
-def test_dedup_keys_unchanged_by_new_extras() -> None:
+def test_dedup_keys_unchanged_by_extras() -> None:
     """usage, annotations, and the images payload key are all outside the dedup
     content keys: enriching an already-stored turn never changes its identity,
-    so re-imports collapse instead of duplicating. Simulated by stripping the
-    new extras from the built messages (the pre-change shape) and comparing
-    dedup keys against the enriched build."""
+    so re-imports collapse instead of duplicating. Driven by stripping the extras
+    from the built messages and comparing dedup keys against the enriched build."""
     import copy
 
     messages = _build(_turn_lines(effort="xhigh", personality="pragmatic"))

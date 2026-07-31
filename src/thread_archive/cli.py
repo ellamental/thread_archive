@@ -378,8 +378,7 @@ def cmd_search(args: argparse.Namespace) -> int:
     delegation failure falls back to it silently.
     """
     from . import _api as api
-    from . import _delegate
-    from . import _tools
+    from . import _delegate, _tools
 
     if not args.local and _delegate.eligible(args.home):
         arguments: dict[str, object] = {
