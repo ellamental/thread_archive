@@ -340,7 +340,7 @@ def resolve_thread_ref(s: Session, ref: int | str) -> Optional[str]:
       ``Thread.legacy_id``, which is a permanent alias, never sunset;
     - anything else — a provider **session id** (the uuid/source_id a tool like
       claude-code knows a conversation by), resolved via the shared
-      :func:`thread_archive._store.resolve.resolve_session_source_id` — the
+      :func:`thread_archive._providers.resolve_session_ref` — the
       ``Thread.source_id`` ∪ ``ImportState`` union the web viewer's
       ``resolve_archive_link`` also uses. The union matters: a compaction
       continuation's session uuid exists only in ``ImportState`` (its events
@@ -352,7 +352,8 @@ def resolve_thread_ref(s: Session, ref: int | str) -> Optional[str]:
     nothing matches."""
     from sqlalchemy import select as _select
 
-    from .._store import normalize_ulid, resolve_session_source_id
+    from .._providers import resolve_session_ref
+    from .._store import normalize_ulid
 
     if isinstance(ref, int) or (isinstance(ref, str) and ref.strip().isdigit()):
         tid = s.execute(
@@ -366,7 +367,7 @@ def resolve_thread_ref(s: Session, ref: int | str) -> Optional[str]:
         if canonical is not None and s.get(Thread, canonical) is not None:
             return canonical
         # Fall through: a 26-char source_id could shape-match a ULID.
-    return resolve_session_source_id(s, str(ref))
+    return resolve_session_ref(s, str(ref))
 
 
 # Default per-read character budget for the budgeted "view" read (the thread_read

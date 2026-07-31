@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- The internal package graph is ratcheted, the way the external dependency surface already was. Every package under
+  `src/thread_archive` now sits in a declared tier (`tests/meta/test_internal_tiers.py`) and may import only its own
+  tier or a lower one, with the graph as a whole required to stay acyclic; two shrink-only baselines freeze what
+  exists today — nine upward edges over twenty sites, and two mutually-importing clusters. The scan reads every
+  import wherever it sits, function-local ones included, which is the point: a deferred import hides a cycle from the
+  module loader without removing it, and the package had 317 of them against 159 module-level. `if TYPE_CHECKING:`
+  imports are exempt. A planted `_store → _mcp` import fails both assertions, so the ratchet demonstrably bites.
+
+- Two layering violations paid down, which is what took the largest cluster from thirteen packages to ten. The store
+  no longer reads the provider registry to resolve a session id: `resolve_session_source_id` takes the `source_id`
+  separators as a required argument and `_providers.resolve_session_ref` is the paired entry point that supplies
+  them, so `_store` now depends on nothing but `_config` and the union that keeps the MCP reader and the viewer
+  answering alike stays in one function. The front-door label moved down to the ledger that carries the field:
+  `_DEFAULT_SURFACE`, `serving`, `current_surface` and `served_by` live in `_retrieval.usage` beside `UNATTRIBUTED`
+  (whose docstring already argued a reader should be able to learn the vocabulary without importing the tool
+  surface), and `_tools` re-exports them — so the background warm pass names its own door without retrieval
+  reaching up into `_tools`. The test suite's own reset now goes through `set_default_surface` rather than poking the
+  global.
+
+- `py.typed` ships. The package was fully annotated at 87% and a type checker was ignoring all of it (PEP 561), which
+  landed hardest on the one public Python surface: a provider plugin written against `thread_archive.provider` got no
+  checking at all. The four unannotated functions in `provider/testing.py` — the fixture, `normalized_truth`,
+  `assert_golden`, `write_jsonl` — carry annotations now, and the wheel lane asserts the marker is in the artifact.
+
+- `_api`'s docstring described a chokepoint that does not exist. It claimed to be "the single coordination surface
+  every caller goes through" while `cli.py` reaches it at 18 sites and goes past it into the layers at 30. It is
+  documented as what it is: a composition layer where a multi-layer operation is assembled once instead of at each
+  caller, with other callers expected to reach the layers directly.
+
 - A second pass over retrieval's rationales, against what the code and the ledger actually do. `_tools.thread_search`
   justified its `page` clamp with "the pool is sized from page*limit" — the pool has been `max(limit*5, pool_floor)`,
   deliberately page-independent, since paging became slices of one ordering, and the engine's own comment says so;

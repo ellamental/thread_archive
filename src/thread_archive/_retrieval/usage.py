@@ -43,6 +43,9 @@ whatever fit in the current file.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -61,6 +64,61 @@ LEDGER_FILE = "retrieval-usage.jsonl"
 #: its own field's vocabulary, and a reader should be able to learn it without
 #: importing the tool surface (:mod:`.._tools`, ~400 ms of engine).
 UNATTRIBUTED = "mcp"
+
+# Which front door the current call is being served through — the ambient value of
+# the ``surface`` field above, kept beside the field for the same reason its
+# vocabulary is: everything that *writes* a row needs it, including the background
+# warm pass, which records its own row from inside the retrieval package and must
+# not have to import the tool surface to name a door.
+#
+# The distinction the field carries: an operator's own terminal searches are a
+# different query population from an agent's, and the evals built off this ledger
+# sample from it. It is also the only thing that separates the *cache states* the
+# doors run in — a shared HTTP server warms its models at startup and serves
+# thousands of calls from one resident copy, while a per-client stdio server and a
+# one-shot CLI process load nothing ahead of time and pay that load inside their
+# first search. Latency from those three, pooled, is a distribution nobody
+# experienced.
+#
+# A module global for the process default rather than a ContextVar default, so a
+# background thread sees it too; the ContextVar overrides it per call for a process
+# that is several doors (the CLI, whose verbs wrap their one call).
+_DEFAULT_SURFACE = UNATTRIBUTED
+_SURFACE: ContextVar[Optional[str]] = ContextVar("thread_archive_surface", default=None)
+
+
+def set_default_surface(surface: str) -> None:
+    """Declare what this process is, for every call it serves. Called once at
+    startup by a server that is a single front door."""
+    global _DEFAULT_SURFACE
+    _DEFAULT_SURFACE = surface
+
+
+@contextmanager
+def serving(surface: str) -> Iterator[None]:
+    """Name the front door the retrieval calls inside this block are served
+    through, overriding the process default for their duration."""
+    token = _SURFACE.set(surface)
+    try:
+        yield
+    finally:
+        _SURFACE.reset(token)
+
+
+def current_surface() -> str:
+    """The front door this call is being served through — the innermost
+    :func:`serving` block, else what the process declared, else
+    :data:`UNATTRIBUTED`."""
+    return _SURFACE.get() or _DEFAULT_SURFACE
+
+
+def served_by() -> Optional[str]:
+    """The front door for the usage ledger — None when nothing has claimed the
+    call, which is what every row written before any surface declared itself
+    means, and is why readers must treat an absent value as *unattributed* rather
+    than as any particular door (None params are dropped)."""
+    surface = current_surface()
+    return None if surface == UNATTRIBUTED else surface
 
 #: Query text a bench or a smoke test left in the ledger rather than an agent asking
 #: something. Every reader that computes a distribution over this file drops them:

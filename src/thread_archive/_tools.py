@@ -45,59 +45,18 @@ from ._retrieval import (
 )
 from ._retrieval import usage as _usage
 
-# Which front door a call is being served through. It rides the usage ledger so an
-# operator's own terminal searches can be told apart from an agent's — different
-# query populations, and the evals built off this ledger sample from it. It is also
-# the only thing that distinguishes the *cache states* the front doors run in: the
-# shared HTTP server warms its models at startup and serves thousands of calls from
-# one resident copy, while a per-client stdio server and a one-shot CLI process load
-# nothing ahead of time and pay that load inside their first search. Latency from
-# those three, pooled, is a distribution nobody experienced.
-#
-# The vocabulary belongs to the ledger that carries the field (see
-# :data:`.._retrieval.usage.UNATTRIBUTED`); this module is the one that stamps it.
+# Which front door a call is being served through, re-exported from the ledger that
+# carries the field. Both the vocabulary and the ambient value live beside the
+# ``surface`` column (:mod:`.._retrieval.usage`), because the retrieval package
+# writes rows of its own — the background warm pass — and must be able to name a
+# door without importing this module. The front doors themselves declare through
+# these names: the MCP server and the web app call :func:`set_default_surface` once
+# at startup, the CLI wraps each verb in :func:`serving`.
 UNATTRIBUTED = _usage.UNATTRIBUTED
-
-# The process's own answer, for a server that is one front door for its whole life;
-# the ContextVar overrides it per call for a process that is several (the CLI, whose
-# verbs wrap their one call). A module global rather than a ContextVar default so a
-# background thread — the warm pass, which records its own row — sees it too.
-_DEFAULT_SURFACE = UNATTRIBUTED
-_SURFACE: ContextVar[Optional[str]] = ContextVar("thread_archive_surface", default=None)
-
-
-def set_default_surface(surface: str) -> None:
-    """Declare what this process is, for every call it serves. Called once at
-    startup by a server that is a single front door."""
-    global _DEFAULT_SURFACE
-    _DEFAULT_SURFACE = surface
-
-
-@contextmanager
-def serving(surface: str) -> Iterator[None]:
-    """Name the front door the retrieval calls inside this block are served
-    through, overriding the process default for their duration."""
-    token = _SURFACE.set(surface)
-    try:
-        yield
-    finally:
-        _SURFACE.reset(token)
-
-
-def current_surface() -> str:
-    """The front door this call is being served through — the innermost
-    :func:`serving` block, else what the process declared, else
-    :data:`UNATTRIBUTED`."""
-    return _SURFACE.get() or _DEFAULT_SURFACE
-
-
-def _served_by() -> Optional[str]:
-    """The front door for the usage ledger — None when nothing has claimed the
-    call, which is what every row written before any surface declared itself
-    means, and is why readers must treat an absent value as *unattributed* rather
-    than as any particular door (None params are dropped)."""
-    surface = current_surface()
-    return None if surface == UNATTRIBUTED else surface
+set_default_surface = _usage.set_default_surface
+serving = _usage.serving
+current_surface = _usage.current_surface
+_served_by = _usage.served_by
 
 
 # What the tool itself measured on this call, for a surface that wraps it and

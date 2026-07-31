@@ -82,6 +82,17 @@ def test_wheel_carries_the_whole_runtime(dist) -> None:
     assert any(n.startswith("thread_archive/_retrieval/") for n in names)
 
 
+def test_wheel_carries_the_typing_marker(dist) -> None:
+    """PEP 561: without ``py.typed`` in the artifact, a type checker ignores this
+    package's annotations entirely — so a provider plugin written against
+    ``thread_archive.provider`` gets no checking of the one public Python surface
+    it codes to, however well annotated that surface is in the repo."""
+    wheel, _ = dist
+    names = zipfile.ZipFile(wheel).namelist()
+
+    assert "thread_archive/py.typed" in names
+
+
 def test_wheel_carries_the_manual(dist) -> None:
     # The public docs ship as package data under thread_archive/_docs, so an
     # install can answer for itself: `thread-archive docs` reads these, offline,

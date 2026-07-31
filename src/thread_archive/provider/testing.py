@@ -70,7 +70,7 @@ THREAD_KEYS = ("name", "title", "source", "source_id", "source_metadata", "descr
 
 
 @pytest.fixture
-def archive_home(tmp_path, monkeypatch) -> Iterator[Path]:
+def archive_home(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> Iterator[Path]:
     """A tmp archive home, pointed at by ``THREAD_ARCHIVE_HOME``.
 
     Isolated from the real archive: an import in a test can never reach the
@@ -106,7 +106,7 @@ def _scrub(value: Any, tmp: str) -> Any:
     return value
 
 
-def normalized_truth(home) -> list[dict]:
+def normalized_truth(home: "str | os.PathLike[str]") -> list[dict]:
     """Every truth record in thread-file order, volatile fields normalized.
 
     Thread files are ULID-named, so plain lexicographic sort is mint order.
@@ -144,7 +144,13 @@ def normalized_truth(home) -> list[dict]:
     return out
 
 
-def assert_golden(name: str, home, golden_dir, *, update_env: str = "UPDATE_GOLDENS") -> None:
+def assert_golden(
+    name: str,
+    home: "str | os.PathLike[str]",
+    golden_dir: "str | os.PathLike[str]",
+    *,
+    update_env: str = "UPDATE_GOLDENS",
+) -> None:
     """Compare this import's normalized truth against the reviewed golden ``name``.
 
     With ``$UPDATE_GOLDENS`` set the golden is rewritten and the test **skips**
@@ -167,7 +173,9 @@ def assert_golden(name: str, home, golden_dir, *, update_env: str = "UPDATE_GOLD
     )
 
 
-def write_jsonl(path, lines: list, *, torn_tail: Optional[str] = None) -> None:
+def write_jsonl(
+    path: "str | os.PathLike[str]", lines: list, *, torn_tail: Optional[str] = None
+) -> None:
     """Write a JSONL fixture, optionally ending mid-line.
 
     ``torn_tail`` appends unterminated bytes with no trailing newline — a write

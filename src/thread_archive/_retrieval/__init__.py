@@ -367,14 +367,13 @@ def warm_models(embedder=None) -> None:
     # while it ran, so the peak is only known once it is over.
     context.update(_contention.peak_inflight(span))
     try:
-        from .._tools import _served_by
         from . import usage as _usage
 
         _usage.record_warm(
             duration_ms=(perf_counter() - started) * 1000.0,
             stages=stage_ms,
             failed=failed,
-            surface=_served_by(),
+            surface=_usage.served_by(),
             context=context,
         )
     except Exception:  # noqa: BLE001 — telemetry is advisory; warming stays fail-soft

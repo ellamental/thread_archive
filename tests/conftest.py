@@ -111,7 +111,9 @@ def _isolate_archive(tmp_path, monkeypatch):
     # Same shape for the default retrieval surface: a daemon declares it once at
     # startup (`set_default_surface`), so a test that boots the web viewer would
     # relabel every ledger row the worker's later tests write as served-by-web.
-    _tools._DEFAULT_SURFACE = _tools.UNATTRIBUTED
+    # Reset through the product's own knob, so this cannot drift from where the
+    # state actually lives.
+    _tools.set_default_surface(_tools.UNATTRIBUTED)
     _base.close_engine()
     jsonl_log.reset_handles()
     # The retrieval caches key on id(get_engine()); a closed engine's id can be reused

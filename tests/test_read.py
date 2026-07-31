@@ -585,25 +585,25 @@ def test_resolve_scoped_to_a_source_uses_only_its_separators(archive_home) -> No
     stores ``{project}:{uuid}``, codex ``rollout-{ts}-{uuid}``, most providers the
     bare uuid. A caller that knows where a reference came from should not have a
     uuid resolve through a separator only some *other* provider composes with."""
-    from thread_archive._store.resolve import resolve_session_source_id
+    from thread_archive._providers import resolve_session_ref
 
     tid = _seed(source="cursor", source_id=f"weird-{_UUID}")
     with use_session() as s:
         # cursor declares no separators: its source_id IS the session id, so a
         # bare uuid with a prefix in front of it is not a reference to it.
-        assert resolve_session_source_id(s, _UUID, source="cursor") is None
-        assert resolve_session_source_id(s, f"weird-{_UUID}", source="cursor") == tid
+        assert resolve_session_ref(s, _UUID, source="cursor") is None
+        assert resolve_session_ref(s, f"weird-{_UUID}", source="cursor") == tid
 
 
 def test_resolve_across_sources_tries_every_declared_separator(archive_home) -> None:
     """Unscoped, a reference of unknown origin is resolved as widely as any
     provider composes — which is why declaring a separator narrowly matters."""
-    from thread_archive._store.resolve import resolve_session_source_id
+    from thread_archive._providers import resolve_session_ref
 
     tid = _seed(source="codex", source_id=f"rollout-2026-01-01T10-00-00-{_UUID}")
     with use_session() as s:
-        assert resolve_session_source_id(s, _UUID) == tid
-        assert resolve_session_source_id(s, _UUID, source="codex") == tid
+        assert resolve_session_ref(s, _UUID) == tid
+        assert resolve_session_ref(s, _UUID, source="codex") == tid
 
 
 def test_resolve_newest_thread_wins(archive_home) -> None:

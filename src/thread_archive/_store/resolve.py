@@ -16,9 +16,12 @@ function is what stops them answering differently for the same uuid.
 
 How a session id sits inside a ``source_id`` is the provider's own knowledge —
 claude-code stores ``{project}:{uuid}``, codex ``rollout-{ts}-{uuid}``, most
-providers the bare uuid — so the shapes are read from the provider registry
-rather than kept here. A provider that never declares a separator is resolvable
-only by its exact ``source_id``, which is correct: there is no prefix to skip.
+providers the bare uuid — so the separators arrive as an argument rather than
+being looked up here. The store is the lowest layer and does not read the
+provider registry; :func:`thread_archive._providers.resolve_session_ref` is the
+paired entry point that supplies them, and both surfaces above call it. A
+provider that never declares a separator is resolvable only by its exact
+``source_id``, which is correct: there is no prefix to skip.
 """
 
 from __future__ import annotations
@@ -54,20 +57,8 @@ def source_id_matches(col, ref: str, separators: "tuple[str, ...]" = ()):
     return cond
 
 
-def _separators_for(source: Optional[str]) -> tuple[str, ...]:
-    """The declared separators for ``source``, or the union across providers.
-
-    Imported here rather than at module scope: the registry builds every
-    provider's watcher and importer, which import this package. It is cached
-    after the first read, so the cost lands once per process.
-    """
-    from .._providers import session_id_separators
-
-    return session_id_separators(source)
-
-
 def resolve_session_source_id(
-    s: Session, ref: str, *, source: Optional[str] = None
+    s: Session, ref: str, *, separators: tuple[str, ...], source: Optional[str] = None
 ) -> Optional[str]:
     """The thread id a provider session id refers to, or None.
 
@@ -75,11 +66,16 @@ def resolve_session_source_id(
     watermarks (newest import wins). ``source`` narrows both to one provider —
     an editor knows its own; omit it to resolve across all of them.
 
-    Naming the source narrows the *shape* too: only that provider's declared
-    separators are tried, instead of every separator any provider declares. A
-    bare uuid is ambiguous by construction, so the caller that knows where it
-    came from gets an unambiguous answer."""
-    separators = _separators_for(source)
+    ``separators`` are the ``source_id`` shapes to try beyond exact match, and
+    are required rather than defaulted: an omitted tuple would silently narrow
+    resolution to exact match and return None for a session id that does
+    resolve, which reads as a missing conversation rather than as a missing
+    argument. Callers get them from
+    :func:`thread_archive._providers.session_id_separators` — narrowed to one
+    provider when the caller knows it, the union across providers when it does
+    not. Naming the source narrows the *shape* too, so a bare uuid — ambiguous
+    by construction — resolves unambiguously for the caller that knows where it
+    came from."""
     by_thread = (
         select(Thread.id)
         .where(source_id_matches(Thread.source_id, ref, separators))

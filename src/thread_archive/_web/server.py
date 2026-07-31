@@ -823,7 +823,7 @@ def resolve_archive_link(link_id: str, source: Optional[str] = None) -> Optional
     shapes every surface accepts: a ULID (the primary key), an all-digit legacy
     integer alias (``Thread.legacy_id``, a permanent alias — pasted integer links
     keep resolving), or a provider session id via the shared
-    :func:`thread_archive._store.resolve.resolve_session_source_id` union
+    :func:`thread_archive._providers.resolve_session_ref` union
     (``Thread.source_id`` plus the ``ImportState`` watermarks — a compaction
     continuation's uuid lives only there), the same union the MCP reader uses, so
     every surface answers alike. ``source`` narrows to one provider (an editor
@@ -832,13 +832,14 @@ def resolve_archive_link(link_id: str, source: Optional[str] = None) -> Optional
     junk candidate must never land on an unrelated thread through the ULID or
     legacy-alias branches. Owned here: the watcher cohosts the persistent server,
     so the archive serves its own editor links."""
+    from .._providers import resolve_session_ref
     from .._retrieval.read import resolve_thread_ref
-    from .._store import get_session, resolve_session_source_id
+    from .._store import get_session
 
     api.open_archive()
     with get_session() as s:
         if source:
-            return resolve_session_source_id(s, link_id, source=source.replace("_", "-"))
+            return resolve_session_ref(s, link_id, source=source.replace("_", "-"))
         return resolve_thread_ref(s, link_id)
 
 

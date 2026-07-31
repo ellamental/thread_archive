@@ -1,16 +1,24 @@
-"""The internal coordination layer for thread-archive.
+"""Whole-archive operations, composed for the surfaces that drive them.
 
-Private, like every underscore-prefixed module — the CLI, the MCP servers, and
-the web viewer are built on top of these functions; nothing outside the package
-may import them. Each call
-opens the archive — resolves the home, ensures its directories, pins it for the
-process, and initializes the SQLite engine + schema — then dispatches into the
-store / importers / search / truth / watch / ops layers. Internal imports are
-lazy so ``import thread_archive`` stays light and pulls in no server backends.
+Private, like every underscore-prefixed module — nothing outside the package may
+import it. Each function here is one *operation on an archive*: open it, search
+it, import into it, reindex it, back it up. The composition is what earns the
+module — a call resolves the home, ensures its directories, pins it for the
+process, and initializes the SQLite engine + schema, then dispatches into the
+store / importers / search / truth / watch / ops layers. A caller that wants a
+whole operation gets the setup with it. Internal imports are lazy so ``import
+thread_archive`` stays light and pulls in no server backends.
 
-The backup kit (``backup`` / ``restore_drill`` / ``verify`` / ``nightly``)
-is implemented in :mod:`._ops` and re-exported here, so this module stays the
-single coordination surface every caller goes through.
+This is a composition layer, **not a chokepoint**: the CLI, the MCP servers and
+the web viewer call these functions where an operation matches, and reach past
+them into the layers directly where one does not — the CLI alone does both, and
+freely. Nothing enforces routing through here and nothing is meant to; treat it
+as the place a multi-layer operation is assembled once instead of at each caller,
+and expect the layers to have other callers.
+
+The backup kit (``backup`` / ``restore_drill`` / ``verify`` / ``nightly``) is
+implemented in :mod:`._ops` and re-exported here, so a caller that already holds
+this module can drive a whole operational pass from it.
 
 One archive per process: ``open_archive`` pins ``$THREAD_ARCHIVE_HOME`` so the
 engine (index.db), the truth log (truth/), and search all resolve to the same
