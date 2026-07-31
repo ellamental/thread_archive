@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The CI latency gate (`latency-gate`, `search_lab/latency_smoke.py`) is removed, with `speed.smoke_set`/`ceiling_ms`
+  and its `smoke` baseline: it measured the live, growing archive, so a red could not distinguish growth from a code
+  slowdown and its answer was to re-seed itself. Latency is watched through the retrieval usage telemetry and measured
+  deliberately with `latency_replay.py`.
+
 ## 0.0.11 — 2026-07-30
 
 - The bench's quick tier is sized against this box's slow days rather than its median — the same row measures a factor

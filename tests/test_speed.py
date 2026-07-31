@@ -1,9 +1,9 @@
-"""The latency measurement core and its smoke test.
+"""The latency measurement core.
 
 The parts pinned here are the ones that must be right regardless of what the
 machine's clock does: the aggregation, that the pool cache is actually suspended
-while timing, that the smoke test cherry-picks the pathological queries, and that
-the baseline round-trips. The wall-clock numbers themselves aren't asserted —
+while timing, and that the baseline round-trips. The wall-clock numbers
+themselves aren't asserted —
 they're a distribution, and the point of the module is to report one, not to hit a
 target in a unit test.
 """
@@ -50,7 +50,7 @@ def test_summarize_reports_the_shape_split() -> None:
     assert stats.by_shape["natural"]["p95"] == 200.0
 
 
-def test_summarize_keeps_per_query_p50_for_the_smoke_set() -> None:
+def test_summarize_keeps_per_query_p50() -> None:
     samples = [
         _sample(100, query="fast"), _sample(120, query="fast"),
         _sample(900, query="slow"), _sample(1100, query="slow"),
@@ -58,60 +58,6 @@ def test_summarize_keeps_per_query_p50_for_the_smoke_set() -> None:
     stats = speed._summarize(samples, n_queries=2, reps=2)
     assert stats.by_query["fast"] == 100.0
     assert stats.by_query["slow"] == 900.0
-
-
-# --- the smoke set + ceiling -------------------------------------------------
-
-
-def test_smoke_set_picks_the_slowest_at_baseline() -> None:
-    baseline = {"by_query": {"a": 100.0, "b": 900.0, "c": 400.0, "d": 1500.0}}
-    assert speed.smoke_set(baseline, 2) == ["d", "b"]
-
-
-def test_smoke_set_is_empty_without_a_baseline() -> None:
-    assert speed.smoke_set(None, 8) == []
-    assert speed.smoke_set({}, 8) == []
-
-
-def test_ceiling_prefers_an_explicit_budget() -> None:
-    baseline = {"total": {"p95": 1000.0}}
-    assert speed.ceiling_ms(baseline, budget_ms=1500.0, factor=1.5) == 1500.0
-
-
-def test_ceiling_falls_back_to_a_multiple_of_baseline() -> None:
-    baseline = {"total": {"p95": 1000.0}}
-    assert speed.ceiling_ms(baseline, budget_ms=None, factor=1.5) == 1500.0
-
-
-def test_ceiling_is_none_without_a_budget_or_baseline() -> None:
-    assert speed.ceiling_ms(None, budget_ms=None, factor=1.5) is None
-    assert speed.ceiling_ms({}, budget_ms=None, factor=1.5) is None
-
-
-def test_ceiling_prices_the_measured_queries_not_the_whole_corpus() -> None:
-    # The failure this guards: the smoke test measures the SLOWEST queries, whose
-    # timings sit far above the corpus-wide p95 that summarizes every query. Priced
-    # against that p95 the ceiling lands under what those queries already cost at
-    # baseline, so the check fails on ordinary variance rather than on a regression.
-    baseline = {
-        "total": {"p95": 1000.0},
-        "by_query": {"fast": 100.0, "mid": 400.0, "slow": 2000.0, "slowest": 2400.0},
-    }
-    smoke = speed.smoke_set(baseline, 2)
-    assert smoke == ["slowest", "slow"]
-    ceiling = speed.ceiling_ms(baseline, budget_ms=None, factor=1.5, queries=smoke)
-    # 1.5x the slowest measured query (3600), not 1.5x the corpus p95 (1500) — which
-    # would sit below the 2400ms that query cost on the baseline run itself.
-    assert ceiling == 3600.0
-    assert ceiling > baseline["by_query"]["slowest"]
-
-
-def test_ceiling_falls_back_to_the_corpus_p95_when_queries_are_unknown() -> None:
-    baseline = {"total": {"p95": 1000.0}, "by_query": {"a": 100.0}}
-    assert speed.ceiling_ms(baseline, budget_ms=None, factor=1.5, queries=None) == 1500.0
-    # A query set the baseline has never seen carries no reference of its own.
-    assert speed.ceiling_ms(baseline, budget_ms=None, factor=1.5,
-                            queries=["unseen"]) == 1500.0
 
 
 # --- measure() ---------------------------------------------------------------
@@ -205,8 +151,6 @@ def test_baseline_roundtrips_with_per_query(archive_home) -> None:
     blob = speed.read_baseline(archive_home, snapshot_id="snap1")
     assert blob is not None
     assert blob["by_query"] == {"q1": 700.0, "q2": 1400.0}
-    # and it drives the smoke set
-    assert speed.smoke_set(blob, 1) == ["q2"]
 
 
 def test_baseline_from_another_snapshot_is_not_served(archive_home) -> None:

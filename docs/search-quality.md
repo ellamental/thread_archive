@@ -73,7 +73,7 @@ and no tightening would make it one.
 Accepting a movement is `gate --quick --update`, which puts what was given up in
 the release diff where a reader can see it.
 
-Three things gate every commit, and none displays a quality number — a
+Two things gate every commit, and neither displays a quality number — a
 per-commit metric invites being read as a score, which no local protocol can
 support:
 
@@ -87,10 +87,11 @@ support:
 - **`retrieval-gate`** — an arm-liveness probe only, asserting the embedding arm
   loads, so a dead model can't silently degrade fused search to lexical while
   every row stays green.
-- **`latency-gate`** — replays the slowest recorded calls against a baseline of
-  its own and reds when they got materially slower. A millisecond is not graded
-  by the ranker that produced it, which is why speed can gate here and quality
-  cannot.
+
+Speed does not gate: any latency check runs against the live, growing archive,
+so its verdict is not repeatable — growth and a code slowdown look identical to
+it. Latency is watched through the retrieval usage telemetry and measured
+deliberately with `latency_replay.py` when evaluating a change.
 
 `search_lab/README.md` carries the full ladder these sit in, and what each tier
 licenses.
