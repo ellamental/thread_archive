@@ -68,6 +68,7 @@ def _isolate_home(monkeypatch):
 def _isolate_archive(tmp_path, monkeypatch):
     from thread_archive import _config as config
     from thread_archive import _tools
+    from thread_archive._ops import ingest_errors
     from thread_archive._retrieval import embed_graph, fts, model_slot, vectors
     from thread_archive._store import _base
     from thread_archive._truth import jsonl_log
@@ -125,6 +126,12 @@ def _isolate_archive(tmp_path, monkeypatch):
     vectors.reset_matrix_cache()
     embed_graph.reset_cache()
     fts.reset_set_memo()
+    # The ingest-error tally is a process global, and the ledger only writes a
+    # signature's first sighting and then powers of ten. A count left behind by an
+    # earlier test silences the *next* test's identical fault — which reads as an
+    # empty ledger rather than as leaked state, and only in whatever run puts the
+    # two tests on the same worker.
+    ingest_errors.reset_tally()
     yield
     # Let any in-flight single-flight refresh finish before the engine closes: a daemon
     # refresh thread that outlives its test would touch a torn-down engine and leak a
@@ -137,6 +144,7 @@ def _isolate_archive(tmp_path, monkeypatch):
     vectors.reset_matrix_cache()
     embed_graph.reset_cache()
     fts.reset_set_memo()
+    ingest_errors.reset_tally()
     # sqlite3 and subprocess objects can participate in cycles, delaying their
     # ResourceWarning until an unrelated later test. Collect at the isolation
     # boundary so a leaked resource fails the test that created it. Generation 0

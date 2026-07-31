@@ -280,6 +280,29 @@ def test_summary_pagination(archive_home) -> None:
     assert "Showing 3-4 of 7" in out2
 
 
+def test_summary_offset_boundary_says_past_the_end(archive_home) -> None:
+    """The first offset with nothing behind it is ``total``, not ``total + 1``.
+
+    An off-by-one here doesn't raise — it renders a header over an empty page,
+    which reads to an agent as a thread that ran out of content rather than as a
+    walked-off cursor, so it keeps paging.
+    """
+    tid = _seed()
+    last = read_thread(tid, summary=True, limit=2, offset=6)
+    assert "Showing 7-7 of 7" in last
+    assert read_thread(tid, summary=True, limit=2, offset=7) == (
+        f"Thread {tid}: offset 7 is past the end (7 messages total)")
+    assert read_thread(tid, summary=True, limit=2, offset=8) == (
+        f"Thread {tid}: offset 8 is past the end (7 messages total)")
+
+
+def test_summary_negative_offset_counts_back_from_the_end(archive_home) -> None:
+    tid = _seed()
+    assert "Showing 6-7 of 7" in read_thread(tid, summary=True, limit=2, offset=-2)
+    # Past the start clamps to the first row rather than wrapping.
+    assert "Showing 1-2 of 7" in read_thread(tid, summary=True, limit=2, offset=-99)
+
+
 # ── stored summaries (summary='short' / 'indexed') ──────────────────────────
 
 def _set_summaries(tid: str, *, short=None, indexed=None) -> None:

@@ -18,16 +18,24 @@ import pytest
 from .quality_corpus import CASES, build_corpus, run_cases, top_threads
 
 # Floors, not targets: the corpus is built to be near-perfectly solvable by the
-# lexical stack (measured MRR ≈ 1.0), so the floors sit with headroom below
-# that. A breach means a ranking change reshuffled known-relevance cases.
+# lexical stack, and the stack solves it — MRR 1.0, recall@5 1.0 over the 20
+# cases. A breach means a ranking change reshuffled known-relevance cases.
+#
+# The headroom is deliberately one case wide, no more. At n=20 a single gold
+# falling from rank 1 to rank 2 costs 0.025 MRR and one falling out of the top
+# five costs 0.05 recall — so these floors absorb one such slip (a tuning
+# trade-off someone made on purpose) and red on the second. Floors slack enough
+# to swallow a quarter of the corpus are indistinguishable from no floor: the
+# eight invariant tests below would be carrying the whole load, and they name
+# behaviours, not the aggregate the ranker is actually judged on.
 #
 # Both floors are *ordering* measures. Most CASES rows name a single gold, so
 # their "recall@k" is success@k in disguise — it asks whether the one right
 # thread was found, not whether every matching thread came back. The exhaustive
 # question is scored separately, on golds that are true by construction, in
 # test_search_recall_shape.py; don't read these numbers as recall guarantees.
-MIN_MRR = 0.85
-MIN_RECALL_5 = 0.90
+MIN_MRR = 0.95
+MIN_RECALL_5 = 0.95
 
 
 @pytest.fixture

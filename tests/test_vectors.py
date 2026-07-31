@@ -684,6 +684,38 @@ def test_rrf_merge_fuses_and_carries_semantic() -> None:
     assert all("_rrf" in h for h in merged)
 
 
+def test_rrf_scores_are_the_documented_recipe_peak_normalized() -> None:
+    """``Σ 1/(k + rank)`` on **1-based** ranks, divided by the peak.
+
+    The values are not decoration: ``fusion_weight`` in the ranker is calibrated
+    against this scale, so a change to the rank base or the normalization silently
+    re-weights fusion against every other feature while the *ordering* out of this
+    function stays identical — nothing downstream would look wrong.
+    """
+    lexical = [{"event_id": i, "content_type": "user"} for i in (1, 2, 3)]
+    semantic = [{"event_id": i, "content_type": "user"} for i in (3, 2, 1)]
+    merged = _rrf_merge([lexical, semantic], limit=5, k=60)
+    by_id = {h["event_id"]: h["_rrf"] for h in merged}
+
+    raw = {1: 1 / 61 + 1 / 63, 2: 1 / 62 + 1 / 62, 3: 1 / 63 + 1 / 61}
+    peak = max(raw.values())
+    assert by_id == {i: round(v / peak, 6) for i, v in raw.items()}
+    assert max(by_id.values()) == 1.0, "the top hit anchors the scale at 1.0"
+
+
+def test_rrf_breaks_score_ties_on_event_id() -> None:
+    """Tied hits come back in a stable order that does not depend on which arm
+    saw them first. Without the tie-break the order is the arms' insertion order,
+    so the same query answers differently once an arm is added, reordered, or
+    sits out — and a paging client silently sees a hit twice or not at all."""
+    a = [{"event_id": 7, "content_type": "user"}, {"event_id": 3, "content_type": "user"}]
+    b = [{"event_id": 3, "content_type": "user"}, {"event_id": 7, "content_type": "user"}]
+
+    forward = [h["event_id"] for h in _rrf_merge([a, b], limit=5)]
+    reversed_arms = [h["event_id"] for h in _rrf_merge([b, a], limit=5)]
+    assert forward == reversed_arms == [3, 7]
+
+
 def test_encode_honors_the_off_switch(monkeypatch):
     """embed's documented degrade contract — is_available() False means the vector
     arm sits out — must hold at the encode seam itself: query embedding reaches

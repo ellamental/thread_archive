@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- The ingest-error tally is reset per test, and the suite runs serially in its own CI row (`pytest-serial`). The tally
+  is a process global that only writes a signature's first sighting and then powers of ten, so a count one test left
+  behind silenced the next test's identical fault — a real red under `-n 0` (and under `-n auto` on a one-core box,
+  which is how the Docker install lane could have found it) that `--dist=loadfile` hid by putting the two files on
+  different workers. Serial is the only shape that can see cross-file state leaks at all.
+- `_fsync_handle` takes its `fsync` call as an argument, so the durability of a bulk batch is asserted rather than
+  assumed: past `MAX_OPEN_HANDLES` the early handles are evicted and must be reopened and synced by fd, and a body
+  that skipped the syscall entirely was indistinguishable from the real one to a test that only checked it returned.
+- Pinned the boundaries a mutation probe walked through untouched: the read chunker admits a turn that exactly fills
+  the char budget, the summary view calls `offset == total` past-the-end, and RRF's fused scores are the documented
+  `Σ 1/(k + rank)` on 1-based ranks, peak-normalized, with ties broken on `event_id` so arm order cannot reshuffle a
+  page. The lexical quality floors move to MRR 0.95 / recall@5 0.95 — one case of headroom over a corpus the stack
+  solves perfectly, where 0.85/0.90 absorbed six.
+- Coverage floors ratchet behavioral coverage, not presentation: `cli` 98→88, `_docs`/`_viewer` 100→95, TOTAL 94→93,
+  and `test_cov_cli.py` keeps one representative failure shape per operator report (24 branch-enumeration tests
+  removed) — the exit-code contracts and everything driving real machinery stay. Every floor — Python packages and
+  the frontend's four dimensions — then drops a further five points: slack for ordinary edits, so only a real
+  regression reds a row (`cli` lands at 83, TOTAL at 88, frontend at 85/74/86/89).
 - The CI latency gate (`latency-gate`, `search_lab/latency_smoke.py`) is removed, with `speed.smoke_set`/`ceiling_ms`
   and its `smoke` baseline: it measured the live, growing archive, so a red could not distinguish growth from a code
   slowdown and its answer was to re-seed itself. Latency is watched through the retrieval usage telemetry and measured

@@ -106,6 +106,26 @@ argv = ["{repo}/.venv/bin/pytest", "-q", "--tb=short", "-p", "no:cacheprovider",
 # cwd omitted = repo root, so it resolves testpaths=["tests"] from pyproject.
 timeout = 1800
 
+# The same suite in one process, and the only row that can see cross-file state
+# leaks. `--dist=loadfile` puts each file on some worker, so a global one file
+# leaves dirty is only ever read by another file that happens to land beside it —
+# six workers make that a coin flip, and the row above wins the flip most days.
+# Serial is the worst case made deterministic: every file, one process, in
+# collection order.
+#
+# It is not redundant with the parallel row and does not replace it. The parallel
+# row is the fast gate and the one that measures coverage; this one costs its own
+# ~4 minutes to answer a question no other row asks. A leak it catches is a real
+# failure of a real `-n 0` run — pyproject documents that as the interactive
+# escape hatch for --pdb/-s, and it is also what `-n auto` resolves to on a
+# one-core box, which is how the Docker install lane can red on a machine nobody
+# was looking at.
+[[suite]]
+name = "pytest-serial"
+argv = ["{repo}/.venv/bin/pytest", "-q", "--tb=short", "-p", "no:cacheprovider",
+        "-n", "0", "--no-cov"]
+timeout = 1800
+
 # Per-package coverage floors (a regression ratchet, not a target — floors and
 # rationale live in the script). Reads the JSON the pytest row just wrote, so it
 # must stay ordered after that row.
