@@ -9,7 +9,9 @@
   (`matrix_ms`) rather than as a side effect buried in the priming search's time. Base-pack builds serialize on a
   machine-wide flock (two rivals measured ~156s each against ~20-40s alone; the loser now usually mmaps the
   winner's published files), and pack assembly decodes all vector blobs in one `frombuffer` pass instead of an
-  ndarray per row fed to `vstack`.
+  ndarray per row fed to `vstack`. Pack tmp files are named by pid *and* thread id: the matrix refresher and the
+  corpus-graph build share a process, and with pid-only names one thread's `os.replace` could consume the other's
+  half-written tmp (observed as a `FileNotFoundError` killing a graph refresh; the build flock also serializes them).
 
 - The docs tree is inverted: the shipped manual is `docs/public/`, and `docs/*.md` is the maintainer's half
   (releasing, benchmarks, the dev panels). The wheel names `docs/public` in its include rather than excluding an

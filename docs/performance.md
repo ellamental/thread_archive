@@ -123,7 +123,11 @@ recorded stage; **base-pack builds serialize on a pack-dir flock** (two rival
 repacks measured ~156 s each vs ~20-40 s alone; the loser now usually mmaps the
 winner's published files); and pack assembly decodes blobs in one `frombuffer`
 pass instead of 274k per-row arrays. First search through the restarted shared
-server after this round: 130 ms.
+server after this round: 130 ms. The same round turned up a same-process tmp
+race: the matrix refresher and the corpus-graph build both assemble packs, and
+pid-only tmp names let one thread's `os.replace` consume the other's
+half-written file (a `FileNotFoundError` killed a graph refresh on 07-30) —
+fixed by the build flock plus pid+thread-id tmp names.
 
 ## What deliberately hasn't been done, and the open tails
 
@@ -131,9 +135,11 @@ server after this round: 130 ms.
   The obvious next move is delegating the CLI verbs to the shared :8788 server
   when it is alive (fall back in-process when not). Not attempted yet; if you
   take it on, keep the offline path first-class.
-- **Restart rate itself** has never been attacked — 20 starts/day means 20 cold
-  tails/day no matter how cheap each gets. Worth asking *why* before optimizing
-  the warm further.
+- **Restart rate is development churn, not a fault.** The watcher log shows
+  10-36 restarts *every day* (2026-07-20 → 31), all clean exits with no monitor
+  recoveries — that is parallel instances restarting daemons after edits, which
+  the house rules require. On a live-edited production box the answer is cheap
+  restarts, not fewer; don't burn time hunting a crash loop that isn't there.
 - **Substring/OR fallback scans** can cost ~9 s (`scan_ms`) on broad queries;
   bounded by design (they are the honest full answer), unbounded in feel.
 - **Contention is real and recorded, not fixed**: test suites, embed drains, and

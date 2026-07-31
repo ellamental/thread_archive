@@ -383,15 +383,20 @@ def _write_base(s, d: Path, base_token: tuple[int, int]) -> tuple:
     mat, ids_arr, ct_codes, occurred, ct_names = _corpus_arrays(s)
     tag = f"{base_token[0]}-{base_token[1]}"
     d.mkdir(parents=True, exist_ok=True)
-    pid = os.getpid()
+    # pid + thread id: two builders can share a process — the matrix refresher and
+    # the corpus-graph build both assemble packs — and a pid-only name lets one
+    # thread's os.replace consume the other's half-written tmp (observed as a
+    # FileNotFoundError killing a graph refresh). The build turn serializes them;
+    # the name makes a collision impossible even where it doesn't.
+    who = f"{os.getpid()}.{threading.get_ident()}"
     paths = {k: d / f"{k}-{tag}.npy" for k in _PACK_ARRAYS}
     for k, arr in (("mat", mat), ("ids", ids_arr), ("cts", ct_codes), ("ts", occurred)):
-        tmp = d / f"{k}-{tag}.npy.tmp.{pid}"
+        tmp = d / f"{k}-{tag}.npy.tmp.{who}"
         with open(tmp, "wb") as f:  # a handle: np.save must not append '.npy'
             np.save(f, arr)
         os.replace(tmp, paths[k])
     meta_p = d / f"meta-{tag}.json"
-    tmp = d / f"{meta_p.name}.tmp.{pid}"
+    tmp = d / f"{meta_p.name}.tmp.{who}"
     tmp.write_text(json.dumps({"ct_names": ct_names, "rows": len(ids_arr)}))
     os.replace(tmp, meta_p)
     _sweep_packs(d, tag)
