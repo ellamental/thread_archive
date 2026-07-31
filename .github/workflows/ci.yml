@@ -24,6 +24,10 @@ on:
     branches: [main, dev, "release/**"]
   pull_request:
 
+# Every job only reads the repo; nothing here needs a write-capable token.
+permissions:
+  contents: read
+
 # A newer push to the same branch/PR supersedes an in-flight run.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
