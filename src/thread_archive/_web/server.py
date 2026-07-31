@@ -1105,7 +1105,7 @@ def route(
     rel = path.lstrip("/")
     if rel:
         candidate = (STATIC_DIR / rel).resolve()
-        if (candidate == STATIC_DIR or STATIC_DIR in candidate.parents) and candidate.is_file():
+        if candidate.is_relative_to(STATIC_DIR) and candidate.is_file():
             # Vite emits content-hashed filenames under assets/ — a changed file
             # gets a new URL, so the browser may cache these forever.
             cache = (

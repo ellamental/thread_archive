@@ -163,7 +163,7 @@ def route(method: str, path: str, params: dict) -> Response:
     rel = path.lstrip("/")
     if rel:
         candidate = (STATIC_DIR / rel).resolve()
-        if (candidate == STATIC_DIR or STATIC_DIR in candidate.parents) and candidate.is_file():
+        if candidate.is_relative_to(STATIC_DIR) and candidate.is_file():
             # Vite emits content-hashed filenames under assets/, so those are
             # immutable; anything else must be revalidated.
             headers = ({"Cache-Control": "public, max-age=31536000, immutable"}
