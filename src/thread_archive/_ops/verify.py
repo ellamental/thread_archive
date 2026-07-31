@@ -136,7 +136,7 @@ def verify(
     restored-but-not-yet-reindexed archive must show its full drift, not a
     vacuous OK.
     """
-    from .._api import open_archive
+    from .._lifecycle import open_archive
 
     _t0 = time.monotonic()
     open_archive(home)

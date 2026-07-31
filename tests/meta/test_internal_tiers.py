@@ -78,6 +78,7 @@ TIERS: dict[str, int] = {
     "_docs": 0,
     "_viewer": 0,
     "_delegate": 0,
+    "_fmt": 0,
     # 1 — the stores: rows and formats, never who is asking.
     "_store": 1,
     "_thread_import": 1,
@@ -85,6 +86,7 @@ TIERS: dict[str, int] = {
     "_truth": 2,
     "_knowledge": 2,
     "_retrieval": 2,
+    "_lifecycle": 2,
     # 3 — sources: getting conversations in, and keeping the instance healthy.
     "provider": 3,
     "_providers": 3,
@@ -109,42 +111,51 @@ TIERS: dict[str, int] = {
 #: today; may only shrink.
 #:
 #: What each one is, so the next reader knows which are shallow and which are
-#: structural: ``_ops -> _api`` is the ops kit re-entering the composition layer to
-#: open an archive it is already inside — the largest and the most mechanical.
-#: ``_retrieval -> _ops`` is telemetry and ledger writes; ``_retrieval -> _api`` is
-#: the same re-entry as ops'. ``_retrieval -> _providers`` / ``-> provider`` is
-#: render policy, which is genuinely provider knowledge the read path needs, and
-#: is the one that argues for a lower home for the policy rather than for a
-#: different caller. ``_setup -> cli`` is the wizard re-running a verb.
+#: structural. ``_retrieval -> _ops`` is telemetry and ledger writes — the ledgers
+#: are low-level enough to argue for a lower home than the ops kit.
+#: ``_retrieval -> _api`` and the remaining ``_ops -> _api`` are the two places a
+#: lower layer re-enters the top to drive a *whole* operation: the warm pass runs a
+#: real search, and the restore drill reads and searches the restored home on
+#: purpose — proving the stack end-to-end is the point of both, so neither is a
+#: layering slip so much as a deliberate round trip.
+#: ``_retrieval -> _providers`` / ``-> provider`` is render policy, which is
+#: genuinely provider knowledge the read path needs, and argues for a lower home
+#: for the policy rather than for a different caller.
 UPWARD_BASELINE: dict[str, int] = {
-    "_ops -> _api": 7,
     "_retrieval -> _ops": 4,
     "_retrieval -> _api": 2,
     "_retrieval -> _providers": 2,
     "_api -> _update": 1,
+    "_ops -> _api": 1,
     "_retrieval -> provider": 1,
-    "_setup -> cli": 1,
     "_truth -> _ops": 1,
-    "_watcher -> _api": 1,
 }
 
 #: Mutually-importing package clusters. Frozen today; may only shrink — in count,
 #: and in the membership of each cluster.
 #:
-#: The large one spans tiers 2–5 and is held together by the upward edges above:
-#: clear those nine and it falls into two smaller knots, which is the order to
-#: attack it in. The knots underneath are the real work. One is the source layer
-#: around its own registry — the registry builds the importers and watchers, which
-#: import the registry back; ``provider`` sits inside because the public plugin
-#: surface both *defines* the ``Provider`` type the registry needs and *offers
-#: builders* that need the importers, and splitting those two halves is what
-#: unpicks it. The other is truth's rebuild reaching into retrieval to reproject.
+#: The one cluster spans tiers 2–4 and is held together by the upward edges above:
+#: clear those and it falls into two smaller knots, which is the order to attack it
+#: in. ``_lifecycle`` is in it only by way of ``_truth -> _ops -> _api``, and leaves
+#: the moment that edge does — it imports nothing above tier 2 itself.
 #:
-#: ``_setup``/``cli`` is separate and shallow: the wizard re-runs a CLI verb.
+#: The knots underneath are the real work. One is the source layer around its own
+#: registry — the registry builds the importers and watchers, which import the
+#: registry back; ``provider`` sits inside because the public plugin surface both
+#: *defines* the ``Provider`` type the registry needs and *offers builders* that
+#: need the importers, and splitting those two halves is what unpicks it. The other
+#: is truth's rebuild reaching into retrieval to reproject.
+#:
+#: The single largest remaining lever is not in this list: ``_ops.ledger``,
+#: ``_ops.telemetry`` and ``_ops.load_runs`` are instrumentation primitives that
+#: depend on nothing above ``_config``, filed under a tier-3 package. Tier 2 reaches
+#: up for them (``_retrieval -> _ops``, ``_truth -> _ops``), and a lower home for
+#: the three would take those five sites with it — and ``_lifecycle`` out of this
+#: cluster. It is a move across ~29 files including the bench harnesses, so it is a
+#: deliberate piece of work rather than a cleanup.
 CYCLE_BASELINE: set[frozenset[str]] = {
-    frozenset({"_api", "_importers", "_ops", "_providers", "_repair", "_retrieval",
-               "_truth", "_update", "_watcher", "provider"}),
-    frozenset({"_setup", "cli"}),
+    frozenset({"_api", "_importers", "_lifecycle", "_ops", "_providers", "_repair",
+               "_retrieval", "_truth", "_update", "_watcher", "provider"}),
 }
 
 

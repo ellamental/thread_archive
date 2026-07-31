@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from thread_archive._retrieval import _rrf_merge, vectors
-from thread_archive._store import init_db
+from thread_archive._store import current_archive, init_db
 
 
 def _unit(*nonzero) -> np.ndarray:
@@ -664,15 +664,16 @@ def test_matrix_cache_canonical_key_and_bounded(archive_home) -> None:
     init_db()
     vectors.ensure_index()
     assert vectors.index_vectors([(1, "user", _unit((0, 1.0)))]) == 1
-    vectors._MATRIX_CACHE.clear()
+    cache = current_archive().cache(vectors._MATRIX_SLOT)
+    cache.clear()
 
     vectors._load_matrix(("user", "text"))
     vectors._load_matrix(("text", "user"))
-    assert len(vectors._MATRIX_CACHE) == 1
+    assert len(cache) == 1
 
     for cts in (("user",), ("text",), ("title",), ("user", "text"), ("user", "title")):
         vectors._load_matrix(cts)
-    assert len(vectors._MATRIX_CACHE) <= vectors._MATRIX_CACHE_MAX
+    assert len(cache) <= vectors._MATRIX_CACHE_MAX
 
 
 def test_exclude_all_embedded_types_sits_semantic_out(archive_home) -> None:

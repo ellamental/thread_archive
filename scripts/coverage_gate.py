@@ -39,8 +39,15 @@ FLOORS = {
     # The shipped manual's resolver: both locations, both readers, and the
     # rejections of slugs that would reach outside the docs directory.
     "_docs": 90.0,
+    # One pure formatter, every branch of it driven (unreadable, naive, both
+    # resolutions) — there is nothing here that a test cannot reach.
+    "_fmt": 95.0,
     "_importers": 87.0,
     "_knowledge": 85.0,
+    # Opening/closing the archive: the two calls every surface makes first. Both
+    # arms of the home-switch, the swap check, and the failed-open rollback are
+    # driven directly, so it measures high.
+    "_lifecycle": 90.0,
     # The MCP transport shim: bind plan, cohosted ingest, tool registration. What
     # it does NOT hold is the tools themselves (`_tools`, floored below), and the
     # small remainder here is mostly `main()` — the blocking serve loop, proved by

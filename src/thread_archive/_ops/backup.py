@@ -622,7 +622,7 @@ def backup(
     failure is reported (``bundle_error``, and it fails the health record's
     ``ok``) but never aborts the truth mirror itself.
     """
-    from .._api import open_archive
+    from .._lifecycle import open_archive
 
     _t0 = time.monotonic()
     open_archive(home)
@@ -796,7 +796,7 @@ def restore_drill(
     import tempfile
     import time
 
-    from .._api import close, open_archive
+    from .._lifecycle import close, open_archive
 
     paths = open_archive(home)
     from .._truth import scan_truth_counts
@@ -934,7 +934,7 @@ def restore(
     import time
     from datetime import datetime, timezone
 
-    from .._api import close, open_archive
+    from .._lifecycle import close, open_archive
     from .._truth import scan_truth_counts
 
     started = time.monotonic()

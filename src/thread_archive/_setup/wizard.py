@@ -607,7 +607,7 @@ def _indent(block: str, by: str = "    ") -> str:
 
 def print_status(args: argparse.Namespace, *, machine: Optional[Machine] = None) -> int:
     from .. import _api as api
-    from ..cli import _age
+    from .._fmt import age as _age
 
     machine = machine if machine is not None else Machine()
     st = api.status(home=args.home)

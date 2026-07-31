@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+- Opening and closing the archive moved to `_lifecycle`, the layer their dependencies are already on. `open_archive`
+  reaches exactly three things — resolved paths, the SQLite store, the truth log's append handles — so the ops kit,
+  the watcher and the composition layer were all reaching *up* into `_api` to call it, seven sites of the nine that
+  made `_ops -> _api` the largest tier violation. `_api` re-exports both, so every caller that opens an archive
+  before composing an operation is unchanged. What is left of `_ops -> _api` is the restore drill reading and
+  searching the home it just restored, which is a deliberate end-to-end round trip rather than a layering slip.
+
+- The CLI's duration formatter moved to `_fmt`, a leaf. The setup wizard was importing a front door to borrow it —
+  the whole of the `_setup`/`cli` cycle, now gone. `_ops.notices` keeps its own age formatter: it renders at the
+  resolution an operator alert is acted on, and collapsing the two would change what one of the surfaces prints.
+
+- Internal layering: 9 upward edges over 20 sites down to 7 over 13, and two mutually-importing clusters down to
+  one. `_lifecycle` sits inside the remaining cluster only by way of `_truth -> _ops -> _api` and leaves when that
+  edge does. The ratchet records the largest remaining lever, which is not in its baseline: `_ops.ledger`,
+  `_ops.telemetry` and `_ops.load_runs` are instrumentation primitives depending on nothing above `_config`, filed
+  under a tier-3 package that tier 2 then reaches up for.
+
+- The open archive is an object. `_store._instance.Archive` holds the engine together with the per-archive scratch
+  every layer above caches in (`Archive.cache(name)`), and `close()` drops the whole set in one step — so
+  `close_engine()` is the entire teardown and a cache added above the store needs no new line anywhere. The vector
+  matrix, the corpus graph and the exact-set memo moved into it; the truth-log append handles and the ingest-error
+  tally stayed process-global, the first because it is path-keyed with real close semantics reached from rollback
+  paths under the truth-write mutex, the second because counting *this process's* sightings is what it is for.
+  `use_engine` now opens a transient archive around the caller's engine rather than swapping a bare engine, so a
+  block running against another index file caches into its own slots and drops them at exit.
+
+- The identity those caches are scoped by is no longer an address. They keyed on `id(get_engine())`, and CPython
+  reuses the id of a disposed engine — so a fresh archive could match a closed one's key and be served its matrix,
+  graph, or set memo, on a collision nobody controls. `Archive.token` comes from a counter that never repeats, and
+  because a cache now lives *inside* the archive there is no surviving dict for a dead one's entries to sit in
+  either. Two archives can be open at once and keep separate everything, which the module globals made impossible;
+  `tests/test_archive_instance.py` pins that, the non-recycling tokens, and the teardown.
+
+- `current_archive_or_none()` — a peek that never opens. Opening resolves the home from the environment and pins it
+  for the process, so a function that opens as a side effect of doing nothing *chooses a home*, and a later
+  deliberate choice then silently has no effect. The cache resets hit exactly that: routed through
+  `current_archive()`, they turned the test suite's own isolation fixture into a home-pinning call and pointed
+  tests at the default home instead of the one they had asked for. The resets are no-ops when nothing is open, and
+  the regression is pinned per reset function.
+
+- The suite's isolation fixture lost its per-global reset ritual — closing the archive covers the matrix, the graph
+  and the memo — and resets the retrieval surface through `set_default_surface` rather than by writing the module
+  global.
+
 - The internal package graph is ratcheted, the way the external dependency surface already was. Every package under
   `src/thread_archive` now sits in a declared tier (`tests/meta/test_internal_tiers.py`) and may import only its own
   tier or a lower one, with the graph as a whole required to stay acyclic; two shrink-only baselines freeze what

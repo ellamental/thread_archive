@@ -9,8 +9,11 @@ from ._base import (
     ArchiveSession,
     Base,
     active_dsn,
+    archive_cache,
     build_engine,
     close_engine,
+    current_archive,
+    current_archive_or_none,
     dml_rowcount,
     get_engine,
     get_session,
@@ -19,6 +22,7 @@ from ._base import (
     use_engine,
     use_session,
 )
+from ._instance import Archive
 from .models import (
     CodeCursor,
     Event,
@@ -38,12 +42,16 @@ from .schema import init_db
 from .ulid import mint_ulid, normalize_ulid, ulid_timestamp_ms
 
 __all__ = [
-    # engine + session
+    # the open archive: engine, session, per-archive caches
+    "Archive",
     "ArchiveSession",
     "Base",
     "build_engine",
     "init_engine",
     "active_dsn",
+    "current_archive",
+    "current_archive_or_none",
+    "archive_cache",
     "get_engine",
     "get_session",
     "use_session",

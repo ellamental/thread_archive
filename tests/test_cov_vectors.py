@@ -24,7 +24,7 @@ from sqlalchemy import text as sa_text
 
 from thread_archive._retrieval import embed, vectors
 from thread_archive._retrieval.model_slot import ModelSlot
-from thread_archive._store import get_session, init_db
+from thread_archive._store import current_archive, get_session, init_db
 from thread_archive._store._base import use_engine
 
 from .helpers import import_cc_session
@@ -877,8 +877,9 @@ def test_matrix_refresh_picks_up_writes(archive_home) -> None:
 
 def _wait_for_refresh(key, timeout: float = 10.0) -> None:
     """Block until the single-flight background matrix refresh for ``key`` clears."""
+    marker = vectors._inflight_marker(current_archive(), key)
     deadline = time.monotonic() + timeout
-    while key in vectors._MATRIX_REFRESHING and time.monotonic() < deadline:
+    while marker in vectors._MATRIX_REFRESHING and time.monotonic() < deadline:
         time.sleep(0.01)
 
 
@@ -896,7 +897,7 @@ def test_load_matrix_background_refresh_past_cooldown(archive_home) -> None:
     vectors.index_vectors([(2, "user", _unit((1, 1.0)))])
     # Age the last-checked stamp (plain write to test-owned state) so the next load
     # treats the cooldown as elapsed and schedules the real refresh thread.
-    vectors._matrix_checked_at[key] = 0.0
+    current_archive().cache(vectors._CHECKED_SLOT)[key] = 0.0
     vectors._load_matrix(("user",))  # serves stale, kicks the background refresh
     _wait_for_refresh(key)
     ids2, *_ = vectors._load_matrix(("user",))
@@ -916,13 +917,14 @@ def test_refresh_matrix_async_single_flight_suppresses_duplicate(archive_home) -
     vectors._load_matrix(("user",))  # cache holds the 1-row matrix
     vectors.index_vectors([(2, "user", _unit((1, 1.0)))])
 
-    vectors._MATRIX_REFRESHING.add(key)  # a rebuild is (nominally) already in flight
+    marker = vectors._inflight_marker(current_archive(), key)
+    vectors._MATRIX_REFRESHING.add(marker)  # a rebuild is (nominally) already in flight
     try:
         vectors._refresh_matrix_async(key, ("user",))  # suppressed — no rebuild
         ids, *_ = vectors._load_matrix(("user",))
         assert len(ids) == 1  # still stale: the guard blocked the rebuild
     finally:
-        vectors._MATRIX_REFRESHING.discard(key)
+        vectors._MATRIX_REFRESHING.discard(marker)
 
     vectors._refresh_matrix_async(key, ("user",))  # guard clear → runs for real
     _wait_for_refresh(key)
@@ -1282,7 +1284,7 @@ def test_ensure_index_migrates_prechunk_table(archive_home) -> None:
 def test_load_matrix_returns_cached_on_hit(archive_home) -> None:
     init_db()
     vectors.ensure_index()
-    vectors._MATRIX_CACHE.clear()
+    current_archive().cache(vectors._MATRIX_SLOT).clear()
     vectors.index_vectors([(1, "user", _unit((0, 1.0)))])
     first = vectors._load_matrix(("user",))
     second = vectors._load_matrix(("user",))  # unchanged token → cache hit

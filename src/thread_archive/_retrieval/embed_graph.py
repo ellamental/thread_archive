@@ -52,12 +52,15 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 from sqlalchemy import text as sa_text
 
-from .._store import get_session
+from .._store import current_archive, current_archive_or_none, get_session
+
+if TYPE_CHECKING:
+    from .._store import Archive
 
 logger = logging.getLogger(__name__)
 
@@ -127,15 +130,22 @@ class CorpusGraph:
         return out
 
 
-# Process-local cache: {engine_id: (validity_token, CorpusGraph | None)}.
-# None is cached too — a store with no embedded vectors shouldn't re-probe on
-# every search, only when the token moves.
-_CACHE: dict = {}
+# The graph cache, held by the open archive (``Archive.cache``): one slot holding
+# ``{"entry": (validity_token, CorpusGraph | None), "checked_at": monotonic ts}``.
+# ``None`` is cached as an entry too — a store with no embedded vectors shouldn't
+# re-probe on every search, only when the token moves.
+#
+# Held by the archive rather than in a module dict keyed on the engine: a corpus
+# graph is a partition of *these* threads, and the id of a disposed engine is
+# reused, so a keyed-by-engine cache could hand a fresh archive the previous one's
+# partition. It also means the graph is released when the archive closes, which
+# for a corpus-wide Leiden result is tens of MB.
+_SLOT = "embed_graph"
 # Engines with a background refresh thread in flight — the guard against spawning
 # a second one. It does not cover the build itself: `get(block=True)` builds on the
 # calling thread and would otherwise race a background refresh, so the work is
 # guarded separately below.
-_REFRESHING: set[int] = set()
+_REFRESHING: set[int] = set()  # archive tokens
 _REFRESH_LOCK = threading.Lock()
 # One build at a time per engine, whoever asked. The entry points — a background
 # refresh, an eval's inline build, a warm pass that found nothing on disk — otherwise
@@ -143,14 +153,13 @@ _REFRESH_LOCK = threading.Lock()
 # instead of duplicating it, which costs it nothing (it was going to wait out a build
 # either way) and halves the CPU and the peak memory of a corpus-wide Leiden
 # partition. Within one process only: `rebuild_floor_s` is the cross-process half.
-_BUILDING: set[int] = set()
+_BUILDING: set[int] = set()  # archive tokens
 _BUILD_LOCKS: dict[int, threading.Lock] = {}
 _BUILD_GUARD = threading.Lock()
 # Probe the validity token (a count scan) and kick a refresh at most this often: the
 # graph is a coarse community prior, so a minute of staleness is immaterial, and
 # without the gate every search during continuous ingest re-probes and rebuilds.
 _REFRESH_COOLDOWN_S = 60.0
-_checked_at: dict = {}  # {engine id: monotonic ts of the last staleness probe}
 
 _REBUILD_FLOOR_ENV = "THREAD_ARCHIVE_GRAPH_REBUILD_FLOOR_S"
 
@@ -199,7 +208,7 @@ def _rebuild_redundant() -> bool:
     return age is not None and age < floor
 
 
-def _refresh_if_stale(key: int) -> None:
+def _refresh_if_stale(arch: "Archive") -> None:
     """Probe the store's validity token and kick a background rebuild when the
     cached graph sits behind it — at most once per :data:`_REFRESH_COOLDOWN_S`, and
     never when :func:`_rebuild_redundant` says the machine already has a recent one.
@@ -207,10 +216,11 @@ def _refresh_if_stale(key: int) -> None:
     Shared by :func:`get` and :func:`warm` so a serving process ages its graph the
     same way however it came by it."""
     now = time.monotonic()
-    if now - _checked_at.get(key, 0.0) < _REFRESH_COOLDOWN_S:
+    cache = arch.cache(_SLOT)
+    if now - cache.get("checked_at", 0.0) < _REFRESH_COOLDOWN_S:
         return
-    _checked_at[key] = now
-    cached = _CACHE.get(key)
+    cache["checked_at"] = now
+    cached = cache.get("entry")
     if cached is None:
         return
     stale = True
@@ -222,16 +232,20 @@ def _refresh_if_stale(key: int) -> None:
     except Exception:  # noqa: BLE001 — a staleness probe must never break search
         stale = False
     if stale and not _rebuild_redundant():
-        _refresh_async(key)
+        _refresh_async(arch.token)
 
 
 def reset_cache() -> None:
     """Drop this process's graph cache. Memory only — the persisted copy is keyed
     by the store's own token and invalidated at its source
     (:func:`.graph_cache.drop`), so dropping it here would throw away a valid
-    cache that costs a rebuild to recreate."""
-    _CACHE.clear()
-    _checked_at.clear()
+    cache that costs a rebuild to recreate.
+
+    A no-op when no archive is open — dropping a cache must never be what opens
+    one."""
+    arch = current_archive_or_none()
+    if arch is not None:
+        arch.cache(_SLOT).clear()
 
 
 def _cache_params(knn: int, min_sim: float) -> dict:
@@ -333,10 +347,9 @@ def get(*, block: bool = False) -> Optional[CorpusGraph]:
     starting server wants :func:`warm` instead."""
     if block:
         return build()
-    from .._store import get_engine
-
-    key = id(get_engine())
-    cached = _CACHE.get(key)
+    arch = current_archive()
+    cache = arch.cache(_SLOT)
+    cached = cache.get("entry")
     if cached is None:
         # Nothing in memory: the first touch of a fresh process. A persisted graph
         # is served without waiting for its token to be checked — serving stale is
@@ -344,10 +357,11 @@ def get(*, block: bool = False) -> Optional[CorpusGraph]:
         # fresher graph but none at all.
         cached = _disk_entry()
         if cached is None:
-            _refresh_async(key)  # nothing to serve yet — get the first build going
+            # nothing to serve yet — get the first build going
+            _refresh_async(arch.token)
             return None
-        _CACHE[key] = cached
-    _refresh_if_stale(key)
+        cache["entry"] = cached
+    _refresh_if_stale(arch)
     return cached[1]
 
 
@@ -369,16 +383,15 @@ def warm() -> Optional[CorpusGraph]:
     Leiden partition to answer that is the most expensive way to get an answer it
     already had — the load is tens of MB off disk against seconds of compute.
     """
-    from .._store import get_engine
-
-    key = id(get_engine())
-    if _CACHE.get(key) is None:
+    arch = current_archive()
+    cache = arch.cache(_SLOT)
+    if cache.get("entry") is None:
         entry = _disk_entry()
         if entry is None:
             return build()  # nothing to serve: this process pays the first build
-        _CACHE[key] = entry
-    _refresh_if_stale(key)
-    return _CACHE[key][1]
+        cache["entry"] = entry
+    _refresh_if_stale(arch)
+    return cache["entry"][1]
 
 
 def is_refreshing() -> bool:
@@ -414,15 +427,16 @@ def _refresh_async(key: int) -> None:
 def build(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[CorpusGraph]:
     """Build (or serve cached) the corpus graph. ``None`` when the store has no
     embedded vectors — the graph degrades with the semantic arm, not separately."""
-    from .._store import get_engine
     from .vectors import _validity_token, ensure_index
 
     if not ensure_index():  # creates event_vectors when absent, like _knn does
         return None
     with get_session() as s:
         token = _validity_token(s)
-    key = id(get_engine())
-    cached = _CACHE.get(key)
+    arch = current_archive()
+    cache = arch.cache(_SLOT)
+    key = arch.token
+    cached = cache.get("entry")
     if cached is not None and cached[0] == token:
         return cached[1]
 
@@ -431,7 +445,7 @@ def build(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[CorpusGraph]:
         # same token, so their result is ours and the build we were about to do is
         # already done. This is the whole point of the lock — not serializing
         # builds, but making the second one unnecessary.
-        cached = _CACHE.get(key)
+        cached = cache.get("entry")
         if cached is not None and cached[0] == token:
             return cached[1]
         # Some earlier process already built this exact token and wrote it down.
@@ -440,7 +454,7 @@ def build(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[CorpusGraph]:
         # the store as it stands.
         entry = _disk_entry(knn, min_sim)
         if entry is not None and entry[0] == token:
-            _CACHE[key] = entry
+            cache["entry"] = entry
             return entry[1]
         with _BUILD_GUARD:
             _BUILDING.add(key)
@@ -449,7 +463,7 @@ def build(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[CorpusGraph]:
         _t0 = time.perf_counter()
         graph = None
         try:
-            graph = _build_graph(key, token, knn, min_sim)
+            graph = _build_graph(cache, token, knn, min_sim)
             return graph
         finally:
             with _BUILD_GUARD:
@@ -490,9 +504,9 @@ def _build_lock(key: int) -> threading.Lock:
         return lock
 
 
-def _build_graph(key: int, token: object, knn: int, min_sim: float) -> Optional[CorpusGraph]:
-    """The build proper — always called holding this engine's build lock, with the
-    cache already checked against ``token``."""
+def _build_graph(cache: dict, token: object, knn: int, min_sim: float) -> Optional[CorpusGraph]:
+    """The build proper — always called holding this archive's build lock, with
+    ``cache`` (the archive's own graph slot) already checked against ``token``."""
     import networkx as nx
 
     from .community import detect_communities
@@ -503,7 +517,7 @@ def _build_graph(key: int, token: object, knn: int, min_sim: float) -> Optional[
     # it just tokened, and this call is already gated by the graph token cache above.
     _tok, ids, _ct_arr, mat, _doc_inv, _doc_rep, scope_rows, _ts = _build_matrix_entry(_CTS)
     if len(ids) == 0:
-        _CACHE[key] = (token, None)  # no vectors: don't re-probe until the store moves
+        cache["entry"] = (token, None)  # no vectors: don't re-probe until the store moves
         return None
     with get_session() as s:
         ev2thread = _event_threads(s)
@@ -515,7 +529,7 @@ def _build_graph(key: int, token: object, knn: int, min_sim: float) -> Optional[
     )
     keep = row_thread >= 0
     if not keep.any():
-        _CACHE[key] = (token, None)
+        cache["entry"] = (token, None)
         return None
 
     dim = mat.shape[1]
@@ -566,7 +580,7 @@ def _build_graph(key: int, token: object, knn: int, min_sim: float) -> Optional[
         community=community,
         edges=g.number_of_edges(),
     )
-    _CACHE[key] = (token, graph)
+    cache["entry"] = (token, graph)
     from . import graph_cache
 
     graph_cache.save(token, graph, _cache_params(knn, min_sim))

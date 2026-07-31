@@ -35,7 +35,13 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from .._store import Event, EventFts, get_engine, use_session
+from .._store import (
+    Event,
+    EventFts,
+    current_archive,
+    current_archive_or_none,
+    use_session,
+)
 from . import _probe
 from ._classify import canonical_time_bound, classify_query
 from ._extract import INDEXABLE_EVENT_TYPES, extract_fts_content
@@ -886,13 +892,28 @@ _SET_MEMO_TTL_S = 60.0
 #: per matched thread, which the corpus itself bounds.
 _SET_MEMO_MAX = 8
 
-#: ``key -> (stored_at, watermark, payload)``. The watermark is part of the value
-#: rather than the key so an entry stays findable after ingest moves the index; what
-#: to do about the move is the reading caller's decision.
-_set_memo: "OrderedDict[tuple, tuple[float, object, Any]]" = OrderedDict()
+#: The memo's slot in the open archive (``Archive.cache``), holding an LRU
+#: ``key -> (stored_at, watermark, payload)`` plus its hit/miss counters. The
+#: watermark is part of the value rather than the key so an entry stays findable
+#: after ingest moves the index; what to do about the move is the reading caller's
+#: decision.
+#:
+#: Held by the archive because an exact-set answer is a statement about one index's
+#: rows. Saying so in the key by engine address would not hold: CPython reuses that
+#: address once the engine is disposed, so a freshly opened archive can match a
+#: closed one's key and be served its set.
+_MEMO_SLOT = "fts.set_memo"
 _set_memo_lock = threading.Lock()
-_set_memo_hits = 0
-_set_memo_misses = 0
+
+
+def _memo_slot(arch) -> dict:
+    """This archive's memo state, initialized on first use. Call under the lock."""
+    slot = arch.cache(_MEMO_SLOT)
+    if "lru" not in slot:
+        slot["lru"] = OrderedDict()
+        slot["hits"] = 0
+        slot["misses"] = 0
+    return slot
 
 
 def set_memo_stats() -> dict:
@@ -903,8 +924,12 @@ def set_memo_stats() -> dict:
     latency it saves is exactly the latency it would have cost. Counted so the
     question is answerable from outside (the counters mirror
     :class:`.pool_cache.PoolCache`'s)."""
+    arch = current_archive_or_none()
+    if arch is None:
+        return {"entries": 0, "hits": 0, "misses": 0}
     with _set_memo_lock:
-        return {"entries": len(_set_memo), "hits": _set_memo_hits, "misses": _set_memo_misses}
+        slot = _memo_slot(arch)
+        return {"entries": len(slot["lru"]), "hits": slot["hits"], "misses": slot["misses"]}
 
 
 def _set_watermark(session: Optional[Session]) -> object:
@@ -938,28 +963,30 @@ def _set_memo_get(key: tuple) -> Any:
     the index moves; what to do about the move is the caller's decision, and the
     two callers here answer differently.
     """
-    global _set_memo_hits, _set_memo_misses
     now = time.monotonic()
     with _set_memo_lock:
-        entry = _set_memo.get(key)
+        slot = _memo_slot(current_archive())
+        lru = slot["lru"]
+        entry = lru.get(key)
         if entry is not None and now - entry[0] > _SET_MEMO_TTL_S:
-            del _set_memo[key]
+            del lru[key]
             entry = None
         if entry is None:
-            _set_memo_misses += 1
+            slot["misses"] += 1
             return None
-        _set_memo_hits += 1
-        _set_memo.move_to_end(key)
+        slot["hits"] += 1
+        lru.move_to_end(key)
         return entry[1], entry[2]
 
 
 def _set_memo_put(key: tuple, watermark: object, value: Any) -> None:
     """Store ``value`` under ``key`` as of ``watermark``, evicting LRU past the cap."""
     with _set_memo_lock:
-        _set_memo[key] = (time.monotonic(), watermark, value)
-        _set_memo.move_to_end(key)
-        while len(_set_memo) > _SET_MEMO_MAX:
-            _set_memo.popitem(last=False)
+        lru = _memo_slot(current_archive())["lru"]
+        lru[key] = (time.monotonic(), watermark, value)
+        lru.move_to_end(key)
+        while len(lru) > _SET_MEMO_MAX:
+            lru.popitem(last=False)
 
 
 def _set_ceiling(watermark: object) -> dict:
@@ -1021,11 +1048,13 @@ def _merge_thread_rows(base: list[dict], delta: list[dict]) -> list[dict]:
 def reset_set_memo() -> None:
     """Drop every memoized exact-set answer and its counters. For where a stale set
     would be *wrong* rather than merely dated — reindex (rows that must stop being
-    counted) — mirroring :func:`.vectors.reset_matrix_cache`."""
-    global _set_memo_hits, _set_memo_misses
+    counted) — mirroring :func:`.vectors.reset_matrix_cache`. A no-op when no
+    archive is open: dropping a cache must never be what opens one."""
+    arch = current_archive_or_none()
+    if arch is None:
+        return
     with _set_memo_lock:
-        _set_memo.clear()
-        _set_memo_hits = _set_memo_misses = 0
+        arch.cache(_MEMO_SLOT).clear()
 
 
 def _set_memo_key(
@@ -1038,19 +1067,22 @@ def _set_memo_key(
     Built from the resolved predicate and filters rather than from the caller's
     arguments, so it names exactly what the answer depends on — two spellings of one
     scope share an entry, and a scope field that reaches the SQL cannot be left out
-    of the key by omission. ``id(get_engine())`` scopes it to the open archive: a
-    process holding two homes (the ``use_engine`` seam) must not serve one's set as
-    the other's.
+    of the key by omission. Scoping to one archive is the cache's job, not the
+    key's: a process holding two homes (the ``use_engine`` seam) must not serve
+    one's set as the other's, and each home's memo lives in its own archive.
 
     The *question*, not the answer's vintage: the watermark an entry was computed at
     is stored with the entry (:func:`_set_memo_put`) instead of keyed into it, so a
     caller can find its own earlier answer after the index has moved and decide
     whether it can be carried forward.
 
+    Which archive an entry belongs to is carried by the cache it lives in
+    (:data:`_MEMO_SLOT`), not by the key.
+
     ``extra`` is anything else the caller's answer depends on that the SQL text does
     not already carry — a bound passed as a parameter rather than compiled in."""
     return (
-        kind, id(get_engine()), where,
+        kind, where,
         tuple(sorted(params.items())), tuple(shared), tuple(sorted(shared_params.items())),
         *extra,
     )

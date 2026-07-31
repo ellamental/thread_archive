@@ -37,13 +37,16 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 from sqlalchemy import text as sa_text
 from sqlalchemy.exc import OperationalError
 
-from .._store import get_engine, get_session
+from .._store import current_archive, current_archive_or_none, get_engine, get_session
+
+if TYPE_CHECKING:
+    from .._store import Archive
 from . import _probe
 from ._types import EventHit
 from .embed import EMBEDDING_CHAR_CAP
@@ -124,16 +127,25 @@ _USER_CONTENT_TYPES = ("user",)
 _ASSISTANT_CONTENT_TYPES = ("text",)
 _META_CONTENT_TYPES = ("title",)
 
-# Process-local matrix cache: {(engine_id, cts): (validity_token, ids, ctypes, mat,
-# doc_inverse, doc_rep, scope_rows, occurred)}. Keys are canonicalized (sorted cts tuple) so
-# equivalent scopes in different orders share one entry; ``mat`` is the shared mmap
-# of the full pack, so an entry pins only the scope's small index arrays, and the
-# bound (:data:`_MATRIX_CACHE_MAX`) guards scope proliferation.
-# The token includes store-derived counters (row count + max rowid), not just the
-# process-local write version: the embed cohost lives in the *watcher* process, so a
-# long-lived search process (the MCP server) must notice out-of-process vector writes
-# or its semantic arm freezes at whatever was embedded when its matrix first loaded.
-_MATRIX_CACHE: dict = {}
+# Matrix cache, held by the open archive (``Archive.cache``): {cts: (validity_token,
+# ids, ctypes, mat, doc_inverse, doc_rep, scope_rows, occurred)}. Keys are
+# canonicalized (sorted cts tuple) so equivalent scopes in different orders share one
+# entry; ``mat`` is the shared mmap of the full pack, so an entry pins only the
+# scope's small index arrays, and the bound (:data:`_MATRIX_CACHE_MAX`) guards scope
+# proliferation.
+#
+# Living inside the archive is what scopes an entry to the store it was built from:
+# a matrix is a projection of particular rows, and serving one archive's for another
+# is not staleness but a wrong answer. Closing the archive takes the cache with it,
+# so there is no window in which a dead store's matrix can be found.
+#
+# The validity token includes store-derived counters (row count + max rowid), not just
+# the process-local write version: the embed cohost lives in the *watcher* process, so
+# a long-lived search process (the MCP server) must notice out-of-process vector
+# writes or its semantic arm freezes at whatever was embedded when its matrix first
+# loaded.
+_MATRIX_SLOT = "vectors.matrix"
+_CHECKED_SLOT = "vectors.matrix_checked"  # {cache key: monotonic ts of last probe}
 _MATRIX_CACHE_MAX = 4
 _write_version = 0
 
@@ -147,10 +159,15 @@ _write_version = 0
 # concurrent queries all rebuild the same ~GB pack at once. A writer that can't wait out the
 # cooldown calls ``reset_matrix_cache`` for immediate local effect — a stale window
 # only ever costs a ranking slot.
+#
+# The in-flight set stays process-wide — :func:`is_refreshing` answers for the whole
+# process, which is what the contention sample is asking — and its entries are
+# qualified by the archive's token so two open archives refreshing the same scope do
+# not suppress each other. The token is drawn from a counter that never repeats, so a
+# closed archive's marker can never be mistaken for a live one's.
 _MATRIX_REFRESH_COOLDOWN_S = 60.0
 _MATRIX_REFRESH_LOCK = threading.Lock()
 _MATRIX_REFRESHING: set = set()
-_matrix_checked_at: dict = {}  # {cache key: monotonic ts of the last staleness probe}
 
 # Pack files for a superseded token are swept once they age out — a mapped-in
 # reader elsewhere may still be serving queries off them (its unlinked inode
@@ -976,8 +993,18 @@ def _validity_token(s) -> tuple:
 
 def _matrix_key(cts: tuple[str, ...]) -> tuple:
     """Cache key for a content-type scope — canonicalized (sorted) so equivalent
-    scopes in different orders share one entry."""
-    return (id(get_engine()), tuple(sorted(cts)))
+    scopes in different orders share one entry.
+
+    Scope only: which archive an entry belongs to is carried by the cache it lives
+    in, not by the key. Identity by engine address would not do it — CPython reuses
+    the id of a disposed engine, so a freshly opened archive can collide with a
+    closed one's entry and be served its matrix."""
+    return tuple(sorted(cts))
+
+
+def _inflight_marker(arch: "Archive", key: tuple) -> tuple:
+    """This archive's entry in the process-wide in-flight set."""
+    return (arch.token, key)
 
 
 def _build_matrix_entry(cts: tuple[str, ...]) -> tuple:
@@ -1016,19 +1043,28 @@ def _build_matrix_entry(cts: tuple[str, ...]) -> tuple:
     return (token, ids_arr, ct_arr, mat, doc_inverse, doc_rep, scope_rows, ts_arr)
 
 
-def _store_matrix_entry(key: tuple, entry: tuple) -> None:
-    """Cache ``entry`` under ``key``, evicting the oldest scope only when the key is
-    new — a refresh of an existing scope replaces in place, never evicting a rival."""
-    if key not in _MATRIX_CACHE:
-        while len(_MATRIX_CACHE) >= _MATRIX_CACHE_MAX:
-            _MATRIX_CACHE.pop(next(iter(_MATRIX_CACHE)))
-    _MATRIX_CACHE[key] = entry
+def _store_matrix_entry(arch: "Archive", key: tuple, entry: tuple) -> None:
+    """Cache ``entry`` under ``key`` in ``arch``, evicting the oldest scope only when
+    the key is new — a refresh of an existing scope replaces in place, never evicting
+    a rival."""
+    cache = arch.cache(_MATRIX_SLOT)
+    if key not in cache:
+        while len(cache) >= _MATRIX_CACHE_MAX:
+            cache.pop(next(iter(cache)))
+    cache[key] = entry
 
 
-def _refresh_matrix(key: tuple, cts: tuple[str, ...]) -> None:
+def _refresh_matrix(key: tuple, cts: tuple[str, ...], arch: "Archive | None" = None) -> None:
     """Rebuild ``key``'s entry if the store's validity token has moved. Synchronous —
-    the request path drives the async wrapper; the warm pass and tests call this."""
-    cached = _MATRIX_CACHE.get(key)
+    the request path drives the async wrapper; the warm pass and tests call this.
+
+    ``arch`` is passed by the background refresh, which must write back into the
+    archive it started from: a plain thread does not carry the caller's context, and
+    resolving the open archive on completion could land a rebuild in whichever one is
+    open by then."""
+    if arch is None:
+        arch = current_archive()
+    cached = arch.cache(_MATRIX_SLOT).get(key)
     with get_session() as s:
         token = _validity_token(s)
     if cached is not None and cached[0] == token:
@@ -1042,7 +1078,7 @@ def _refresh_matrix(key: tuple, cts: tuple[str, ...]) -> None:
     try:
         entry = _build_matrix_entry(cts)
         rows = len(entry[1])  # the id array — one row per packed vector
-        _store_matrix_entry(key, entry)
+        _store_matrix_entry(arch, key, entry)
         failed = False
     finally:
         _record_matrix_refresh(_t0, rows, failed=failed)
@@ -1068,20 +1104,26 @@ def _record_matrix_refresh(started: float, rows: int, *, failed: bool) -> None:
 
 def _refresh_matrix_async(key: tuple, cts: tuple[str, ...]) -> None:
     """Single-flight background refresh: at most one rebuild per key is in flight, so
-    a burst of queries racing a moved token spawns one pack rebuild, not N."""
+    a burst of queries racing a moved token spawns one pack rebuild, not N.
+
+    The archive is captured here, on the caller's thread, and handed to the rebuild:
+    the worker must land its entry in the archive the search was served from, not in
+    whichever one happens to be open when it finishes."""
+    arch = current_archive()
+    marker = _inflight_marker(arch, key)
     with _MATRIX_REFRESH_LOCK:
-        if key in _MATRIX_REFRESHING:
+        if marker in _MATRIX_REFRESHING:
             return
-        _MATRIX_REFRESHING.add(key)
+        _MATRIX_REFRESHING.add(marker)
 
     def _run() -> None:
         try:
-            _refresh_matrix(key, cts)
+            _refresh_matrix(key, cts, arch)
         except Exception:  # noqa: BLE001 — a background refresh must never raise
             logger.exception("vectors: matrix background refresh failed")
         finally:
             with _MATRIX_REFRESH_LOCK:
-                _MATRIX_REFRESHING.discard(key)
+                _MATRIX_REFRESHING.discard(marker)
 
     threading.Thread(target=_run, name="matrix-refresh", daemon=True).start()
 
@@ -1107,19 +1149,21 @@ def _load_matrix(cts: tuple[str, ...]):
     refresh and ``None`` comes back, so the caller serves lexical-only now and the
     vector arm rejoins once the refresh lands. Everything else (a one-shot CLI, a
     test) builds inline — there is no other thread that would."""
+    arch = current_archive()
     key = _matrix_key(cts)
-    cached = _MATRIX_CACHE.get(key)
+    checked_at = arch.cache(_CHECKED_SLOT)
+    cached = arch.cache(_MATRIX_SLOT).get(key)
     if cached is not None:
         now = time.monotonic()
-        if now - _matrix_checked_at.get(key, 0.0) >= _MATRIX_REFRESH_COOLDOWN_S:
-            _matrix_checked_at[key] = now
+        if now - checked_at.get(key, 0.0) >= _MATRIX_REFRESH_COOLDOWN_S:
+            checked_at[key] = now
             _refresh_matrix_async(key, tuple(sorted(cts)))
         return cached[1:]
     if defer_construction():
         # Flagged so the ledger can tell a search that sat the arm out waiting for
         # the build from one whose scope simply embeds nothing.
         _probe.flag("matrix_deferred")
-        _matrix_checked_at[key] = time.monotonic()
+        checked_at[key] = time.monotonic()
         _refresh_matrix_async(key, tuple(sorted(cts)))
         return None
     # The inline build — the one path that reads the whole pack on the request
@@ -1127,8 +1171,8 @@ def _load_matrix(cts: tuple[str, ...]):
     # was slow and a search that was slow *because it was the first one*.
     _probe.flag("matrix_built")
     entry = _build_matrix_entry(cts)
-    _store_matrix_entry(key, entry)
-    _matrix_checked_at[key] = time.monotonic()
+    _store_matrix_entry(arch, key, entry)
+    checked_at[key] = time.monotonic()
     return entry[1:]
 
 
@@ -1151,11 +1195,19 @@ def prime_matrix(content_types: Optional[list[str]] = None) -> None:
 
 
 def reset_matrix_cache() -> None:
-    """Drop the process-local matrix cache so the next search rebuilds from the live
+    """Drop the open archive's matrix cache so the next search rebuilds from the live
     store. For where a stale matrix would be *wrong*, not merely dated — reindex
-    (dead rows must not be served)."""
-    _MATRIX_CACHE.clear()
-    _matrix_checked_at.clear()
+    (dead rows must not be served).
+
+    Scoped to the archive it is called on: closing one drops its own caches
+    (``Archive.close``), so this is for a store that moved under an archive that
+    stays open, not for teardown. A no-op when none is open — dropping a cache must
+    never be what opens an archive."""
+    arch = current_archive_or_none()
+    if arch is None:
+        return
+    arch.cache(_MATRIX_SLOT).clear()
+    arch.cache(_CHECKED_SLOT).clear()
 
 
 def _time_rows(ts_arr, since: Optional[str], until: Optional[str]):

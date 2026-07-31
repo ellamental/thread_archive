@@ -51,7 +51,7 @@ import time
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
-from . import __version__
+from . import __version__, _fmt
 from ._config import resolve_paths
 from ._viewer import viewer_available
 
@@ -1519,19 +1519,10 @@ def report_repair(res: dict) -> int:
     return 0
 
 
-def _age(iso: str | None) -> str:
-    from datetime import datetime, timezone
-
-    if iso is None:
-        return "?"
-    try:
-        dt = datetime.fromisoformat(iso)
-    except (TypeError, ValueError):
-        return "?"
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
-    return f"{hours / 24:.1f}d ago" if hours >= 48 else f"{hours:.1f}h ago"
+# The status tables' age column. Defined in `_fmt` so the setup wizard can borrow
+# it without importing a front door; aliased here because this module's own call
+# sites (and the tests that drive them) name it `_age`.
+_age = _fmt.age
 
 
 def cmd_status(args: argparse.Namespace) -> int:
