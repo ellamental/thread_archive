@@ -232,6 +232,26 @@ def last_import_epoch_ms(state: ImportState) -> float:
     return dt.timestamp() * 1000
 
 
+# How long a store's last write must predate the import stamp before "already
+# seen" is trusted. The stamp is our wall clock, written *after* the read — so a
+# write landing between the read and the stamp carries a store timestamp older
+# than the stamp while its content was never read. Under a bare <= comparison
+# that write is skipped on every subsequent poll until some later write moves
+# the store's timestamp again; for a conversation that ends there, its last
+# turn is lost for good. Inside this margin the item re-scans instead, and the
+# row cursor plus cross-pass dedup make the re-scan a no-op.
+WATERMARK_SLACK_MS = 10 * 60 * 1000
+
+
+def store_write_settled(state: Optional[ImportState], last_write_ms: float) -> bool:
+    """True when the store's own last-write stamp is settled behind this
+    watermark — old enough that the write cannot have raced the import that
+    stamped it, so skipping the item is safe."""
+    if not (state and state.last_import_at):
+        return False
+    return (last_write_ms or 0) + WATERMARK_SLACK_MS <= last_import_epoch_ms(state)
+
+
 def get_import_state(session: Session, source: str, source_id: str) -> Optional[ImportState]:
     return session.execute(
         select(ImportState).where(ImportState.source == source, ImportState.source_id == source_id)

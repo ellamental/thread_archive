@@ -398,7 +398,9 @@ class DbScanWatcher(SourceWatcher):
 
 
 def cursor_watcher(db_path: Optional[Path] = None) -> DbScanWatcher:
-    return DbScanWatcher(db_path or _cursor_default_db(), "cursor", import_cursor_db)
+    return DbScanWatcher(
+        db_path or _cursor_default_db(), "cursor", import_cursor_db, watch_wal=True
+    )
 
 
 def opencode_watcher(db_path: Optional[Path] = None) -> DbScanWatcher:

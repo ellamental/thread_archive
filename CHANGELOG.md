@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- The claude-science incremental slice counts raw store rows, matching the watermark: it sliced the *filtered* line
+  list with the raw-row offset, so any row the importer skips (a non-user/assistant role, undecodable JSON) shifted
+  every later pass by one and silently dropped that many of its newest messages — permanently, since the watermark
+  still advanced to the raw total. The live store had no filtered rows yet; the loss was latent.
+- The cursor/opencode "unchanged" gates re-scan anything written within ten minutes of the import stamp
+  (`store_write_settled`): the stamp is our wall clock, written after the read, so a write landing between the two
+  carried a store timestamp older than the stamp and was skipped on every later poll — for a conversation that ended
+  there, its last turn was lost for good. Re-scans inside the slack are no-ops (row cursor + cross-pass dedup).
+  Cursor's `state.vscdb-wal` is now watched too, like opencode's and claude-science's, so a write sitting only in the
+  WAL moves the fingerprint.
+- Search hits end in `· source · date` — the docs said "read the latest date off the matches" and the render carried
+  no date — and snippets/context lines are clipped at 400 chars (the web viewer already capped; the agent surface
+  returned whole messages when a hit had no newlines). `since`/`until` accept `2h`/`7d`/`2w` and **reject** anything
+  else by name: the bound compares lexicographically, so an unparseable value passed through raw was a filter that
+  silently matched nothing. The subjects docstring stops advertising `thread_search(topic_id=...)` — the engine scope
+  is real, but exposing it as a tool parameter is ratcheted out (`test_public_api.py`), a standing product decision.
+- Retrieval docstrings stop describing the removed cross-encoder stage as the architecture.
 - The ingest-error tally is reset per test, and the suite runs serially in its own CI row (`pytest-serial`). The tally
   is a process global that only writes a signature's first sighting and then powers of ten, so a count one test left
   behind silenced the next test's identical fault — a real red under `-n 0` (and under `-n auto` on a one-core box,

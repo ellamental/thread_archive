@@ -27,6 +27,17 @@ from .rank import (
 # pool that reaches it was truncated and the tally renders as a floor ("N+").
 COUNT_FETCH_CAP = 1000
 
+# Per-line cap on rendered snippets and context windows. The ±N-line context
+# window is bounded in *lines*, not characters — a chat message with no newline
+# is one "line", so an uncapped render hands an agent the whole message per hit,
+# and ten hits over long prose is >100 KB of context. The full text is one
+# thread_read away; the render is a preview, and says so with an ellipsis.
+SNIPPET_LINE_CHARS = 400
+
+
+def _clip(line: str, cap: int = SNIPPET_LINE_CHARS) -> str:
+    return line if len(line) <= cap else line[: cap - 2].rstrip() + " …"
+
 
 def subjects_line(hits: list[EventHit]) -> str | None:
     """The ``subjects:`` orientation header over a result set, or None — the
@@ -286,15 +297,22 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
             head += f" · {k}/{n_terms}"
             if k == 0:
                 head += " (semantic)"
+        # Date + provider close each head: "the most recent mention" is answered
+        # by reading dates off the hits, so the hits must carry them.
+        ts = h.get("occurred_at")
+        when = ts.strftime("%Y-%m-%d") if isinstance(ts, datetime) else str(ts or "")[:10]
+        tail = [p for p in (h.get("thread_source"), when) if p]
+        if tail:
+            head += " · " + " · ".join(tail)
         lines.append(head)
 
         context = h.get("context")
         if context:  # context_lines: a numbered multi-line block replaces the snippet
-            lines.extend(f"    {ln}" for ln in context.split("\n"))
+            lines.extend(f"    {_clip(ln)}" for ln in context.split("\n"))
         else:
             snippet = " ".join((h.get("snippet") or "").split())
             if snippet:
-                lines.append(f"    {snippet}")
+                lines.append(f"    {_clip(snippet)}")
 
         ctx_events = h.get("context_events") or {}
         for direction in ("before", "after"):

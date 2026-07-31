@@ -427,10 +427,10 @@ def blame_path(
              op_predicate(ops, params, prefix="p.")]
     if since:
         where.append("p.occurred_at >= :since")
-        params["since"] = resolve_relative_date(since)
+        params["since"] = resolve_relative_date(since, strict=True, param="since")
     if until:
         where.append("p.occurred_at <= :until")
-        params["until"] = resolve_relative_date(until)
+        params["until"] = resolve_relative_date(until, strict=True, param="until")
     if sources:
         params.update({"csrc" + str(i): v for i, v in enumerate(sources)})
         names = ", ".join(":csrc" + str(i) for i in range(len(sources)))

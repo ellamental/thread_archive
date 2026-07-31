@@ -1992,7 +1992,7 @@ def build_parser(*, has_viewer: Optional[bool] = None) -> argparse.ArgumentParse
     p_search.add_argument("--exclude-content-type", default=None, metavar="TYPES",
                           help="comma-separated content types to drop")
     p_search.add_argument("--since", default=None, metavar="WHEN",
-                          help="lower bound — ISO timestamp or a relative age like 7d")
+                          help="lower bound — ISO timestamp or a relative age like 2h, 7d, 2w")
     p_search.add_argument("--until", default=None, metavar="WHEN",
                           help="upper bound — ISO timestamp or a relative age")
     p_search.add_argument("--tool-name", default=None, metavar="NAME",

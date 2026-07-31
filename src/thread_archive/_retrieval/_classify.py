@@ -68,13 +68,30 @@ def canonical_time_bound(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
-def resolve_relative_date(value: str) -> str:
-    """Resolve a ``since``/``until`` bound to the canonical stored form (see
-    :func:`canonical_time_bound`). Accepts a relative ``<N>d`` window (e.g. '7d')
-    or any ISO timestamp; an unparseable value passes through unchanged."""
-    if value.endswith("d") and value[:-1].isdigit():
-        return canonical_time_bound(datetime.now(timezone.utc) - timedelta(days=int(value[:-1])))
+_RELATIVE_AGE = re.compile(r"^(\d+)([hdw])$")
+_AGE_UNIT_S = {"h": 3600, "d": 86400, "w": 604800}
+
+
+def resolve_relative_date(value: str, *, strict: bool = False, param: str = "bound") -> str:
+    """Resolve a time bound to the canonical stored form (see
+    :func:`canonical_time_bound`). Accepts a relative age — ``<N>h`` / ``<N>d`` /
+    ``<N>w`` (e.g. '2h', '7d') — or any ISO timestamp.
+
+    ``strict`` is the user-input boundary: an unparseable value raises a
+    ``ValueError`` naming the grammar, because the stored form compares
+    lexicographically — passed through raw, a value like ``'last week'`` becomes
+    a filter that silently matches nothing. Internal callers hand in timestamps
+    from records they trust and keep the lenient passthrough."""
+    m = _RELATIVE_AGE.match(value.strip())
+    if m:
+        age = int(m.group(1)) * _AGE_UNIT_S[m.group(2)]
+        return canonical_time_bound(datetime.now(timezone.utc) - timedelta(seconds=age))
     try:
         return canonical_time_bound(datetime.fromisoformat(value.replace("Z", "+00:00")))
     except ValueError:
+        if strict:
+            raise ValueError(
+                f"{param} must be a relative age — '2h', '7d', '2w' — or an ISO "
+                f"timestamp; got {value!r}"
+            ) from None
         return value

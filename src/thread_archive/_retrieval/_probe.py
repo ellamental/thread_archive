@@ -1,7 +1,7 @@
 """Per-search stage-timing probe — opt-in, fail-soft, zero-cost when unused.
 
 A search's work splits across a few stages: the lexical FTS arm, the semantic
-vector arm, and the cross-encoder re-rank. The usage ledger records the *total*
+vector arm, and the shaping of the pool they fill. The usage ledger records the *total*
 latency already; this probe lets it also record where that time went, without
 :func:`thread_archive._retrieval.search` growing a second return value or the
 timing points caring whether anyone is listening.

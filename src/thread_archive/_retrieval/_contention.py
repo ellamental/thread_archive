@@ -33,7 +33,7 @@ Three signals, each cheap enough to take on every search:
 
 ``uptime_s``
     How long the serving process had been alive. Every cache retrieval leans on —
-    the vector matrix, the embedding and cross-encoder models, the exact-set memo,
+    the vector matrix, the embedding model, the exact-set memo,
     SQLite's page cache — is process-local and starts empty, so the same query
     against the same corpus costs an order of magnitude more at second five than at
     second five hundred. Without this the two are the same row, and *every*

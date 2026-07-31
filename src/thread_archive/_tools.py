@@ -315,7 +315,8 @@ synonyms. Open a hit with `thread_read(thread_id, around_event=<event_id>)`.
 
 Filters: `thread_id` (a ULID, a legacy integer id, or a provider session id), \
 `content_type` (user/text/thinking/tool/title; default: everything indexed), \
-`source` ('claude-code,cursor'), `since`/`until` ('7d' or an ISO timestamp), \
+`source` ('claude-code,cursor'), `since`/`until` ('2h'/'7d'/'2w' or an ISO \
+timestamp), \
 `tool_name`, `types`, `agents` ('include'/'only' — agent-run subagent threads are \
 excluded by default), `sort='oldest'`, `match='substring'` (uncapped infix scan: \
 finds p4 inside mp4), `output` ('count'/'linkable'), `exclude_content_type`, \
@@ -393,7 +394,8 @@ def thread_search(
     ``exclude_content_type`` (comma-separated types to drop), ``tool_name``,
     ``source`` (comma-separated providers, e.g. 'claude-code,cursor'),
     ``types`` (comma-separated ``thread_type`` values — 'conversation',
-    'system'), and a ``since``/``until`` window (ISO timestamp or '7d').
+    'system'), and a ``since``/``until`` window (an ISO timestamp, or a relative
+    age: '2h', '7d', '2w').
 
     Agent-run threads — subagent / machinery sessions (🤖-titled) — are
     **excluded by default**: a swarm echoes its spawning prompt verbatim, and

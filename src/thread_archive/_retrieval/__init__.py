@@ -67,15 +67,20 @@ DEFAULT_CONTENT_TYPES: Optional[list[str]] = None
 
 
 def _enrich_thread_titles(hits: list[EventHit], *, session: Optional[Session] = None) -> None:
-    """Fill ``thread_title`` on hits from the threads table (one query)."""
+    """Fill ``thread_title`` and ``thread_source`` on hits from the threads
+    table (one query)."""
     if not hits:
         return
     ids = {h["thread_id"] for h in hits}
     with use_session(session) as s:
-        rows = s.execute(select(Thread.id, Thread.title, Thread.name).where(Thread.id.in_(ids))).all()
-    titles = {tid: (title or name) for tid, title, name in rows}
+        rows = s.execute(
+            select(Thread.id, Thread.title, Thread.name, Thread.source).where(Thread.id.in_(ids))
+        ).all()
+    meta = {tid: ((title or name), source) for tid, title, name, source in rows}
     for h in hits:
-        h["thread_title"] = titles.get(h["thread_id"])
+        title, source = meta.get(h["thread_id"], (None, None))
+        h["thread_title"] = title
+        h["thread_source"] = source
 
 
 def _rrf_merge(result_lists: list[list[EventHit]], limit: int, k: int = 60) -> list[EventHit]:
@@ -301,8 +306,8 @@ def warm_models(embedder=None) -> None:
                     logger.debug("warm_models: a model stage failed to preload", exc_info=True)
                 stage_ms[name + "_ms"] = (perf_counter() - _t) * 1000.0
 
-            # Run one throwaway search end to end: it loads the vector matrix and runs a first
-            # cross-encoder inference, both of which cache process-globally for the real queries.
+            # Run one throwaway search end to end: it loads the vector matrix,
+            # which caches process-globally for the real queries.
             # Scoped to :data:`DEFAULT_CONTENT_TYPES` so the matrix this primes is keyed the
             # same as the real queries reuse (the matrix cache is keyed by content-type scope;
             # a mismatched scope would prime a matrix the real query never touches).
@@ -767,7 +772,7 @@ def search(
     than a chronological sort of bm25's favourites. ``output='count'``
     returns the whole match pool unranked (the renderer tallies per-thread). With a
     structural shape (browse / startswith / oldest / count) the semantic arm and the
-    cross-encoder sit out. ``context_lines`` (default 2; 0 = the raw FTS snippet)
+    ranker sit out. ``context_lines`` (default 2; 0 = the raw FTS snippet)
     attaches a numbered window around each hit's match; ``context_events`` (``N`` /
     ``b:a`` / ``b:a:types``) attaches the neighbouring events. Both enrich the
     ``agents`` controls agent-run threads (``thread_type='system'`` — subagent /
@@ -796,8 +801,8 @@ def search(
     opt-in; see :func:`.fts.search_events`.
 
     ``page`` (1-based) walks the result set. Every page is a slice of ONE
-    ordering: nothing that shapes the order — the pool depth, the cross-encoder's
-    head — is allowed to depend on which page was asked for, because the
+    ordering: nothing that shapes the order — the pool depth, the coherence
+    re-rank's head — is allowed to depend on which page was asked for, because the
     coherence re-rank scores a thread's community against the pool's mass, so a
     pool that grew per page would hand each page a differently-ordered list and a
     walk would repeat rows while skipping others.
@@ -814,17 +819,14 @@ def search(
     # Stage-timing probe (fail-soft, None when nobody installed one). The embed
     # arm's cold bit is sampled at entry: an available-but-unloaded embedder means
     # this query pays the tens-of-seconds load inside the request — the cold-model
-    # tail the usage ledger exists to name. The cross-encoder's bit is NOT sampled
-    # here, because "available and not loaded" is its permanent resting state
-    # whenever re-rank is off; it is set at the re-rank itself, where a load would
-    # actually be paid (see :meth:`_probe.SearchProbe`).
+    # tail the usage ledger exists to name (see :meth:`_probe.SearchProbe`).
     probe = _probe.current()
     if probe is not None:
         from . import embed as _embed_cold
 
         probe.embed_cold = _embed_cold.is_available() and not _embed_cold.is_loaded()
-    since_r = resolve_relative_date(since) if since else None
-    until_r = resolve_relative_date(until) if until else None
+    since_r = resolve_relative_date(since, strict=True, param="since") if since else None
+    until_r = resolve_relative_date(until, strict=True, param="until") if until else None
 
     if agents is not None and agents not in ("exclude", "include", "only"):
         raise ValueError("agents must be 'exclude', 'include', or 'only'")

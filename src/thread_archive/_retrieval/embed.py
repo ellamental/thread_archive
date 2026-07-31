@@ -160,12 +160,9 @@ def _device() -> str:
 
 def dtype_kwargs(device: str) -> dict:
     """Model kwargs for ``device``: fp16 on an accelerator — roughly double the
-    inference speed at a numerical difference that does not move ranking — and
-    nothing on CPU, where fp16 is emulated and slower.
-
-    Both model paths share this one policy. They did not always: the cross-encoder
-    applied it and the embedder loaded fp32, which is the difference between a cold
-    corpus embedding in an hour and in several."""
+    inference speed at a numerical difference that does not move ranking, and the
+    difference between a cold corpus embedding in an hour and in several — and
+    nothing on CPU, where fp16 is emulated and slower."""
     if not device.startswith(("mps", "cuda")):
         return {}
     try:
