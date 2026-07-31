@@ -130,8 +130,8 @@ def _apply_coherence(ranked: list[EventHit], gamma: float | None = None) -> list
     """Community-coherence re-rank at thread granularity (fail-soft).
 
     Reorders the ranked hit list so threads follow :func:`embed_graph.coherence_order`
-    — the eval-proven boost for threads whose corpus-graph community carries more
-    of the pool's top mass. Hits within a thread keep their relative order. A
+    — a small boost for threads whose corpus-graph community carries more of the
+    pool's top mass. Hits within a thread keep their relative order. A
     no-op when coherence is off, the graph isn't built yet (the background
     refresh will have it soon), or anything fails. ``gamma`` overrides the env
     knob (tests inject)."""
@@ -388,8 +388,8 @@ def start_warm_models() -> threading.Thread:
     the request path so the models are resident by the time queries arrive. The
     deferred-construction policy (:func:`.model_slot.set_defer_construction`) covers the
     window before that lands: a query racing the warm serves lexical-only and fast
-    instead of blocking on a load it would otherwise start itself, and the vector /
-    re-rank arms rejoin the moment the models are resident. Without it the first query
+    instead of blocking on a load it would otherwise start itself, and the vector arm
+    rejoins the moment the model and its matrix are resident. Without it the first query
     still waits out the whole load and warming has only moved which thread pays.
 
     Indexing is unaffected: the embed cohost loads its model through
@@ -824,23 +824,30 @@ def search(
     walk would repeat rows while skipping others.
 
     The returned :class:`._types.Results` carries the match set's size beside the
-    page. For the thread-granular list shapes that size is **exact** and every
-    matched thread is reachable by paging (``exhaustive``): membership comes from
-    :func:`.fts.matched_threads` rather than from the pool, so a thread ranked
-    past the pool boundary is enumerated rather than silently dropped. Ranked
-    order still leads — the threads the pool reached, in the order it ranked
-    them — and the remainder follows by recency, which is the only ordering
-    available for threads no ranking pass ever scored."""
+    page. A pool that came back short of its depth held the whole match set, so
+    that size is **exact** and every match is reachable by paging
+    (``exhaustive``). A saturated pool ranked a cut: its size comes from
+    :func:`.fts.count_matches` instead — capped, so it can be a floor — and
+    ``pages`` still divides only what the pool can hand back, because advertising
+    pages past the pool's reach would return empty ones."""
     p = params or _DEFAULT_PARAMS
     # Stage-timing probe (fail-soft, None when nobody installed one). The embed
     # arm's cold bit is sampled at entry: an available-but-unloaded embedder means
     # this query pays the tens-of-seconds load inside the request — the cold-model
     # tail the usage ledger exists to name (see :meth:`_probe.SearchProbe`).
+    #
+    # Except under the deferred-construction policy, where an unloaded model is
+    # precisely the query that pays *nothing*: it sits the arm out and serves
+    # lexical-only (``embed_deferred``). Sampling it as cold there would label the
+    # fast degraded searches as the cold-model tail — inverting the one flag the
+    # cold-band analysis is built on (``search_lab/latency_replay.py``).
     probe = _probe.current()
     if probe is not None:
         from . import embed as _embed_cold
+        from .model_slot import defer_construction
 
-        probe.embed_cold = _embed_cold.is_available() and not _embed_cold.is_loaded()
+        probe.embed_cold = (_embed_cold.is_available() and not _embed_cold.is_loaded()
+                            and not defer_construction())
     since_r = resolve_relative_date(since, strict=True, param="since") if since else None
     until_r = resolve_relative_date(until, strict=True, param="until") if until else None
 
@@ -966,8 +973,8 @@ def search(
         ranked = _rank.rank_search_results(fused, terms, len(fused), params=p)
         _probe.record("rank_ms", _t_rank)
         # Community-coherence re-rank from the corpus-native embedding graph
-        # (default on — measured recall lift at every depth on the log-mined
-        # protocol; see embed_graph).
+        # (default on — a light mid-list orderer; see embed_graph for the signal
+        # and what its harness can and cannot show).
         from . import embed as _embed
 
         # Coherence is a semantic-arm refinement built from event_vectors; with

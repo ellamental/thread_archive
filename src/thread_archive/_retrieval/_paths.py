@@ -134,8 +134,9 @@ _COMMIT_RE = re.compile(
 # ``commit`` always prints and no reader command does in this shape.
 _COMMIT_CORROBORATION = re.compile(r"insertions?\(\+\)|deletions?\(-\)|\(root-commit\)")
 
-#: The SQL pre-filter that finds candidate commit output without parsing 400k tool
-#: payloads in Python. Kept in step with :data:`_COMMIT_CORROBORATION` — one LIKE
+#: The SQL pre-filter that finds candidate commit output without parsing every tool
+#: payload in Python (the fattest rows in the archive, and the most numerous single
+#: kind). Kept in step with :data:`_COMMIT_CORROBORATION` — one LIKE
 #: per alternative, so the cheap scan and the authoritative regex agree on the
 #: candidate set instead of quietly disagreeing about what the fold ever sees.
 COMMIT_PREFILTER_LIKES = ("%insertion%", "%deletion%", "%root-commit%")

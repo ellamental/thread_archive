@@ -101,7 +101,10 @@ def browse_threads(
     the population is a plain indexed SELECT over ``threads``, so the total is one
     ``count(*)`` and each page is an OFFSET into a total order — no candidate pool,
     nothing cut, every row reachable. The result carries that total, so a caller
-    can tell the last page from a page that merely came back short."""
+    can tell the last page from a page that merely came back short. The code axis
+    is the one exception: ``path`` resolves its population through
+    :func:`.code.blame_path`, which stops at :data:`_CODE_AXIS_CAP`, so a pattern
+    that wide reports ``capped`` and is not ``exhaustive``."""
     newest_event_at = (
         select(Event.occurred_at)
         .where(Event.thread_id == Thread.id)

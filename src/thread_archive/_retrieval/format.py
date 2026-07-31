@@ -266,22 +266,15 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
     if verdict:
         header += f" · quality={verdict[0]}"
 
-    # Shared prelude: what the caller must read before trusting any shape.
-    prelude = [header]
-    if verdict and verdict[1]:
-        prelude.append(f"  note: {verdict[1]}")
     subj_line = subjects_line(hits)
-    if subj_line:  # the topic graph as orientation: what subjects these hits cluster under
-        prelude.append(subj_line)
-
-    lines = [prelude[0]]
+    lines = [header]
     if verdict and verdict[1]:
         lines.append(f"  note: {verdict[1]}")
     # Guesses came back where an answer was asked for: the same moment a no-result
     # gets its alternatives, and the same reason.
     if verdict and verdict[0] == "weak":
         lines.extend(_next_moves(query))
-    if subj_line:
+    if subj_line:  # the topic graph as orientation: what subjects these hits cluster under
         lines.append(subj_line)
     lines.append("  open a hit: thread_read(thread_id, around_event=event_id)")
     if subj_line:

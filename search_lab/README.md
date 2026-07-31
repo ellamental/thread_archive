@@ -87,7 +87,7 @@ ledger), `dataset_pins.py` (what each corpus *is*, as a content hash — see "Th
 corpora are pinned"), `retrieval_report.py` (the latency series off the ledgers,
 `python search_lab/retrieval_report.py`), and `inventory.py` (what is on this box
 — which rows can run and which corpora are built; `python search_lab/inventory.py`,
-and the viewer's `/lab` dev page). The harnesses reach them by bare sibling import
+and devweb's `/lab` panel). The harnesses reach them by bare sibling import
 and the tests by `search_lab.*` — the dependency runs lab → package and never
 leaves a checkout.
 

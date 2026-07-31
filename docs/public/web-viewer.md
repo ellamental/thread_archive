@@ -111,7 +111,8 @@ cd frontend && npm install && npm run build   # → ../src/thread_archive/_web/s
 
 **Archive-links.** With that persistent server, the archive owns the editor
 "open this conversation" link itself: `GET /api/archive-link?id=<session-uuid>&source=claude-code`
-resolves the session to its thread via `ImportState` and returns `{thread_id, url}`,
+resolves the session to its thread via `ImportState` and returns `{thread_id, url, id}`
+(the `id` echoing which candidate resolved),
 or `&redirect=1` → a `302` to `/archive/<id>`. (Local — no separate backend
 involved.) `id` may repeat — a caller that cannot tell which uuid it holds is the
 session id sends every candidate, best guess first, and the first that resolves

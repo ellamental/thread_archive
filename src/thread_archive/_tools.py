@@ -160,9 +160,10 @@ def _resolve_ref(ref: int | str) -> Optional[str]:
 #
 # Nothing is excluded at query time. What a search must not answer from is kept
 # out of the index instead: what a tool handed *back* (see
-# :data:`._retrieval._extract.UNINDEXED_CONTENT_TYPES`, the one exclusion that
-# measured better rather than merely cheaper), and stored thread summaries, which
-# are derived text a curation tool wrote over the archive rather than the record.
+# :data:`._retrieval._extract.UNINDEXED_CONTENT_TYPES` — a ranking decision as much
+# as a cost one, since the ranker's density term is IDF-blind and cannot discount a
+# grep dump itself), and stored thread summaries, which are derived text a curation
+# tool wrote over the archive rather than the record.
 #
 # The scope itself lives in the retrieval layer, which shares it with the warm pass.
 DEFAULT_SEARCH_CONTENT_TYPES = DEFAULT_CONTENT_TYPES
@@ -503,9 +504,12 @@ def thread_search(
     # exactly this reason; context_lines is a per-hit window, bounded likewise.
     limit = max(1, min(int(limit), 500))
     context_lines = max(0, min(int(context_lines), 50))
-    # The pool is sized from page*limit, so an unbounded page is an unbounded
-    # scan by another name. 200 pages of the 500-row max is far past any real
-    # enumeration and still a bounded worst case.
+    # Every page is a slice of ONE pool, sized independently of ``page``
+    # (max(limit*5, 200) rows — see :func:`.._retrieval.search`), so a large page
+    # number costs nothing: it slices past the end and says so. 200 is the deepest
+    # page any limit can reach — at limit=1 the 200-row pool floor is exactly 200
+    # pages, and every larger limit reaches fewer — so the bound cuts off nothing
+    # a walk could have returned.
     page = max(1, min(int(page), 200))
     if match is not None and match not in ("token", "substring"):
         return ("match must be 'token' (indexed, default) or 'substring' "

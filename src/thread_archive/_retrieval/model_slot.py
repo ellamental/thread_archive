@@ -20,8 +20,8 @@ M = TypeVar("M")
 # on-startup ``warm()``), never a query. A long-running server sets this so a
 # query arriving before warming finishes returns fast (lexical-only) instead of
 # blocking on the cold load; a one-shot CLI leaves it off and loads lazily. Read
-# through :func:`defer_construction` so the request-path guards in ``embed``
-# honor a value set after import.
+# through :func:`defer_construction` so the request-path guards in ``embed`` and
+# ``vectors`` honor a value set after import.
 _DEFER_CONSTRUCTION = False
 
 

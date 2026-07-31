@@ -235,8 +235,8 @@ def _tool_output_parts(output: object) -> tuple[str, list[dict]]:
 
     A string output passes through. A list output (an Anthropic content-block
     list — how screenshots ride tool results) yields its text parts joined and a
-    view per image/document block, instead of the ``str(list)`` repr that used
-    to bury both."""
+    view per image/document block, rather than the ``str(list)`` repr that would
+    bury both."""
     if isinstance(output, str) or output is None:
         return output or "", []
     if isinstance(output, list):

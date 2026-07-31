@@ -99,7 +99,7 @@ floor of several points and never read a small delta on it.
 ### Free — `beir_eval.py` already supports these
 
 [beir_eval.py](../search_lab/beir_eval.py) carries published BM25 and dense
-references for 12 BEIR datasets; four are on the bench. Adding another is a
+references for 12 BEIR datasets; two are on the bench (four rows). Adding another is a
 `--dataset` value and CPU time.
 
 | dataset | docs | embed | why it would be informative |

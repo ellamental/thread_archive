@@ -1,4 +1,7 @@
-"""The conversation schema: Thread, Event, EventFts, ImportState.
+"""The store's ORM models: the conversation spine (Thread, Event, EventFts,
+ImportState), the code axis (EventPath, EventGitRef, CodeCursor), the topic-graph
+records (ThreadLink, TopicMessage, KgEvent), and the metrics rollups
+(ThreadMetrics, RequestMetric, ThreadActivity, MetricsCursor).
 
 The event log is the spine. ``Event`` is the append-only source of truth — a
 conversation's content lives in ``Event.payload`` (JSON); everything a reader sees

@@ -341,15 +341,67 @@ def _served(tool_name: str) -> Iterator[None]:
                 pass
 
 
+def _record_delegated_serve(tool_name: str) -> None:
+    """The ``serve`` row for a call the shared server answered.
+
+    ``delegated`` marks it: the call's ``search``/``read`` row was written by the
+    *server* (no ``surface``, per :data:`.._retrieval.usage.UNATTRIBUTED`), so a
+    delegated CLI call contributes a ``surface="cli"`` serve row with no matching
+    cli-surfaced tool row — the door was here, the engine was there. Fail-soft,
+    like every ledger write.
+    """
+    try:
+        from ._retrieval import usage as _usage
+
+        _usage.record_serve({
+            "kind": "serve",
+            "surface": "cli",
+            "tool": tool_name,
+            "served_ms": round((time.monotonic() - _ENTERED) * 1000.0, 1),
+            "delegated": True,
+        })
+    except Exception:  # noqa: BLE001 — advisory
+        pass
+
+
 def cmd_search(args: argparse.Namespace) -> int:
     """``thread-archive search`` — the ``thread_search`` tool, rendered to stdout.
 
     Every flag is passed through unchanged: the clamping, the default scope, the
     degradation notice, and the usage-ledger record are the tool's, so a query
     typed here and the same query asked over MCP return the same text.
+
+    When the shared HTTP server is up and serving this same archive, the call is
+    delegated to it instead of built here (:mod:`._delegate`) — the warm process
+    answers in milliseconds what a one-shot pays a model load for. The answer is
+    the same text either way; ``--local`` forces the in-process path, and any
+    delegation failure falls back to it silently.
     """
     from . import _api as api
+    from . import _delegate
     from . import _tools
+
+    if not args.local and _delegate.eligible(args.home):
+        arguments: dict[str, object] = {
+            "query": args.query,
+            "limit": args.limit,
+            "page": args.page,
+            "context_lines": args.context_lines,
+        }
+        for name in (
+            "thread_id", "content_type", "exclude_content_type", "since",
+            "until", "tool_name", "source", "types", "agents", "startswith",
+            "path", "path_ops", "commit", "pr", "repo", "sort", "output",
+            "context_events", "match",
+        ):
+            value = getattr(args, name)
+            if value is not None:
+                arguments[name] = value
+        out = _delegate.call("thread_search", arguments)
+        if out is not None:
+            _record_delegated_serve("thread_search")
+            print(out)
+            return 0
 
     api.open_archive(args.home)
     try:
@@ -2036,6 +2088,10 @@ def build_parser(*, has_viewer: Optional[bool] = None) -> argparse.ArgumentParse
     p_search.add_argument("--match", default=None, metavar="MODE",
                           help="'token' (default, indexed) or 'substring' (uncapped infix "
                                "scan — finds p4 inside mp4)")
+    p_search.add_argument("--local", action="store_true",
+                          help="answer in this process even when the shared archive-mcp "
+                               "server is up (asking it is the default when it serves this "
+                               "same archive — same answer, warm process)")
     p_search.set_defaults(func=cmd_search)
 
     p_read = sub.add_parser(

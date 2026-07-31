@@ -33,6 +33,9 @@ from pathlib import Path
 # package (top-level dir/module under src/thread_archive/) -> minimum percent
 FLOORS = {
     "_api": 85.0,  # thin dispatch layer over the private machinery
+    # CLI→shared-server delegation: the wire, every fallback shape, eligibility.
+    # Small and fully driven by real loopback servers; measures 100.
+    "_delegate": 95.0,
     # The shipped manual's resolver: both locations, both readers, and the
     # rejections of slugs that would reach outside the docs directory.
     "_docs": 90.0,

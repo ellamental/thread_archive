@@ -16,10 +16,10 @@ import, so a read path can never crash on community detection. Both paths are
 The two engines agree on most of a corpus and differ on the modularity metric by
 under a point, so the fallback is not a broad quality cliff — but where they
 disagree, a whole region can partition differently and the coherence re-rank
-consolidates that region's mid-list differently with it. On the gold bench that
-lands as a single topic breaching its recall floor while the pooled numbers barely
-move, which is why the fallback is reported (:func:`engine`) rather than trusted
-to be harmless.
+consolidates that region's mid-list differently with it. A partition built by one
+engine is therefore not interchangeable with the other's, which is why the live
+engine is reported (:func:`engine`) and recorded in a persisted graph's build
+shape rather than trusted to be harmless.
 """
 
 from __future__ import annotations

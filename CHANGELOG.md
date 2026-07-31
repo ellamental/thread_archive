@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+- A second pass over retrieval's rationales, against what the code and the ledger actually do. `_tools.thread_search`
+  justified its `page` clamp with "the pool is sized from page*limit" — the pool has been `max(limit*5, pool_floor)`,
+  deliberately page-independent, since paging became slices of one ordering, and the engine's own comment says so;
+  the clamp stays (200 is the deepest page any limit can reach) with the real reason. `_probe.SET_OUTCOMES` sold a
+  three-way split as the diagnostic for a slow `set_ms`, but `set_deltas` is `fts.matched_threads`' outcome and the
+  served path calls only `count_matches`, which has no delta path — zero rows in the ledger since the counters
+  shipped, and structurally never any. `matched_threads` itself still claimed to be "the query that makes a complete
+  answer possible" with no call site in the package. `coherence_gamma` called `COHERENCE_GAMMA` "the swept default"
+  three lines from the constant that documents it as never resolved by a sweep. `browse_threads` advertised exact
+  pagination with "nothing cut, every row reachable" while its own code-axis branch reports `capped` at
+  `_CODE_AXIS_CAP`. The default-scope comment claimed the tool-output exclusion "measured better rather than merely
+  cheaper", a measurement nothing on this box records; `_extract`'s structural argument (density is IDF-blind, so
+  the ranker cannot discount a grep dump itself) is what survives. Stale magnitudes dropped where the corpus has
+  moved past them: an "814MB" base rebuild, "400k tool payloads", a "~300 char" mean embedded doc (578 now).
+
+- The model half of the deferral fork is stated rather than inferred. A warming server sits the vector arm out twice
+  over — once because the model is not resident, once because the matrix is cold — but only the second had a flag, so
+  a search that served lexical-only for want of a model was distinguishable from one that embedded fine only by
+  reading an `embed_ms` near zero. It now stamps `embed_deferred` on the search row, set at the load-policy gate in
+  `embed._encode`, which is the only place that can tell a deferral from the other ways an embed returns `None`
+  (models switched off, a cached load failure). The same window was also being *mis*labelled: `embed_cold` — "this
+  query paid the tens-of-seconds load" — was sampled as available-and-not-resident, which under the deferral policy
+  is exactly the query that pays nothing, so every fast degraded search was landing in the cold-model band that
+  `search_lab/latency_replay.py` reads. The sample now excludes deferring processes.
+
+- `summary` is gone from retrieval as a content type. Nothing writes one — no `event_search` row, no vector, no
+  thread-meta doc (the meta sync's unnamed-doc collector swept the last of them) — so its ranking multiplier in
+  `rank._CONTENT_TYPE_WEIGHT` and its slot in the corpus graph's centroid pools (`embed_graph._CTS`) were scoring
+  and scoping a type that cannot appear. `_CTS` rides the persisted graph's build shape, so the next build rewrites
+  the cache once; the partition it produces is identical, since there were never any summary vectors to drop. The
+  modeling stays exactly as it was: `Thread.summary` / `Thread.indexed_summary` are stored, verified against truth,
+  and readable through `thread_read(summary='short'|'indexed')` — and still deliberately unindexed, which
+  `test_summaries_are_never_searchable` holds.
+
+- Retrieval's rationales are audited against what the code and the lab actually do. The coherence signal no longer
+  cites a log-mined click protocol, a per-topic gold bench, or a `search_lab/graph_eval.py` — all retired or
+  deleted, so nothing on this box could re-derive the numbers they quoted; `COHERENCE_GAMMA` is now labelled
+  inherited-and-not-re-derived, the way `params.py` already labels the ranking weights. `_contention` claimed the
+  vector matrix is "read whole into memory", which `vectors.py` stopped being true of when the pack became an mmap.
+  Three docstrings described paging as resolving its match set through `fts.matched_threads`, which the shipped
+  package has no call site for (the search path uses `count_matches`, and `set_deltas` has never once appeared in
+  the usage ledger); `rank.py` justified `thread_evidence` by a per-thread grouping stage the pipeline does not
+  have. Also dropped: the unused `_PATH_EVENT_TYPES` / `_COMMIT_EVENT_TYPES` / `_PR_EVENT_TYPES` constants in
+  `code.py`, whose comment described event types the fold reads while the fold spelled them inline.
+
 - The KNN matrix's cold-cache inline build honors the deferred-construction policy: a warmed server's request
   thread never assembles a pack (it kicks the single-flight background refresh, serves lexical-only, and stamps
   `matrix_deferred` on the search row), which closes the last inline-build hole — measured in the ledger at up to
@@ -12,6 +57,15 @@
   ndarray per row fed to `vstack`. Pack tmp files are named by pid *and* thread id: the matrix refresher and the
   corpus-graph build share a process, and with pid-only names one thread's `os.replace` could consume the other's
   half-written tmp (observed as a `FileNotFoundError` killing a graph refresh; the build flock also serializes them).
+
+- `thread-archive search` delegates to the shared HTTP MCP server when one is alive and serving the same (default)
+  archive home (`_delegate.py`): one stateless JSON-RPC `tools/call` POST to :8788, so a terminal search rides the
+  warm process (~0.5s measured) instead of paying the in-process model load (~6s same-minute). Fallback is the
+  contract — nothing listening, a timeout, malformed answers, and tool-level errors all re-run in-process, keeping
+  the CLI's own error rendering and exit codes; `--local` forces it, `THREAD_ARCHIVE_NO_DELEGATE=1` disables it, and
+  `THREAD_ARCHIVE_MCP_URL` points at a nonstandard port. A delegated call's serve row carries `delegated: true` (the
+  engine's search row is the server's, unattributed as ever). `read` stays in-process on purpose: it loads no model,
+  and its exit code resolves the ref locally.
 
 - The docs tree is inverted: the shipped manual is `docs/public/`, and `docs/*.md` is the maintainer's half
   (releasing, benchmarks, the dev panels). The wheel names `docs/public` in its include rather than excluding an

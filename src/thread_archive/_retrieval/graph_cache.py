@@ -1,10 +1,10 @@
 """On-disk persistence for the corpus graph: ``<index dir>/corpus-graph/``.
 
-The graph (:mod:`.embed_graph`) is a process-local cache, so every restart starts
-with none and the coherence re-rank stands down until a build lands — measured
-here at a p50 of 8.7s and a p90 of 21.6s. What a restart produces is a **window in
-which the same query returns a different order**, with nothing in the output to say
-so; persisting the graph closes that window, which is why this module exists.
+The graph (:mod:`.embed_graph`) is held in memory, so a process that finds nothing
+here stands the coherence re-rank down until a build lands — seconds at the median
+and tens of seconds in the tail. What that produces is a **window in which the same
+query returns a different order**, with nothing in the output to say so; persisting
+the graph closes that window, which is why this module exists.
 
 The build cost is the other half, and on a machine that restarts often it is the
 larger one. Restarts arrive in bursts, the validity token moves with every ingest
@@ -105,9 +105,9 @@ def _tag(token) -> str:
     """The file tag for a validity token.
 
     Only the token's cross-process half — ``(count, max_rowid)`` — names the file.
-    Its first element is an in-process write counter that is always 0 in a freshly
-    started reader, so including it would mean no process could ever recognize
-    another's graph, which is the entire point of writing one down.
+    The token's leading element is an in-process write counter that is always 0 in
+    a freshly started reader, so including it would mean no process could ever
+    recognize another's graph, which is the entire point of writing one down.
     """
     return f"{int(token[1])}-{int(token[2])}"
 
@@ -159,7 +159,7 @@ def load(params: dict) -> Optional[tuple[tuple[int, int], "CorpusGraph"]]:
     ``None`` whenever there is nothing to trust — no directory, no file, a build
     shape that differs from ``params``, a document that does not check out, or one
     past :func:`max_age_s`. ``None`` is never an error: it means this process
-    builds the graph, which is what it did before this module existed.
+    builds the graph itself.
 
     Only the newest tag is considered. A build-shape change invalidates every
     older file equally, so falling back through them would only read more files to

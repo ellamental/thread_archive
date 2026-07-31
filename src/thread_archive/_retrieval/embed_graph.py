@@ -10,15 +10,14 @@ corpus-wide structure the topic graph cannot see.
 **The coherence re-rank is the production consumer.** Within a ranked search
 pool, threads whose community carries more of the pool's top mass get a small
 additive boost (:func:`coherence_order`). It is a light mid-list orderer, not a
-headline mover: on the log-mined click protocol (187 cases, full production
-pool) the shipped gamma lifts success and recall at depth while costing a
-little at rank 1 — baseline → 0.005: S@5 0.401→0.428, S@10 0.513→0.519,
-recall@10 0.417→0.426, S@1 0.203→0.193, MRR flat at 0.298. It consolidates the
-mid-list around the query's community; it does not improve the top hit. Those
-labels are click labels, censored by the incumbent ranker, so read the harness
-as a regression check rather than as evidence of a gain. The same signal
-computed from the topic graph loses on the identical cases, which is why the
-topic graph stays out of ranking. ``search_lab/graph_eval.py`` is the harness.
+headline mover: it consolidates the mid-list around the query's community and
+does not lift the top hit. Read :data:`COHERENCE_GAMMA` as *inherited and not
+currently re-derived* — it comes from a protocol ``search_lab/README.md``
+describes under "What a number here is worth", and nothing that runs today can
+re-derive it. The topic graph stays out
+of ranking for a reason that does not depend on any of that: it sees only the
+conversations somebody curated a topic for, where this graph covers every
+embedded thread.
 
 ``THREAD_ARCHIVE_COHERENCE`` tunes it per process: unset/``on`` uses the
 default gamma, ``off``/``0`` disables, a float overrides gamma.
@@ -34,12 +33,12 @@ builds only when there is none. :func:`rebuild_floor_s` bounds how often the
 *machine* rebuilds, across processes — the token moves with every ingest pass, so
 without it each of several concurrent processes rebuilds the same partition.
 
-**The cache outlives the process** (:mod:`.graph_cache`). Held only in memory, it
-starts empty at every restart, and until the first build lands the re-rank stands
-down — so the same query returns a different order for the first several seconds
-of a process, with nothing in the output to say so. A restart now serves the
-persisted graph immediately (stale, refreshing behind it, exactly as a long-lived
-process does) and skips the rebuild outright when the store has not moved.
+**The cache outlives the process** (:mod:`.graph_cache`). A restart serves the
+persisted graph immediately — stale, refreshing behind it, exactly as a long-lived
+process does — and skips the rebuild outright when the store has not moved. What
+that buys is the window it closes: a process with no graph stands the re-rank
+down, so the same query comes back in a different order with nothing in the
+output to say so.
 
 Reads only the vector pack (via :mod:`.vectors`' matrix cache — mmap, shared,
 validity-tokened) and the ``events``/``threads`` tables. ``reset_cache``
@@ -62,9 +61,11 @@ from .._store import get_session
 
 logger = logging.getLogger(__name__)
 
-# Embedded pools that describe a thread's content. Deliberately the full
-# embedded set: user + assistant text + the thread-meta docs.
-_CTS = ("summary", "text", "title", "user")
+# The content-type pools a thread's centroid is built from — exactly the pools
+# :mod:`.vectors` embeds, since a type nothing embeds contributes no rows and only
+# invalidates every persisted graph when it is added or removed (it rides the build
+# shape, :func:`_cache_params`).
+_CTS = ("text", "title", "user")
 
 # Neighbors per node in the kNN graph, and the similarity floor under which a
 # neighbor is noise (at 768-d everything is vaguely similar; edges below the
@@ -76,11 +77,13 @@ MIN_SIM = 0.55
 # B x N float32).
 _BLOCK = 512
 
-# Coherence re-rank defaults: how many pool-head threads vote on community
-# mass, the RRF base constant, and the default gamma — the middle of the swept
-# 0.002–0.01 range, where the log-mined eval puts the S@5 and S@20 optima. The
-# sweep does not resolve one value: 0.01 reads better at S@10 and recall@10,
-# and the whole spread is a case or two on a 187-case protocol.
+# Coherence re-rank defaults: how many pool-head threads vote on community mass,
+# the RRF base constant, and the default gamma. Gamma sits in the middle of a
+# 0.002–0.01 range that no measurement ever resolved to a single value, and the
+# protocol it came from is retired — see the module docstring on what standing it
+# has. What keeps it safe is its scale, not its provenance: it is added to an RRF
+# base of 1/(60+rank), so it reorders inside the mid-list rather than rewriting
+# the head.
 TOP_MASS = 10
 RRF_K = 60
 COHERENCE_GAMMA = 0.005
@@ -268,7 +271,7 @@ def _disk_entry(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[tuple]:
 
 def coherence_gamma(env: str | None = None) -> float:
     """The configured coherence boost: 0.0 disables. Unset/``on``/``auto`` use
-    the swept default; ``off``/``0`` disable; a float overrides. ``env``
+    :data:`COHERENCE_GAMMA`; ``off``/``0`` disable; a float overrides. ``env``
     overrides the environment lookup (tests inject)."""
     raw = (os.environ.get(_ENV, "") if env is None else env).strip().lower()
     if raw in ("", "on", "auto"):
@@ -298,7 +301,7 @@ def mass_for(pool: list[str], community: dict[str, int], top: int = TOP_MASS) ->
 
 def coherence_order(pool: list[str], community: dict[str, int], gamma: float) -> list[str]:
     """Re-rank a thread pool by RRF base + gamma * its community's mass — pure.
-    The eval-proven formula: ``score = 1/(60+rank) + gamma * community_mass``."""
+    ``score = 1/(60+rank) + gamma * community_mass``."""
     mass = mass_for(pool, community)
     base = {t: 1.0 / (RRF_K + r) for r, t in enumerate(pool, start=1)}
     return sorted(pool, key=lambda t: (-(base[t] + gamma * mass.get(community.get(t, -1), 0.0)), t))

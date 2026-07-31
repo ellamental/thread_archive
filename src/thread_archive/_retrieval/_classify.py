@@ -1,9 +1,8 @@
-"""Query classification — the shared FTS query-mode classifier.
+"""Query classification — what shape of lexical query the caller asked for.
 
-Just the query-mode classification; the SQLite arm builds its own SQL in
-:mod:`.fts`. A query classifies into one of: ``browse`` (empty), ``or``
-(pipe-separated), ``code`` (identifiers), or ``tsquery`` (natural-language /
-boolean / quoted-phrase).
+Classification only; :mod:`.fts` builds the SQL each mode implies. A query
+classifies into one of: ``browse`` (empty), ``or`` (pipe-separated), ``code``
+(identifiers), or ``tsquery`` (natural-language / boolean / quoted-phrase).
 """
 
 from __future__ import annotations

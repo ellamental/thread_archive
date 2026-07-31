@@ -5,13 +5,13 @@ The production ranker. The federation produces a pool; this turns it into an ord
   1. :func:`dedup_results` collapses byte-identical hits (same logical message
      re-emitted under two event_ids) before ranking.
   2. :func:`rank_search_results` scores each hit by term **density** (normalized by
-     content length), **phrase proximity**, **recency**, **content-type** weight,
-     and **cross-backend fusion** (the ``_rrf`` agreement score the vector arm
-     contributes) — the same five knobs, at the same shipped weights, as prod.
+     content length), **phrase proximity**, **recency**, **cross-backend fusion**
+     (the ``_rrf`` agreement score the vector arm contributes), each arm's own
+     **magnitude**, and a **content-type** multiplier over the sum.
 
 The weights come from :class:`.params.SearchParams` (see that module for the
-production values and their evidence); content-type from
-``_CONTENT_TYPE_WEIGHT`` (user > text > tool_result …). An alternative
+production values); content-type from
+``_CONTENT_TYPE_WEIGHT`` (user > text > tool …). An alternative
 configuration is another ``SearchParams`` instance passed down from
 ``search(params=...)`` — the seam a measured candidate rides.
 """
@@ -29,18 +29,12 @@ from .params import SearchParams
 
 # Per-content-type relevance multiplier — user messages are the most intentional,
 # tool/thinking the noisiest. A title is aboutness itself, so it ranks with user
-# text. A stored summary is *derived* — a keyword-dense digest whose
-# short length already wins the density term, so an at-parity multiplier lets
-# summaries crowd verbatim evidence out of the top ranks and puts generated prose
-# above the record it summarizes. The discount keeps summaries findable (they are
-# the only docs carrying synthesis vocabulary that never appears verbatim) while
-# making them yield to any primary source that matches comparably.
+# text.
 _CONTENT_TYPE_WEIGHT = {
     "title": 1.5,
     "user": 1.5,
     "text": 1.2,
     "tool_result": 0.8,
-    "summary": 0.6,
     "tool": 0.5,
     "thinking": 0.3,
     "continuation_summary": 0.1,
@@ -105,7 +99,7 @@ def _drop_stopwords(terms: list[str]) -> list[str]:
 #: needs a word character next to it — so ``thread,`` matches ``thread,x`` and not
 #: the ``thread,`` of ordinary prose. The term is dead: it scores no density on any
 #: document, including one holding the query verbatim, and it drags down the
-#: term-hit count that decides ``quality=strong`` and the re-rank stand-down. It
+#: term-hit count that decides the rendered ``quality=strong`` verdict. It
 #: also slips the term past :data:`_STOPWORDS`, so ``this,`` survives where ``this``
 #: is dropped and a corpus-wide word joins both the ranking set and the OR union.
 _TERM_EDGE = ",.;:!?*\"'()[]{}<>…“”‘’"
@@ -165,7 +159,7 @@ def _term_pattern(term: str) -> re.Pattern:
     """A word-boundaried matcher for one ranking term. A term ≥4 chars also
     accepts a trailing inflection (:data:`_TERM_SUFFIX`); shorter terms match the
     bare word only, so 'go' can't reach 'going'. Both ends are anchored on word
-    boundaries — the substring era let 'auth' score inside 'author'."""
+    boundaries, so a term never scores inside a longer unrelated word."""
     core = re.escape(term)
     body = core + _TERM_SUFFIX if len(term) >= 4 else core
     return re.compile(r"\b" + body + r"\b")
@@ -286,11 +280,11 @@ def score_features(
     ``thread_evidence`` is the one feature that reads the pool rather than the
     doc: how many **distinct** matches the pool holds from this hit's thread,
     log-damped and normalized against the thread that carries the most. Every other
-    signal scores a single event, and grouping then represents a thread by its best
-    one — so a conversation that returns to a subject twenty times ranks exactly
-    like one that mentioned it once in passing, on whichever of its events happened
-    to score highest. Repetition is evidence of what a thread is *about*, which is
-    what a subject-shaped query asks for.
+    signal scores a single event on its own merits, so a conversation that returns
+    to a subject twenty times places exactly like one that mentioned it once in
+    passing — nothing else in the scorer can see that the thread is the subject's
+    home. Repetition is evidence of what a thread is *about*, which is what a
+    subject-shaped query asks for.
 
     Two things keep it evidence rather than a length prior. Matches are counted by
     :func:`_norm_content` identity — a digit-folded near-duplicate key — so a

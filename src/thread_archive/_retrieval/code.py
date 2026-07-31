@@ -83,13 +83,6 @@ PROJECTION_VERSION = 3
 COMMIT_KIND = "commit"
 PR_KIND = "pr"
 
-#: Event types the fold reads. Paths come from the tool *call* (which names the
-#: file); commits come from the tool *result* (which prints the sha); pull requests
-#: come from the harness's own marker, already structured.
-_PATH_EVENT_TYPES = ("tool_use_complete", "tool_use_started")
-_COMMIT_EVENT_TYPES = ("tool_execution_completed", "tool_use_complete")
-_PR_EVENT_TYPES = ("pr_link",)
-
 #: Ids per fold batch. Wide enough that the backfill isn't a million round trips,
 #: narrow enough that one batch is a bounded amount of work to lose to a kill.
 _WINDOW = 250_000
@@ -703,9 +696,8 @@ def blame_commit(
     ranked by how much of the commit they account for.
 
     The session that *ran* ``git commit`` is one of them, flagged ``committed``,
-    not a different answer. Treating it as the answer was the original mistake here:
-    wherever a human commits out of band it is nobody, and where an agent commits it
-    is usually just the session that typed the command.
+    not a different answer: wherever a human commits out of band it is nobody, and
+    where an agent commits it is usually just the session that typed the command.
 
     ``resolution`` says what the answer is built from:
 
@@ -809,7 +801,7 @@ def blame_commit(
                         entry["last"], entry["event_id"] = last_at, last_event
         # The session that ran the commit belongs in the list whether or not it
         # edited anything — it may have committed another session's work, which is
-        # exactly the case that made "the committer is the author" wrong.
+        # exactly the case "the committer is the author" gets wrong.
         for row in recorded:
             entry = contributors.setdefault(row["thread_id"], {
                 "thread_id": row["thread_id"], "title": row["title"],

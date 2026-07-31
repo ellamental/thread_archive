@@ -2,7 +2,7 @@
 
 The viewer is a dev-only surface: :mod:`thread_archive._web` and its built
 bundle are excluded from the wheel, so the package exists in a checkout and not
-in an install (the same shape as :mod:`thread_archive._dev`). A wheel therefore
+in an install. A wheel therefore
 carries preservation, retrieval, and the MCP server — and no browser UI, no
 646K of JavaScript.
 

@@ -125,7 +125,7 @@ _ASSISTANT_CONTENT_TYPES = ("text",)
 _META_CONTENT_TYPES = ("title",)
 
 # Process-local matrix cache: {(engine_id, cts): (validity_token, ids, ctypes, mat,
-# doc_inverse, doc_rep, scope_rows)}. Keys are canonicalized (sorted cts tuple) so
+# doc_inverse, doc_rep, scope_rows, occurred)}. Keys are canonicalized (sorted cts tuple) so
 # equivalent scopes in different orders share one entry; ``mat`` is the shared mmap
 # of the full pack, so an entry pins only the scope's small index arrays, and the
 # bound (:data:`_MATRIX_CACHE_MAX`) guards scope proliferation.
@@ -267,7 +267,7 @@ def _occurred_array(values: list) -> np.ndarray:
     """Pack ``occurred_at`` strings into a byte array a time scope can compare against.
 
     Bytes, not epoch integers, and that is the correctness argument rather than a
-    convenience: the query this replaces compared the same column as SQLite TEXT,
+    convenience: the SQL time scope compares the same column as SQLite TEXT,
     which is a plain bytewise comparison, so comparing the same bytes in numpy gives
     the same answer for every value the column can hold — including any that a
     timestamp parser would reject or silently reinterpret. Width is taken from the
@@ -317,8 +317,8 @@ def _stack_blobs(vecs: list[bytes]) -> np.ndarray:
     One join + one ``frombuffer`` over the concatenation, not an ndarray per row
     fed to ``np.vstack`` — the per-row form spends most of a base build's CPU on
     273k tiny allocations. Ragged input (a blob whose length disagrees with the
-    rest) fails the reshape, exactly as it failed the vstack: the writers enforce
-    one dimensionality, and a corrupt row must stay an error, never a misalignment."""
+    rest) fails the reshape: the writers enforce one dimensionality, and a corrupt
+    row must stay an error, never a misalignment."""
     if not vecs:
         return np.empty((0, _DIM), dtype=np.float32)
     return np.frombuffer(b"".join(vecs), dtype=np.float32).reshape(len(vecs), -1)
@@ -435,7 +435,7 @@ def _ensure_pack(s, store_token: tuple[int, int]) -> tuple:
     """The full-corpus KNN matrix for ``store_token`` as base(mmap) + in-RAM delta.
     Reuses an on-disk base that is still a clean prefix of the store and layers the
     vectors written since as a small delta — so continuous ingest costs a delta read,
-    not an 814MB rebuild — and packs a fresh base only when none is reusable. Falls back
+    not a rebuild of the ~GB base — and packs a fresh base only when none is reusable. Falls back
     to full in-RAM arrays for a non-file DSN. Returns (mat, ids, ct_codes, ct_names);
     ``mat`` is a bare mmap/ndarray when the delta is empty, else a :class:`_SplitMatrix`.
 
@@ -1218,7 +1218,7 @@ def _knn(qvec, cts: tuple[str, ...], cand: int, allowed_ids=None,
         q = _normalize(qvec)
         # Full-matrix matvec (streams the mmap; same float32 bits as an in-RAM
         # multiply), gathered down to the scope's rows so everything below stays
-        # scope-local exactly as before.
+        # scope-local.
         sims = np.asarray(mat @ q, dtype=np.float32)[scope_rows]
         rows = np.arange(n)
         if since or until:

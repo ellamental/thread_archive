@@ -37,7 +37,8 @@ threat model is correspondingly narrow, and these are its load-bearing walls:
   bound, and off only under the deliberate `THREAD_ARCHIVE_MCP_NONLOCAL` opt-in,
   where this server can no longer know the names it is legitimately reached by.
 - **The MCP tools are read-only, and the process defaults to read-only.** The
-  one server this package ships exposes only `thread_search` / `thread_read`.
+  one server this package ships exposes only `thread_search` / `thread_read`,
+  plus `thread_help` (their manual) — all three read-only.
   `THREAD_ARCHIVE_MCP_INGEST=1` is a separate, explicit process-level opt-in to
   local catch-up ingestion; setup-generated stdio entries set it when the
   always-on watcher is skipped. The shared MCP LaunchAgent pins it off unless

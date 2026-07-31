@@ -55,7 +55,7 @@ def adopt_if_unwatermarked(
     The last-resort path for a thread that exists with no ``import_state`` at all —
     e.g. a bulk-seeded archive whose events were loaded outside the incremental
     importers. (Reindex carries the watermarks over — from the previous index and the
-    ``import_state.jsonl`` checkpoint snapshot — so a rebuild alone no longer lands
+    ``import_state.jsonl`` checkpoint snapshot — so a rebuild alone does not land
     here.) Re-importing such a file from line 0 would re-insert events the truth
     already holds: their stored ``dedup_key`` need not match a fresh import's, so the
     dedup check wouldn't catch them and every event would double. When the thread

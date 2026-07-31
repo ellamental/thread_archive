@@ -566,8 +566,8 @@ def search_events(
         return []  # an empty id-set scope matches nothing (IN () isn't valid SQL)
     mode, is_boolean = classify_query(query)
 
-    # Each pass is (match_where, match_params, order, use_match, fallback); shared
-    # filters are appended to every pass. A fallback pass is a substring LIKE — a
+    # The ordered pass list (:class:`_Pass`); shared filters are appended to every
+    # pass. A fallback pass is a substring LIKE — a
     # full-table scan (seconds over an index this size; ``content`` has no index that
     # can serve an infix LIKE) — so it only runs when the MATCH pass ahead of it
     # left the candidate pool short: it exists to catch within-token substrings
@@ -1088,12 +1088,15 @@ def matched_threads(
     :data:`SET_EXAMINE_CAP` window on what a scanning predicate read — so the tally
     is a floor rather than a total.
 
-    This is the query that makes a *complete* answer possible. The candidate pool
-    :func:`search_events` returns is a cut — ``pool_floor`` rows deep, ordered by
-    relevance — so the threads past it are unreachable at any page depth and,
-    worse, indistinguishable from a set that simply ended. Here the set is
-    resolved directly and ranking is a separate question applied on top of it.
-    ``**scope`` takes the :func:`_shared_filters` arguments verbatim.
+    Thread-granular where :func:`count_matches` is a bare tally: the set is
+    resolved directly, so a caller gets the membership the candidate pool
+    :func:`search_events` returns cannot give it — that pool is a cut,
+    ``pool_floor`` rows deep and ordered by relevance, so the threads past it are
+    unreachable at any page depth and indistinguishable from a set that simply
+    ended. The search path takes the tally instead (:func:`count_matches` behind a
+    saturated pool), so nothing in the package calls this; it is the per-thread
+    half of the same scan, kept beside it because both read one predicate and one
+    memo. ``**scope`` takes the :func:`_shared_filters` arguments verbatim.
 
     ``set_cap`` overrides :data:`SET_SCAN_CAP` for one call — how many matched
     rows this is willing to examine before giving up on an exact answer. Lower it
@@ -1653,7 +1656,7 @@ def rebuild_fts(session: Optional[Session] = None) -> int:
         s.execute(sa_text("INSERT INTO event_search(event_search) VALUES('rebuild')"))
         _create_triggers(s)
 
-        # 3. Derive the thread-meta docs (titles + summaries). The shadow refill
+        # 3. Derive the thread-meta docs (titles). The shadow refill
         #    above dropped them, so the sync sees a clean slate and writes them all.
         index_thread_meta(s)
 

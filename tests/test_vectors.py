@@ -279,6 +279,39 @@ def test_cold_matrix_defers_to_background_under_construction_policy(archive_home
         set_defer_construction(False)
 
 
+def test_a_warming_server_is_a_deferral_not_the_cold_model_tail(archive_home, monkeypatch) -> None:
+    """``embed_cold`` names a load *paid* inside the request. Under the deferral policy
+    an unloaded model means the opposite — the arm sat out and the search was fast —
+    so sampling it as cold there would file every fast degraded search under the
+    cold-model tail the band analysis reads (``search_lab/latency_replay.py``). The
+    deferral gets its own flag instead, and the whole search still serves lexically."""
+    pytest.importorskip("sentence_transformers")
+
+    from thread_archive._retrieval import _probe, search
+    from thread_archive._retrieval.model_slot import set_defer_construction
+
+    # The process embedder, available and not resident — a server's state between
+    # startup and the moment its warm pass lands.
+    monkeypatch.delenv("THREAD_ARCHIVE_EMBED", raising=False)
+    init_db()
+    _seed_thread(archive_home, "the deferral window question")
+    vectors.ensure_index()
+    vectors.index_vectors([(1, "user", _unit((0, 1.0)))])  # so the arm reaches the embed
+
+    set_defer_construction(True)
+    try:
+        with _probe.install() as probe:
+            hits = search("deferral", limit=5)
+    finally:
+        set_defer_construction(False)
+
+    assert probe.embed_deferred is True
+    assert probe.embed_cold is False, "a query that paid no load reported the cold tail"
+    assert probe.cold is False and "cold" not in probe.as_record()
+    # The point of sitting the arm out: the lexical half still answers.
+    assert [h["thread_id"] for h in hits], "the lexical arm did not carry the search"
+
+
 def test_prime_matrix_builds_synchronously_for_the_default_scope(archive_home) -> None:
     """The warm pass's prime: after ``prime_matrix``, a deferring process serves the
     vector arm on its first search — no inline build, no lexical-only window."""

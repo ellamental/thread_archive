@@ -49,4 +49,4 @@ search already had shapes for — list the conversations, or search inside them:
   session actually changed.*
 
 The index is a disposable projection of the event log: it backfills itself over an
-existing archive and rebuilds with `reindex`.
+existing archive and rebuilds with `thread-archive index rebuild`.

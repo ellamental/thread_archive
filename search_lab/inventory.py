@@ -27,10 +27,10 @@ one line per corpus *family*, describing what that family of harness measures;
 the survey of benchmarks that could exist but do not yet lives in
 ``docs/benchmarks.md``, which is prose and stays prose.
 
-The viewer renders this at ``/lab`` through ``thread_archive._dev``, the same way
-``retrieval_report`` reaches ``/retrieval``: a dev page, excluded from the wheel,
-404 in an install. That is the right side of the boundary — an install carries no
-measurement surface, so it has no bench to inventory.
+Devweb renders this at ``/lab``, the same way ``retrieval_report`` reaches
+``/retrieval``: a dev surface that lives outside the wheel. That is the right
+side of the boundary — an install carries no measurement surface, so it has no
+bench to inventory.
 
 Two costs are bounded on purpose, because this runs inside the always-on
 watcher process:

@@ -19,9 +19,15 @@ recorded p50 ≈ 2.7 s, p90 ≈ 12.8 s. That ~10x gap is not a slow ranker or a 
 SQL plan — it is **startup and residency cost landing inside requests**: model
 loads, pack builds, page-cache fault-ins, and contention from the machine doing
 other things. Every effective fix so far has been about *moving work off the
-request path*, not about making the work faster (though that helps too). When
-you go looking for latency, look at the process regimes first and the pipeline
-second.
+request path*, not about making the work faster (though that helps too).
+
+After the 07-31 round the structural cold sources are closed: CLI one-shots
+delegate, post-restart queries defer the matrix, warms serialize. Row-level
+reads of the instrumented ledger show the shared server has **never** paid a
+model load inside a search — warm serving works — and the remaining in-process
+cold traffic is a handful of ad-hoc library scripts a week. The work left is
+the **tail**, not the median: contention and honest broad scans (see the open
+tails below).
 
 ## The serving landscape
 
@@ -31,16 +37,26 @@ have wildly different cost structures:
 - **The shared HTTP server** (`archive-mcp --http`, :8788, LaunchAgent) — the
   intended hot path. Warms at startup, keepalive holds pages, one resident
   ~2-3 GB copy for every client.
-- **Per-client stdio MCP servers** — spawned per session, lean by policy
-  (models load lazily on first use).
-- **CLI one-shots** (`thread_archive search ...`) — pay whatever they need
-  inside the one call, then exit. A cold model load is ~5-10 s on a quiet box;
-  by construction nothing amortizes it.
+- **Per-client stdio MCP servers** — a deployment option, lean by policy
+  (models load lazily on first use). On this box it carries no traffic: the
+  local (untracked) `.mcp.json` points sessions at the shared :8788 server, and the
+  ledger has never recorded an `mcp-stdio` search.
+- **CLI one-shots** (`thread-archive search ...`) — pay whatever they need
+  inside the one call, then exit; by construction nothing amortizes. `search`
+  now delegates to the shared server when it is alive and serving the same
+  (default) home (`_delegate.py`), so the common case rides the warm process
+  (~0.5 s wall, mostly interpreter start) and only the fallback pays the
+  ~5-10 s cold model load.
 - **The web viewer / watcher cohost** — long-lived, warms, also *writes*
   (ingest + embed), so it is both a server and everyone else's contention.
 - **Ad-hoc library consumers** (benches, sibling instances, lab code calling
   `api.search`) — uptime-zero processes that look like cold starts in the
-  ledger because they are.
+  ledger because they are. With the CLI delegating, these are the *only*
+  processes still paying model loads — 8 searches across the whole instrumented
+  era, several of them the latency investigation's own cold-start probes.
+  The model is per-process by nature (a live torch object; `model_slot.py`) —
+  the mmap'd pack, graph partition, and index pages *are* shared via page
+  cache, which is why even these processes' matrix cost is ~0.1 s, not 24 s.
 
 The ledger (2026-07-20 → 31) recorded **233 warm passes in 11 days** — roughly
 20 process starts a day paying a median ~21 s warm each (model load ~8 s, graph
@@ -65,8 +81,10 @@ tail some request may catch.
 The recurring analysis mistakes, so they stop recurring: pooling eras across
 code changes; pooling surfaces (a CLI one-shot and the shared server are
 different products); reading arm totals as attribution (`fts_ms` and
-`semantic_ms` overlap wall-clock — the substages are the real signal); and
-comparing across restarts without splitting on the cold flags.
+`semantic_ms` overlap wall-clock — the substages are the real signal); comparing across restarts without splitting on the cold flags; and reading
+process age as cost — a search in a young process did not necessarily pay a
+model load (`embed_cold` and the stage timings are the cost record; bucketing
+by `uptime_s` alone once produced a phantom "44% pay a model load").
 
 ## History: what was tried, in order
 
@@ -105,7 +123,10 @@ torch allocator's peak after warm/drain (`release_accelerator_cache`).
 
 **Queries racing the warm.** `set_defer_construction` — a warming server's
 request path uses a model only if already resident, so the first query serves
-lexical-only fast instead of blocking on (or duplicating) the cold load.
+lexical-only fast instead of blocking on (or duplicating) the cold load. The two
+prongs are flagged separately on the search row: `embed_deferred` (model not
+resident yet) and `matrix_deferred` (matrix cold). Neither is `cold` — a deferred
+search pays no load, and counting it as the cold-model tail inverts the band.
 
 **Attribution gaps.** Most of the above was hard to see before the ledger grew
 its fields: per-stage timings and the semantic substages (07-23), `surface`
@@ -127,25 +148,44 @@ server after this round: 130 ms. The same round turned up a same-process tmp
 race: the matrix refresher and the corpus-graph build both assemble packs, and
 pid-only tmp names let one thread's `os.replace` consume the other's
 half-written file (a `FileNotFoundError` killed a graph refresh on 07-30) —
-fixed by the build flock plus pid+thread-id tmp names.
+fixed by the build flock plus pid+thread-id tmp names. The round closed with
+**CLI search delegation**: a `thread-archive search` resolving to the default
+home now asks the shared :8788 server over one stateless `tools/call` POST and
+falls back in-process on any failure (`--local` forces the fallback; a
+tool-level error is re-run locally so the CLI keeps its own error contract).
+Measured same-minute: 0.47 s delegated vs 6.2 s local for the same query. The
+serve row carries `delegated: true` — the door was the CLI, the engine row is
+the server's.
 
 ## What deliberately hasn't been done, and the open tails
 
-- **CLI one-shots still pay the cold model load** (~5-10 s) by construction.
-  The obvious next move is delegating the CLI verbs to the shared :8788 server
-  when it is alive (fall back in-process when not). Not attempted yet; if you
-  take it on, keep the offline path first-class.
+- **CLI `read` still runs in-process.** `search` delegates (see the landscape
+  above); `read` doesn't, on purpose — it never loads a model (engine p50
+  ~12 ms; a one-shot's cost is interpreter + import + open), and its exit code
+  is decided by resolving the ref locally, a contract delegation would have to
+  re-infer from rendered prose. Revisit only if terminal reads ever measure
+  slow enough to matter.
 - **Restart rate is development churn, not a fault.** The watcher log shows
   10-36 restarts *every day* (2026-07-20 → 31), all clean exits with no monitor
   recoveries — that is parallel instances restarting daemons after edits, which
   the house rules require. On a live-edited production box the answer is cheap
   restarts, not fewer; don't burn time hunting a crash loop that isn't there.
-- **Substring/OR fallback scans** can cost ~9 s (`scan_ms`) on broad queries;
-  bounded by design (they are the honest full answer), unbounded in feel.
-- **Contention is real and recorded, not fixed**: test suites, embed drains, and
-  graph rebuilds beside a search all show up in `load1`/`refreshing`. The
-  ledger can now tell a slow pipeline from a busy box; nothing yet *does*
-  anything with that distinction.
+- **Substring/OR fallback scans** can cost ~9-13 s (`scan_ms`) on broad
+  queries; bounded by design (they are the honest full answer), unbounded in
+  feel. The other tail source alongside contention — if it ever needs work,
+  the shapes are early-results-with-continuation, a scan budget, or term
+  planning that keeps more queries off the scan path.
+- **Contention is real and recorded, not fixed** — and it is now the
+  first-order tail source: the worst warm-server rows (e.g. a 40 s search with
+  6.4 s of *warm* embed time) are a busy box, not a cold anything. Test
+  suites, embed drains, graph rebuilds, and warm bursts beside a search all
+  show up in `load1`/`refreshing`/`inflight`. The ledger can tell a slow
+  pipeline from a busy box; nothing yet *does* anything with that distinction.
+  Plausible levers: yield background refresh/drain work while a request is in
+  flight; bound what the cohosted writer does while serving. Before building
+  any of that, let post-07-31 traffic accumulate and read the served tail
+  *then* — the instrumented sample is small and its worst rows predate the
+  fixes; aim at the tail that still exists, not the one just closed.
 - **A stale-window ranking cost**: serve-stale means a vector written in the
   last refresh cooldown isn't semantically searchable yet. Accepted on purpose —
   the lexical arm covers the freshest rows.
@@ -160,9 +200,10 @@ noise. As measured after the 07-31 round (bench: `latency_replay.py --limit 40
 |---|---|---|---|
 | pipeline (warm bench, quiet) | ~110 ms | p95 ~1.1 s | code changes — this is the regression number |
 | shared server, warm, live | expect 0.1-1 s | 1-3 s | contention, wide sets, broad OR/substring asks |
-| shared server, first ~10 s after restart | lexical-only, fast | — | queries no longer pay the matrix build; `matrix_deferred` marks them |
+| shared server, first ~10 s after restart | lexical-only, fast | — | queries pay neither the model load nor the matrix build; `embed_deferred` / `matrix_deferred` mark them |
 | any process, warm pass | ~5-10 s once | — | model load ~5 s dominates; matrix ~0.1 s, graph from disk |
-| CLI one-shot | ~5 s | ~10 s+ | structural (in-process model load) until CLI delegates to :8788 |
+| CLI `search`, server up | ~0.5 s | ~1-3 s | interpreter start + whatever the warm server's answer costs |
+| CLI one-shot, in-process (server down, `--local`, non-default home; all of `read`) | ~5 s | ~10 s+ | structural — the model load lands inside the call |
 
 The bench p50 halved against the 07-26 baseline (230 → 109 ms; semantic arm
 -70%, hydrate -66%) — read the exact delta loosely, since the observed query set

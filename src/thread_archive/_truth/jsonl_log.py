@@ -40,8 +40,8 @@ primitive — it rebuilds the SQLite store from the JSONL directory as a
 over ``index.db``, so a killed reindex leaves the old index fully intact; a
 corrupted or deleted index is never a data-loss event.
 :func:`rebuild_truth_from_store` is the inverse: it re-emits the whole per-thread
-truth from the current store (used once to migrate an older monolithic
-``events.jsonl`` into per-thread files).
+truth from the current store — the one sanctioned store → truth direction, used
+to make the truth match after an index-only repair pass.
 """
 
 # The storage model above is implemented across the _truth submodules; this

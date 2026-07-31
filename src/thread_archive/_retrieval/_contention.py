@@ -61,10 +61,10 @@ Three signals, each cheap enough to take on every search:
 
 ``rss_mb`` / ``rss_now_mb``
     Peak resident memory of the serving process, and what it holds at this instant.
-    The model arms are hundreds of megabytes each and the vector matrix is read
-    whole into memory, so a process serving search is the largest thing on the box,
-    and the point where the machine starts swapping is a latency finding that no
-    timer can see.
+    The embedding model is hundreds of megabytes and the vector pack is a gigabyte
+    the matvec streams end to end, so a process serving search is the largest thing
+    on the box, and the point where the machine starts swapping is a latency
+    finding that no timer can see.
 
     Both, because the gap between them is the finding. Peak is a high-water mark
     since process start and never falls, so it answers whether this process has
