@@ -74,7 +74,11 @@ FLOORS = {
     # lines, samples, unit formatters — which the floor deliberately does not
     # demand (see the module docstring).
     "cli": 83.0,
-    "provider": 71.0,  # public plugin API + the pytest harness (dogfooded by the golden suite)
+    # The public plugin API plus the harness a plugin is tested with, both
+    # dogfooded in-repo: the golden suite runs `assert_golden`, and the built-in
+    # sweep runs the conformance kit — including its negative cases, which is
+    # what keeps an assertion from passing because it checks nothing.
+    "provider": 82.0,
     "TOTAL": 88.0,
 }
 

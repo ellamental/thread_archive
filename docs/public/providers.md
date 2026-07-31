@@ -286,10 +286,44 @@ unknown field, and a torn final line (`write_jsonl(..., torn_tail=...)`). A
 transcript being written *right now* ends mid-line, so that last one is the
 normal case, not an edge case.
 
-Worth testing beyond the golden: that a re-import of an unchanged session
-writes nothing, that a grown session writes only what is new, and that a clean
-session logs no drift warnings — a provider that warns on its own normal output
-trains everyone to ignore the warnings.
+A golden locks *your* output. Two more calls cover the half archive relies on
+from the outside — the same assertions archive holds its own providers to:
+
+```python
+from thread_archive.provider.testing import (
+    assert_provider_contract, assert_reimport_adds_nothing,
+)
+
+def test_conforms():
+    assert_provider_contract(PROVIDER)          # no fixture, no store needed
+
+def test_reimport_is_a_noop(archive_home):
+    init_archive()
+    path = archive_home / "s1.jsonl"
+    write_jsonl(path, MY_FIXTURE)
+    assert_reimport_adds_nothing(
+        lambda: import_session(path, "s1"), source="myharness"
+    )
+```
+
+`assert_provider_contract` checks the descriptor and the watcher on a machine
+that doesn't have your harness installed — that the name is a stable
+identifier, that `follows` / `parser_id` resolve, that something can actually
+feed the provider, that an `export` spec's `detect` declines cleanly rather
+than raising (a raising `detect` stops the drop zone for every other provider),
+and that the watcher constructs, agrees with its own `discover()`, and stays
+quiet with its store absent. That last one is the normal case on most machines,
+and a watcher that raises or claims a store it hasn't got puts its errors in
+the operator's health record forever.
+
+`assert_reimport_adds_nothing` runs your import twice and requires the second to
+create nothing, plus (with `source=`) a watermark to show for it. A watcher
+re-offers a session on every change — an in-progress one is re-read from the top
+many times — so an importer that isn't idempotent doesn't fail, it inflates.
+
+Worth testing beyond all of these: that a grown session writes only what is new,
+and that a clean session logs no drift warnings — a provider that warns on its
+own normal output trains everyone to ignore the warnings.
 
 ## What you get for free
 
@@ -343,4 +377,5 @@ never touched by retirement.
   content-block types, `ProviderConfig`, `DefaultEventBuilder`, the built-in
   parsers and configs.
 - `thread_archive.provider.testing` — `archive_home`, `init_archive`,
-  `assert_golden`, `normalized_truth`, `write_jsonl`.
+  `assert_golden`, `assert_provider_contract`, `assert_reimport_adds_nothing`,
+  `normalized_truth`, `write_jsonl`.

@@ -37,7 +37,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .._config import ENV_HOME
+from .._config import ENV_HOME, clear_pinned_home, pin_home, pinned_home
 from .._store.ulid import mint_ulid, normalize_ulid
 from .layout import (
     THREADS_SUBDIR,
@@ -356,16 +356,20 @@ def migrate(home: Path, *, dry_run: bool = False) -> dict:
     guard existed.
     """
     home = home.expanduser()
-    previous_home = os.environ.get(ENV_HOME)
-    os.environ[ENV_HOME] = str(home)
+    # The locks and the layout helpers below resolve their own paths, so the home
+    # being migrated has to be the selected one for the duration — and only for
+    # the duration: a migration is an operation on a named home, not a switch of
+    # the archive the caller is working in.
+    previous_home = pinned_home()
+    pin_home(home)
     try:
         with _hold_reindex_lock(), _truth_write_lock():
             return _migrate_locked(home, dry_run=dry_run)
     finally:
         if previous_home is None:
-            os.environ.pop(ENV_HOME, None)
+            clear_pinned_home()
         else:
-            os.environ[ENV_HOME] = previous_home
+            pin_home(previous_home)
 
 
 def main(argv: list[str] | None = None) -> int:

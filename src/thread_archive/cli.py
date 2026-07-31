@@ -377,25 +377,24 @@ def cmd_search(args: argparse.Namespace) -> int:
     the same text either way; ``--local`` forces the in-process path, and any
     delegation failure falls back to it silently.
     """
+    import inspect
+
     from . import _api as api
     from . import _delegate, _tools
 
     if not args.local and _delegate.eligible(args.home):
-        arguments: dict[str, object] = {
-            "query": args.query,
-            "limit": args.limit,
-            "page": args.page,
-            "context_lines": args.context_lines,
+        # Built from the tool's own signature rather than a second list of names:
+        # the delegated call and the in-process one below must carry the same
+        # scope, and a filter this list forgot would come back as a confidently
+        # wrong answer — the warm server would run a *wider* search than the flags
+        # asked for. The flags themselves are held against the same signature by
+        # tests/meta/test_retrieval_surface.py, so a parameter with no flag reds
+        # there rather than silently resolving to None here.
+        arguments = {
+            name: getattr(args, name)
+            for name in inspect.signature(_tools.thread_search).parameters
+            if getattr(args, name, None) is not None
         }
-        for name in (
-            "thread_id", "content_type", "exclude_content_type", "since",
-            "until", "tool_name", "source", "types", "agents", "startswith",
-            "path", "path_ops", "commit", "pr", "repo", "sort", "output",
-            "context_events", "match",
-        ):
-            value = getattr(args, name)
-            if value is not None:
-                arguments[name] = value
         out = _delegate.call("thread_search", arguments)
         if out is not None:
             _record_delegated_serve("thread_search")

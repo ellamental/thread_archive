@@ -190,11 +190,9 @@ class Machine:
         """Whether an agent pinning ``agent_home`` serves the archive at ``home``.
 
         An agent with no home in its manifest runs against the *default* home — a
-        scheduled process gets no shell env, and this process's
-        ``$THREAD_ARCHIVE_HOME`` is not evidence (``open_archive`` pins the
-        currently-selected home there, so reading it would make every agent appear
-        to cover whatever home is being asked about). Compare literal paths, not
-        env-mediated resolution.
+        scheduled process gets no shell env, so this process's own selection is
+        not evidence about the agent's. Compare literal paths, not resolution
+        through whatever this process happens to have open.
         """
         agent_path = Path(agent_home).expanduser() if agent_home else default_home()
         return agent_path == resolve_paths(home).home

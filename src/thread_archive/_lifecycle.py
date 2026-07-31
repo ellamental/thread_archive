@@ -7,17 +7,17 @@ append handles (:mod:`._truth`) — so it sits with the corpus, below everything
 that merely *wants* an archive open. The ops kit, the watcher and the composition
 layer all call it, and none of them should have to reach up to do so.
 
-One archive per process: :func:`open_archive` pins ``$THREAD_ARCHIVE_HOME`` so the
-engine (index.db), the truth log (truth/), and search all resolve to the same home.
-To switch archives, call :func:`close` first.
+One archive per process: :func:`open_archive` pins the resolved home
+(:func:`thread_archive._config.pin_home`) so the engine (index.db), the truth log
+(truth/), and search all resolve to the same one. To switch archives, call
+:func:`close` first.
 """
 
 from __future__ import annotations
 
-import os
 from typing import Optional
 
-from ._config import ENV_HOME, ArchivePaths, resolve_paths
+from ._config import ArchivePaths, pin_home, resolve_paths
 
 
 def open_archive(home: Optional[str] = None) -> ArchivePaths:
@@ -36,8 +36,9 @@ def open_archive(home: Optional[str] = None) -> ArchivePaths:
         from ._truth import reset_handles
 
         reset_handles()  # stale handles point at the previous home's files
-    # Pin the home so engine + truth + search resolve consistently for the process.
-    os.environ[ENV_HOME] = str(paths.home)
+    # Select the home so engine + truth + search resolve consistently for the
+    # process. Not written to the environment: see :mod:`._config`.
+    pin_home(paths.home)
     try:
         init_engine(target)  # rebuilds when the DSN changed
         # Read-path convergence: long-lived processes (an MCP server, the web

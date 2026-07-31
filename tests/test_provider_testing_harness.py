@@ -12,11 +12,21 @@ names the fix, a diverged golden fails with a reviewable message, and
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
+from thread_archive.provider import (
+    ExportSpec,
+    Provider,
+    SourceDiscovery,
+    SourceWatcher,
+    WatchResult,
+)
 from thread_archive.provider.testing import (
     assert_golden,
+    assert_provider_contract,
+    assert_reimport_adds_nothing,
     init_archive,
     normalized_truth,
     write_jsonl,
@@ -172,3 +182,176 @@ def test_write_jsonl_torn_tail_ends_mid_line(tmp_path) -> None:
     assert text.endswith('{"c": 3, "trunc') and not text.endswith("\n")
     complete = text.splitlines()[:-1]
     assert [json.loads(ln) for ln in complete[:2]] == [{"a": 1}, {"b": 2}]
+
+
+# ── the conformance kit, made to fail ────────────────────────────────────────
+# tests/test_provider_contract.py runs these over the built-ins, which pass — so
+# on their own those tests cannot tell a working check from one that asserts
+# nothing. This is the other half: one deliberately broken provider per rule.
+
+
+class _Watcher(SourceWatcher):
+    """A minimal conforming watcher, with each conformance property as a knob so
+    a test can break exactly one of them."""
+
+    def __init__(self, name="myharness", *, available=False, discovers=None,
+                 paths=(), items=()):
+        self._name, self._available = name, available
+        self._discovers = available if discovers is None else discovers
+        self._paths, self._items = list(paths), list(items)
+
+    @property
+    def source_name(self):
+        return self._name
+
+    def is_available(self):
+        return self._available
+
+    def poll(self, on_item=None):
+        return WatchResult()
+
+    def discover(self):
+        return SourceDiscovery(name=self._name, available=self._discovers)
+
+    def store_paths(self):
+        return iter(self._paths)
+
+    def store_items(self):
+        return iter(self._items)
+
+
+def _provider(**overrides) -> Provider:
+    base = {"name": "myharness", "label": "My Harness", "watcher": _Watcher}
+    return Provider(**{**base, **overrides})
+
+
+def test_a_conforming_plugin_passes() -> None:
+    """The baseline the negative cases are read against."""
+    assert_provider_contract(_provider())
+
+
+def test_a_factory_is_accepted_like_a_descriptor() -> None:
+    """Entry points may resolve to either, so the check takes either."""
+    assert_provider_contract(lambda: _provider())
+
+
+@pytest.mark.parametrize("name", ["My_Harness", "my harness", "myHarness", "my--harness"])
+def test_an_unstable_name_is_rejected(name: str) -> None:
+    with pytest.raises(AssertionError, match="not a stable identifier"):
+        assert_provider_contract(_provider(name=name))
+
+
+def test_a_dangling_follows_is_rejected() -> None:
+    with pytest.raises(AssertionError, match="follows='nope' names no known provider"):
+        assert_provider_contract(_provider(follows="nope"))
+
+
+def test_a_sibling_plugin_may_be_referenced() -> None:
+    """A plugin shipping several providers references its own set, which the
+    built-in registry has never heard of."""
+    assert_provider_contract(_provider(follows="my-other"), siblings=["my-other"])
+
+
+def test_a_provider_nothing_can_feed_is_rejected() -> None:
+    with pytest.raises(AssertionError, match="neither a watcher nor an export"):
+        assert_provider_contract(_provider(watcher=None))
+
+
+def test_an_export_detect_that_raises_is_rejected() -> None:
+    """The drop zone offers every bundle to every spec, so one raising detect
+    stops the queue for every other provider."""
+    def boom(path):
+        raise OSError("no such thing")
+
+    spec = ExportSpec(detect=boom, importer=lambda p, **k: None,
+                      label="My Export", kind="myharness")
+    with pytest.raises(AssertionError, match="export.detect raised OSError"):
+        assert_provider_contract(_provider(export=spec))
+
+
+def test_an_export_detect_that_claims_everything_is_rejected() -> None:
+    spec = ExportSpec(detect=lambda path: True, importer=lambda p, **k: None,
+                      label="My Export", kind="myharness")
+    with pytest.raises(AssertionError, match="claims an empty directory"):
+        assert_provider_contract(_provider(export=spec))
+
+
+def test_a_watcher_under_another_name_is_rejected() -> None:
+    """Threads land under the watcher's name and the descriptor is looked up by
+    its own — disagreeing splits one source in half."""
+    with pytest.raises(AssertionError, match="calls itself 'other'"):
+        assert_provider_contract(_provider(watcher=lambda: _Watcher("other")))
+
+
+def test_a_watcher_that_disagrees_with_its_own_discovery_is_rejected() -> None:
+    """Setup shows one answer and the poll loop obeys the other."""
+    with pytest.raises(AssertionError, match="discover.. says available"):
+        assert_provider_contract(
+            _provider(watcher=lambda: _Watcher(available=True, discovers=False))
+        )
+
+
+def test_an_absent_store_that_still_enumerates_files_is_rejected() -> None:
+    with pytest.raises(AssertionError, match="unavailable store still enumerates"):
+        assert_provider_contract(
+            _provider(watcher=lambda: _Watcher(paths=[Path("/nope/a.jsonl")]))
+        )
+
+
+def test_store_items_naming_an_unlisted_file_is_rejected() -> None:
+    """The capture-coverage check pairs the two; an item outside store_paths can
+    never be reconciled against what the archive holds."""
+    listed, stray = Path("/store/a.jsonl"), Path("/store/b.jsonl")
+    with pytest.raises(AssertionError, match="store_paths.. does not"):
+        assert_provider_contract(_provider(watcher=lambda: _Watcher(
+            available=True, paths=[listed], items=[(stray, "s1")]
+        )))
+
+
+def test_reimport_helper_catches_an_importer_that_doubles(archive_home) -> None:
+    """The failure the helper exists for: a session re-read on the next watcher
+    pass lands twice. Driven with a real importer over a file that grows, which
+    is exactly how a live transcript is re-offered."""
+    from thread_archive._importers import import_session_incremental
+
+    init_archive()
+    f = archive_home / "growing.jsonl"
+    turns = list(SESSION)
+
+    def run_and_grow():
+        write_jsonl(f, turns)
+        result = import_session_incremental(f, "proj:grow")
+        turns.append({"type": "user", "uuid": f"u{len(turns)}",
+                      "timestamp": "2026-01-01T10:01:00Z", "sessionId": "s1",
+                      "message": {"role": "user", "content": f"turn {len(turns)}"}})
+        return result
+
+    with pytest.raises(AssertionError, match="created 1 more event"):
+        assert_reimport_adds_nothing(run_and_grow)
+
+
+def test_reimport_helper_rejects_a_fixture_that_imports_nothing(archive_home) -> None:
+    """A first run that creates nothing makes the second one prove nothing —
+    the shape a passing-but-empty conformance test would take."""
+    from thread_archive._importers import import_session_incremental
+
+    init_archive()
+    empty = archive_home / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    with pytest.raises(AssertionError, match="first import created no events"):
+        assert_reimport_adds_nothing(lambda: import_session_incremental(empty, "proj:empty"))
+
+
+def test_reimport_helper_requires_the_watermark_it_was_told_to_check(archive_home) -> None:
+    """A source name nothing imported under has no watermark, which is what the
+    check is for — an importer relying on dedup alone re-reads the whole store
+    every pass."""
+    from thread_archive._importers import import_session_incremental
+
+    init_archive()
+    f = archive_home / "sess.jsonl"
+    write_jsonl(f, SESSION)
+    with pytest.raises(AssertionError, match="no import_state row for 'myharness'"):
+        assert_reimport_adds_nothing(
+            lambda: import_session_incremental(f, "proj:s1"), source="myharness"
+        )

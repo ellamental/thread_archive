@@ -595,7 +595,7 @@ def thread_search(
                 "exclude_content_type": exclude_content_type, "since": since,
                 "until": until, "tool_name": tool_name, "source": source,
                 "types": types, "agents": agents, "path": path,
-                "path_ops": path_ops, "commit": commit, "pr": pr,
+                "path_ops": path_ops, "commit": commit, "pr": pr, "repo": repo,
                 "startswith": startswith, "sort": sort,
                 "output": output, "match": match, "page": page,
                 "surface": _served_by(),

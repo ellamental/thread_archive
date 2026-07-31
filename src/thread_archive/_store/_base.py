@@ -290,8 +290,16 @@ def close_engine() -> None:
 
     Called at shutdown, and between tests. One call is the whole teardown: a cache
     added above the store needs no new line here, and cannot be forgotten.
+
+    The home selection goes with it (:func:`.._config.clear_pinned_home`). It is
+    part of what "an archive is open" means, so leaving it set would have the next
+    resolution answer for an archive that is gone — and outrank the environment
+    while doing it.
     """
     global _current
+    from .._config import clear_pinned_home
+
     if _current is not None:
         _current.close()
         _current = None
+    clear_pinned_home()

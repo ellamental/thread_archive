@@ -202,6 +202,54 @@ def test_search_verb_delegates_for_the_default_home(tmp_path) -> None:
     assert not (tmp_path / ".thread" / "archive" / "index.db").exists()
 
 
+def test_every_typed_filter_reaches_the_wire(monkeypatch, capsys) -> None:
+    """A delegated search carries the same scope the local one would.
+
+    This is the failure shape delegation has that nothing else does, and it has
+    no symptom: a filter dropped on the way to the warm server comes back as a
+    *wider* search, ranked, rendered, and indistinguishable from a real answer.
+    So the arguments are built from ``thread_search``'s own signature
+    (:func:`thread_archive.cli.cmd_search`) rather than from a second list of
+    names, and this is that holding over every flag at once.
+    """
+    from thread_archive.cli import main
+
+    seen: list[dict] = []
+    url, stop = _serve(_rpc_text(SENTINEL), seen)
+    monkeypatch.delenv(config.ENV_HOME, raising=False)  # = the default home delegates
+    monkeypatch.setenv(_delegate.ENV_URL, url)
+    try:
+        rc = main([
+            "search", "retry backoff", "--limit", "7", "--page", "3",
+            "--thread-id", "01JQ8ZK4X0000000000000000", "--content-type", "user",
+            "--exclude-content-type", "tool", "--since", "7d", "--until", "1d",
+            "--tool-name", "Bash", "--source", "claude-code", "--types", "system",
+            "--agents", "only", "--startswith", "commit ", "--path", "rank.py",
+            "--path-ops", "edit", "--commit", "deadbeef", "--pr", "4",
+            "--repo", "/repo", "--sort", "oldest", "--output", "linkable",
+            "--context-lines", "5", "--context-events", "1:1", "--match", "substring",
+        ])
+    finally:
+        stop()
+
+    assert rc == 0 and SENTINEL in capsys.readouterr().out
+    assert len(seen) == 1
+    sent = seen[0]["params"]["arguments"]
+    assert sent == {
+        "query": "retry backoff", "limit": 7, "page": 3,
+        "thread_id": "01JQ8ZK4X0000000000000000", "content_type": "user",
+        "exclude_content_type": "tool", "since": "7d", "until": "1d",
+        "tool_name": "Bash", "source": "claude-code", "types": "system",
+        "agents": "only", "startswith": "commit ", "path": "rank.py",
+        "path_ops": "edit", "commit": "deadbeef", "pr": "4", "repo": "/repo",
+        "sort": "oldest", "output": "linkable", "context_lines": 5,
+        "context_events": "1:1", "match": "substring",
+    }
+    # Nothing the door owns rides along: --home and --local decide *who* answers,
+    # and the server has no business being told either.
+    assert not ({"home", "local", "func"} & set(sent))
+
+
 def test_search_verb_stays_local_for_another_home(archive_home, capsys) -> None:
     """With a non-default home the fake server must never be contacted — the
     sentinel appearing in output would mean a query about one archive was

@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- The retrieval surface is ratcheted across every door it has. `thread_search`'s parameter list was written out in
+  six places by hand, and only one leg of that — the wire descriptions — was checked; the others could drift in
+  silence, and had. `tests/meta/test_retrieval_surface.py` now derives all of it from the tool's own signature:
+  every parameter has a CLI flag, every flag reaches a parameter, and every scope lands in the usage row. The
+  exemptions are declared with their reasons and asserted in both directions, so one that stops being true reds
+  rather than going stale.
+
+- `repo=` was missing from the search usage record, so a `commit=` scope resolved against an explicit repository
+  wrote a row no eval could replay. It is recorded now, and the ratchet above is what keeps the next one from
+  happening quietly.
+
+- The CLI's delegated search builds its arguments from `thread_search`'s signature instead of a second list of
+  parameter names. A filter that list forgot would have been dropped on the way to the warm server and come back as
+  a *wider* search, ranked and rendered — the failure shape delegation has that nothing else does.
+  `test_cli_delegate.py` drives every flag at once against a live server and asserts the wire.
+
+- The provider plugin API ships a conformance kit, not just a golden harness. `assert_provider_contract` holds a
+  descriptor and its watcher to what archive reads them under — a stable name, resolving `follows` / `parser_id`,
+  something that can actually feed the provider, an `export` spec whose `detect` declines rather than raises, and a
+  watcher that constructs, agrees with its own `discover()`, and stays quiet with its store absent (the normal case
+  on almost every machine). `assert_reimport_adds_nothing` holds an importer to the invariant the whole ingest loop
+  rests on. Both are dogfooded: `tests/test_provider_contract.py` sweeps every built-in, so a provider added
+  tomorrow is covered the moment it is registered, and the per-provider idempotence tests now run the shipped
+  helper over their own fixtures instead of counting rows by hand — which added the watermark check they never had.
+
+- Opening an archive no longer writes to the process environment. Which home this process is working in is the
+  archive layer's own state (`_config.pin_home` / `pinned_home`), consulted ahead of `$THREAD_ARCHIVE_HOME` and
+  released when the archive closes. `os.environ` is shared with every other library in the process and inherited by
+  every child it spawns, so selecting a home there made *reading* an archive a side effect that outlived the read —
+  and, worse, made the operator's setting unrecoverable afterwards. Two call sites were already defending against
+  it by hand: the v2 truth migration saved and restored the variable around itself, and the setup machine probe had
+  to refuse env-mediated resolution when asking whether an installed agent covers a home. Both now say what they
+  mean. Resolution order is unchanged in every other respect — explicit argument, then the open archive, then env,
+  then the default.
+
+- The truth↔index invariant is a property, not a set of examples. `tests/test_truth_index_invariant.py` drives a
+  real archive through generated sequences of imports, re-imports past a watermark, amendments, checkpoints and
+  rebuilds, and asserts after every step that `verify(deep=True)` is green, that a rebuild reproduces the index
+  exactly, and that no event the archive holds becomes unreachable. The oracle is the product's own deep verify;
+  what the file adds is the orders nobody wrote down — and a shrunk counterexample when one of them breaks.
+
 - Opening and closing the archive moved to `_lifecycle`, the layer their dependencies are already on. `open_archive`
   reaches exactly three things — resolved paths, the SQLite store, the truth log's append handles — so the ops kit,
   the watcher and the composition layer were all reaching *up* into `_api` to call it, seven sites of the nine that
