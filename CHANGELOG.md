@@ -27,6 +27,22 @@
   tomorrow is covered the moment it is registered, and the per-provider idempotence tests now run the shipped
   helper over their own fixtures instead of counting rows by hand — which added the watermark check they never had.
 
+- The viewer dispatches through a route table (`_web.server.ROUTES`) instead of a 250-line chain of path
+  comparisons. A chain can only be executed; the surface has readers that need to *enumerate* it — the public-URL
+  pin, which was keeping a hand-written list beside it, and the rules every endpoint is now held to at once: each
+  route resolves to itself, none shadows another, a write is reachable only by POST and a read refuses one, and no
+  route escapes `/api/`. Those hold for endpoints nobody has written yet, which is what a test per endpoint cannot
+  do. Behaviour is unchanged — every handler kept its logic and its reasons; only dispatch moved.
+
+- The retrieval pipeline's stage contract is asserted. Every hit annotation is read with a zero default
+  (`result.get("_rrf", 0.0)` and its neighbours in `rank`) and every display field with an `or` fallback, so an arm
+  that stops annotating does not raise or log — it flattens one term of the score for every hit and the search goes
+  on answering, worse. `tests/test_hit_stage_contract.py` drives the real pipeline and pins what each stage leaves
+  behind: the lexical arm's two scores and their normalization, that no hit claims a score no arm computed, that
+  fusion annotates everything it returns, that enrichment reaches every hit, and the browse and code-axis column
+  sets the renderer branches on. A type per stage would not have caught any of it: the stages mutate one dict in
+  place, so each seam would need a `cast`.
+
 - Opening an archive no longer writes to the process environment. Which home this process is working in is the
   archive layer's own state (`_config.pin_home` / `pinned_home`), consulted ahead of `$THREAD_ARCHIVE_HOME` and
   released when the archive closes. `os.environ` is shared with every other library in the process and inherited by

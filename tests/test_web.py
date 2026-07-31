@@ -1659,3 +1659,97 @@ def test_docs_pages_render_the_app_shell(archive_home):
     for path in ("/docs", "/docs/cli"):
         status, ctype, body, _ = route("GET", path, {})
         assert status == 200 and ctype.startswith("text/html"), path
+
+
+# ── the route table ──────────────────────────────────────────────────────────
+# Dispatch is a table (`_web.server.ROUTES`), so the surface can be enumerated
+# rather than only executed. That is what these are: rules asserted over every
+# endpoint at once, including ones nobody has written yet. A test written per
+# endpoint covers the endpoints someone remembered.
+
+def test_every_route_is_reachable(archive_home):
+    """A route in the table that dispatch cannot reach is a dead entry — and,
+    read as documentation, a lie about what the server answers."""
+    from thread_archive._web import ROUTES
+    from thread_archive._web.server import resolve
+
+    for entry in ROUTES:
+        # A prefix route is addressed with something after the prefix; an exact
+        # one by its own path.
+        probe = entry.path + ("x" if entry.prefix else "")
+        assert resolve(entry.method, probe) is entry, f"{entry.method} {probe}"
+
+
+def test_no_route_is_shadowed_by_another(archive_home):
+    """Exact paths resolve before prefixes, so `/api/stats` cannot be swallowed
+    by `/api/stats/model/`. Two routes claiming the same address would make one
+    of them unreachable depending on declaration order — the failure a chain of
+    `if path ==` comparisons hides completely."""
+    from thread_archive._web import ROUTES
+    from thread_archive._web.server import resolve
+
+    for entry in ROUTES:
+        if not entry.prefix:
+            assert resolve(entry.method, entry.path) is entry, entry.path
+    seen = {(e.method, e.path, e.prefix) for e in ROUTES}
+    assert len(seen) == len(ROUTES), "two routes declare the same address"
+
+
+def test_only_declared_writes_accept_a_write(archive_home):
+    """The adapter's cross-site guard is keyed on the method — only POST passes
+    through it. So a route that changes something and is reachable by GET would
+    be a write with no guard in front of it, and a GET is exactly what a
+    cross-site request can make without asking."""
+    from thread_archive._web import ROUTES
+
+    for entry in ROUTES:
+        if entry.writes:
+            assert entry.method == "POST", f"{entry.path} writes over {entry.method}"
+        if entry.method == "POST":
+            assert entry.writes, (
+                f"{entry.path} is POST-only but not declared a write — the flag is "
+                f"what the guard rules are read off"
+            )
+
+
+def test_a_read_route_refuses_the_write_method(archive_home):
+    """405, not the SPA shell and not a silent read: POSTing to a read endpoint
+    is a wrong method, and saying so is what tells a client its request was
+    understood and declined."""
+    from thread_archive._web import ROUTES
+
+    for entry in ROUTES:
+        if entry.method != "GET":
+            continue
+        path = entry.path + ("x" if entry.prefix else "")
+        status, ctype, _, _ = route("POST", path, {})
+        assert status == 405, path
+        assert ctype.startswith("text/plain"), path
+
+
+def test_a_write_route_is_not_reachable_by_reading_it(archive_home):
+    """The other direction, and the one that matters: a write must not be
+    performable by navigating to a URL."""
+    from thread_archive._web import ROUTES
+
+    for entry in ROUTES:
+        if not entry.writes:
+            continue
+        status, _, _, _ = route("GET", entry.path, {})
+        assert status == 404, f"{entry.path} answers a GET"
+
+
+def test_every_route_lives_under_api(archive_home):
+    """The table is the API surface; every other address is a fallback (a built
+    asset, or the SPA shell). A page route landing here would be answered before
+    the shell and stop being a client route."""
+    from thread_archive._web import ROUTES
+
+    for entry in ROUTES:
+        assert entry.path.startswith("/api/"), entry.path
+
+
+def test_an_unknown_method_is_refused_whatever_the_path(archive_home):
+    for method in ("PUT", "DELETE", "PATCH", "HEAD"):
+        for path in ("/api/status", "/api/upload", "/", "/archive/x"):
+            assert route(method, path, {})[0] == 405, f"{method} {path}"

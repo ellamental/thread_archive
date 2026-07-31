@@ -6,6 +6,16 @@ The event hit is the one record every retrieval stage passes along — built by
 ``format.format_results``. Typing it here lets the checker carry the shape
 across those modules instead of prose alone.
 
+What the checker cannot carry is *when* each annotation appears, and that is
+where this record's failure mode lives: the ranker reads every stage annotation
+with a zero default (``result.get("_rrf", 0.0)``) and the renderer reads every
+display field with an ``or`` fallback, so a stage that stops annotating flattens
+one term of the score, or blanks one column, without raising anywhere. Splitting
+this into a type per stage would not catch it either — the stages mutate one dict
+in place, so each seam would need a ``cast``, which asserts rather than checks.
+``tests/test_hit_stage_contract.py`` is what holds it: it drives the real
+pipeline and asserts what each stage left behind.
+
 :class:`Results` is the list of those hits plus what a *page* of them needs to
 describe itself — how many matched in total, which page this is. It subclasses
 ``list`` so every existing caller, test, and eval that treats a search result as

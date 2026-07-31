@@ -165,9 +165,16 @@ def test_committed_web_endpoints_are_served(archive_home) -> None:
     behaviour, tested in test_web.py; this only pins that the URLs exist.
     """
     from thread_archive._web import route
+    from thread_archive._web.server import resolve
 
     assert route("GET", "/api/not-a-real-endpoint", {})[0] == 404  # the fallthrough
     for path in PUBLIC_WEB_ENDPOINTS:
+        # Resolved against the route table rather than by status code: a URL that
+        # happens to answer 200 through a *prefix* route or the SPA fallback is
+        # not the endpoint this pin is about. The table is where an endpoint
+        # exists, so the table is what is asked.
+        entry = resolve("GET", path)
+        assert entry is not None and entry.path == path, path
         assert route("GET", path, {})[0] != 404, path
 
 

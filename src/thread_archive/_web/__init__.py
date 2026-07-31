@@ -14,6 +14,14 @@ history in doesn't require finding a folder in a terminal.
 
 from __future__ import annotations
 
-from .server import RequestBody, resolve_archive_link, route, serve_in_thread
+from .server import (
+    ROUTES,
+    RequestBody,
+    Route,
+    resolve_archive_link,
+    route,
+    serve_in_thread,
+)
 
-__all__ = ["route", "serve_in_thread", "resolve_archive_link", "RequestBody"]
+__all__ = ["route", "ROUTES", "Route", "serve_in_thread", "resolve_archive_link",
+           "RequestBody"]
