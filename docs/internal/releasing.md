@@ -81,8 +81,14 @@ python3 -m venv .venv
 .venv/bin/pip install --upgrade pip   # `--group` is PEP 735; needs pip >= 25.1
 .venv/bin/pip install -e ".[embeddings,leiden]" --group dev
 (cd frontend && npm ci)
+(cd devweb/frontend && npm ci)   # thread-ci sweeps this worktree; devweb has rows too
 git push -u origin release/X.Y.Z
 ```
+
+Both `npm ci`s are load-bearing: the local CI sweeper runs `ci.toml` against
+whatever tree the commit landed in, so a worktree missing either
+`node_modules` reds that app's typecheck/test/e2e rows for a setup reason and
+buries whatever the sweep was supposed to tell you.
 
 Push at the cut so GitHub CI starts running the branch, and open the PR to
 `main` immediately as a draft — it is the release's workbench: CI fills in,
