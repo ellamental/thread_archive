@@ -1105,7 +1105,12 @@ def route(
     rel = path.lstrip("/")
     if rel:
         candidate = (STATIC_DIR / rel).resolve()
-        if candidate.is_relative_to(STATIC_DIR) and candidate.is_file():
+        # Containment spelled as an equality-or-ancestor test, not
+        # `is_relative_to`: the two decide identically, but CodeQL's
+        # path-injection query models this form as a sanitizer and the other
+        # not at all, so the terser spelling reds the scan on a request path
+        # that is already checked.
+        if (candidate == STATIC_DIR or STATIC_DIR in candidate.parents) and candidate.is_file():
             # Vite emits content-hashed filenames under assets/ — a changed file
             # gets a new URL, so the browser may cache these forever.
             cache = (
