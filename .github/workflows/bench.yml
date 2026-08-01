@@ -6,9 +6,12 @@
 # the exact bytes the checked-in manifest (search_lab/bench-packs.json) accepts.
 #
 # This lane is the portability proof for the quality bar: evidence that the
-# accepted baseline is reproducible away from the maintainer's machine. It is
-# scheduled + dispatchable rather than per-push, and it gates no merge — the
-# release gate proper still runs from the preflight (docs/releasing.md). If
+# accepted baseline is reproducible away from the maintainer's machine. It runs
+# where that proof is worth having *before* anything ships — on every release PR
+# (PRs to main are releases and nothing else, so this is a pre-merge check the
+# operator reads next to CI and CodeQL; pull_request runs use the PR head's
+# workflow file, so a release that changes this lane gates on the changed lane)
+# — and on a weekly schedule for drift the box-local preflight can't see. If
 # cross-platform float differences ever trip the gate's case-width tolerance,
 # that is a finding about the baseline's portability, not noise to suppress;
 # widen the affected row's tolerance explicitly in quality-baseline.json.
@@ -20,6 +23,9 @@
 name: Bench
 
 on:
+  # Every PR to main is a release PR, so this is the pre-ship gate.
+  pull_request:
+    branches: [main]
   workflow_dispatch:
   schedule:
     # Weekly. The packs and baseline only move when someone accepts new ones, so
@@ -28,6 +34,11 @@ on:
 
 permissions:
   contents: read
+
+# A newer push to the release branch supersedes an in-flight gate run.
+concurrency:
+  group: bench-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   gate:

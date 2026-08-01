@@ -1,0 +1,12 @@
+# Keeps the SHA-pinned actions in .github/workflows fresh: the credentialed
+# workflows (publish.yml, release.yml, release-pr.yml) pin by commit so a moving
+# tag can't move under the deploy key or the OIDC grant, and pins that nobody
+# bumps rot into a different risk. PRs target dev — main only ever moves by
+# release PR (docs/releasing.md), so a bot PR must never point there.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly

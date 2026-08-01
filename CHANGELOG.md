@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.0.14 — 2026-08-01
+
+- CI proves both platforms: macOS lanes for the pytest bar and the wheel install, beside the Linux matrix now
+  carrying 3.12–3.14, the serial suite, a devweb lane, and the Docker from-nothing install proof on release PRs.
+- Releasing is machinery, not memory: a release-shape check holds the §4 contract on every PR to main, the main
+  ruleset requires every green (CI, Bench, CodeQL, install) before merge, and a merge without a bump fails loudly.
+- The off-box quality gate runs pre-merge on every release PR, not only weekly; the portability proof ships green.
+- `scripts/audit_release_settings.py` audits the GitHub-side hardening; credentialed workflows pin actions by SHA
+  (dependabot keeps pins fresh); `release_cut.sh` / `release_finish.sh` script the cut and the finish.
+- `watch --web` survives a ^C during startup: the interrupt gets the same clean stop and close as one in the loop,
+  and closing a viewer server whose startup failed no longer crashes on a missing attribute.
+
 ## 0.0.13 — 2026-08-01
 
 - The quality gate runs off this box: bench corpora and built homes ship as content-hashed release assets on the
