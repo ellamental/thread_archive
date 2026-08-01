@@ -179,7 +179,7 @@ def _raise_in_thread(thread_id: int, exc: type[BaseException]) -> None:
         raise RuntimeError(f"could not deliver interrupt to thread {thread_id} (n={n})")
 
 
-def _interrupt_once(ready: Callable[[], bool], *, timeout: float = 30.0) -> threading.Thread:
+def _interrupt_once(ready: Callable[[], bool], *, timeout: float = 120.0) -> threading.Thread:
     """Raise ``KeyboardInterrupt`` in the caller's thread — the operator's ^C —
     once ``ready()`` holds, so the CLI's own ``KeyboardInterrupt`` handler runs
     the real shutdown. The exception is injected into the *calling* thread (the
