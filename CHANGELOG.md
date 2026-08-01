@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- The release process makes the rc mandatory: every release publishes at least one `X.Y.ZrcN` and the final PR is
+  not marked ready until its Publish `verify` job is green, with only the release commit allowed on top of the
+  last rc. The rc section had described this as optional, and eleven releases in it had never been used — every
+  final version was the first thing to ever exercise GitHub CI's environment, CodeQL, the tag ruleset, and the
+  publish path for its tree, which is why release-time failures kept surfacing only on GitHub, after the number
+  was burned. docs/releasing.md also names the flow for a red check on `main`: since only release merges touch
+  `main`, the fix ships as a release — but the chasing happens on the release branch through rcs (same CI, same
+  CodeQL, same publish path), and the final ships once, after the branch is green. Finals are never the probe.
+
 - Both servers resolve a static request by looking it up in an index of what the built bundle holds, rather than
   joining the request onto the bundle root and then checking where the result landed. The old form decided the
   same cases — a climb resolved outside `static/` was refused — but it decided them *after* building the path,
