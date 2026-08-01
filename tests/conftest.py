@@ -42,8 +42,11 @@ atexit.register(shutil.rmtree, _SANDBOX_HOME, ignore_errors=True)
 # XDG base dirs must follow the redirect: an inherited XDG_CONFIG_HOME (GitHub's
 # runners export one) still names the real ~/.config, and an explicit XDG var
 # outranks $HOME for anything XDG-aware. Dropped, they re-derive from the sandbox.
-for _xdg in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"):
-    os.environ.pop(_xdg, None)
+# PIPX_BIN_DIR rides the same drop: GitHub's macOS runners export it naming the
+# real ~/.local/bin, and nothing in the suite wants pipx's opinion of anything.
+for _var in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
+             "PIPX_BIN_DIR"):
+    os.environ.pop(_var, None)
 
 # THREAD_ARCHIVE_HOME is the store-location override the engine resolves *before*
 # $HOME — so on a machine that sets it (the operator's, for the daemons), it wins

@@ -1425,8 +1425,12 @@ class _ArchiveHTTPServer(ThreadingHTTPServer):
     """
 
     def __init__(self, server_address, handler) -> None:
-        super().__init__(server_address, handler)
+        # Before super().__init__: the stdlib TCPServer calls self.server_close()
+        # when bind/activate raises (an occupied port, an interrupt landing
+        # mid-init), and our override reads this list — assigned afterward, that
+        # close dies on AttributeError and masks the real error.
         self._prewarm_threads: list[threading.Thread] = []
+        super().__init__(server_address, handler)
 
     def start_prewarm(self, target, *, name: str) -> None:
         thread = threading.Thread(target=target, name=name, daemon=True)
