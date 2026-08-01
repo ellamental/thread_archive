@@ -282,9 +282,9 @@ def check_coverage(
     doubles as the full set, so a stub-driven test never discovers the real
     machine's stores."""
     _t0 = time.monotonic()
-    from .._api import open_archive
     from .._importers._skip_ledger import summarize_skips
     from .._importers._validation_ledger import summarize_drift
+    from .._lifecycle import open_archive
     from .._providers import mechanism_names
     from .._watcher.sources import default_watchers, enabled_watchers
 

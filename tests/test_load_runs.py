@@ -82,7 +82,7 @@ def test_a_length_sorted_phase_trends_on_work_not_item_count():
     assert snap["trend_unit"] == "chunks"  # the rates are not items per second
     assert snap["done"] == 105
 
-    # The same phase measured on item count is the false alarm this replaces.
+    # The same phase measured on item count is the false alarm this avoids.
     naive = load_runs.Phase(run, "embed", total=None)
     naive.advance(100)
     naive._win_t -= load_runs._RATE_WINDOW_S + 1

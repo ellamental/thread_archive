@@ -19,7 +19,7 @@ import sqlite3
 import uuid
 from collections import OrderedDict
 from pathlib import Path
-from typing import TextIO
+from typing import Callable, TextIO
 
 from sqlalchemy import event
 from sqlalchemy.orm import Session
@@ -123,7 +123,7 @@ def append_line(path: Path, rec: dict) -> None:
     fh.flush()
 
 
-def _fsync_handle(path: Path) -> None:
+def _fsync_handle(path: Path, *, fsync: Callable[[int], None] = os.fsync) -> None:
     """fsync a cached append handle so its flushed lines are durable on disk.
 
     Callers batch: write every line of a logical unit via :func:`append_line`
@@ -135,14 +135,19 @@ def _fsync_handle(path: Path) -> None:
     handles before this runs; eviction close() flushes to the OS but does not
     fsync, so an evicted file is reopened here and fsynced by fd — the durability
     bar must not quietly drop for bulk batches. An OSError propagates (fail fast,
-    same as an fsync failure on a live handle)."""
+    same as an fsync failure on a live handle).
+
+    ``fsync`` is the call this makes, injectable because it is the one durability
+    step with no effect a caller can observe afterwards: a test that only proves
+    this returns without raising passes just as well against a body that syncs
+    nothing. Pass a recorder to assert the fd actually reached the syscall."""
     fh = _handles.get(str(path))
     if fh is not None and not fh.closed:
-        os.fsync(fh.fileno())
+        fsync(fh.fileno())
         return
     fd = os.open(path, os.O_RDONLY)
     try:
-        os.fsync(fd)
+        fsync(fd)
     finally:
         os.close(fd)
 

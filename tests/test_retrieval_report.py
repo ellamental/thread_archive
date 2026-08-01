@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 # The report reads the viewer's own request ledger, and the viewer is dev-only —
-# no wheel carries it (docs/web-viewer.md). search_lab is likewise repo-only.
+# no wheel carries it (docs/public/web-viewer.md). search_lab is likewise repo-only.
 pytest.importorskip("thread_archive._web", reason="the viewer is dev-only (no wheel carries it)")
 
 from search_lab import retrieval_report as rr  # noqa: E402

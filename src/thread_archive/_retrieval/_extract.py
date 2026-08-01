@@ -53,13 +53,13 @@ INDEXABLE_EVENT_TYPES = [
 #: of 2.06 GB indexed, 36% of documents) and the worst of it by signal — a grep
 #: dump or a re-read file puts thousands of incidental term occurrences behind
 #: whichever conversation happened to run the command, so a query matches the
-#: *machine's* words rather than anyone's. Ranking measured better without it on
-#: both eval protocols, not merely cheaper: the tail it removes was competing with
-#: real answers.
+#: *machine's* words rather than anyone's. Excluding it is a ranking decision as
+#: much as a cost one: those documents compete with real answers for the pool, and
+#: the ranker's density term is IDF-blind, so it cannot discount them itself.
 #:
 #: The tool *call* stays indexed. It is small (0.15 GB), it carries the tool name
 #: and its arguments, and "when did we run this" is a question the archive is
-#: expected to answer — excluding calls too measured worse on every metric.
+#: expected to answer — a call names an intent where its output names a machine's.
 #:
 #: Truth is untouched: the JSONL keeps every byte, ``thread_read`` replays these
 #: events in full, and the code axis reads ``event_paths``, not this index. What

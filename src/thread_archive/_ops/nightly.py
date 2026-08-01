@@ -121,7 +121,7 @@ def nightly(
 
     Returns per-stage results plus ``ok`` / ``failed_stages``.
     """
-    from .._api import open_archive
+    from .._lifecycle import open_archive
 
     _t0 = time.monotonic()
     open_archive(home)

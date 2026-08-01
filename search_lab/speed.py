@@ -54,20 +54,9 @@ LATENCY_RUNS_FILE = "latency-runs.jsonl"
 #: p50 taken over one population of query says nothing about a p50 taken over
 #: another, so every run row names its set and every set gets its own baseline
 #: file — one file would mean whichever set ran last defined the reference for
-#: both. :data:`OBSERVED_SET` is the searches agents actually ran
+#: every set. :data:`OBSERVED_SET` is the searches agents actually ran
 #: (``latency_replay.py``), measured deliberately by a human at a terminal.
 OBSERVED_SET = "observed"
-
-#: The regression gate's set (``latency_smoke.py``): a handful of the slowest
-#: recorded calls, run unattended on every commit.
-#:
-#: Deliberately not :data:`OBSERVED_SET`, though it is drawn from the same ledger.
-#: A baseline is only a reference for runs taken the way it was: the gate runs in
-#: the CI sweeper's background scheduling tier while the rest of the sweep is
-#: running, and an interactive replay runs on a box someone is waiting at. The two
-#: measure the same pipeline and disagree by more than any regression worth
-#: catching — so they get separate baselines and neither can move the other's.
-SMOKE_SET = "smoke"
 
 
 def baseline_file(query_set: str) -> str:
@@ -126,15 +115,13 @@ class LatencyStats:
     stages: dict[str, dict[str, float]]
     pool_p50: float
     by_shape: dict[str, dict[str, float]] = field(default_factory=dict)
-    #: Per-query p50 total latency — the raw material for the pathological-query
-    #: smoke test. Kept in the baseline, not the ledger row (it is a reference to
-    #: cherry-pick from, not a timeseries datum).
+    #: Per-query p50 total latency. Kept in the baseline, not the ledger row (it
+    #: is a per-query reference to compare against, not a timeseries datum).
     by_query: dict[str, float] = field(default_factory=dict)
 
     def as_record(self, *, include_by_query: bool = False) -> dict[str, Any]:
         """The distribution as a JSON row. The compact form (ledger timeseries)
-        drops the per-query map; ``include_by_query`` keeps it (the baseline, which
-        the smoke test reads back)."""
+        drops the per-query map; ``include_by_query`` keeps it (the baseline)."""
         rec: dict[str, Any] = {
             "n_queries": self.n_queries, "reps": self.reps, "n_samples": self.n_samples,
             "total": {k: round(v, 1) for k, v in self.total.items()},
@@ -172,54 +159,6 @@ def _summarize(samples: list[dict], n_queries: int, reps: int) -> LatencyStats:
         by_shape=by_shape,
         by_query={q: percentile(xs, 0.50) for q, xs in per_query.items()},
     )
-
-
-def smoke_set(baseline: Optional[dict[str, Any]], k: int) -> list[str]:
-    """The ``k`` queries that were slowest at baseline — the corpus's own
-    pathological cases, empirically rather than by guesswork.
-
-    A latency regression shows worst on the queries already nearest the ceiling,
-    so running these first turns a pass over the whole query set (hundreds of
-    queries) into a handful, catching the common regression (a change that
-    uniformly slows the pipeline, or worsens the already-heavy paths) in tens of
-    seconds rather than minutes. Empty when
-    no baseline has been recorded — nothing to cherry-pick from, so the smoke test
-    simply doesn't run rather than guessing which queries are hard."""
-    by_query = (baseline or {}).get("by_query") or {}
-    return [q for q, _ in sorted(by_query.items(), key=lambda kv: -kv[1])[:k]]
-
-
-def ceiling_ms(baseline: Optional[dict[str, Any]], *, budget_ms: Optional[float],
-               factor: float, queries: Optional[list[str]] = None) -> Optional[float]:
-    """The p95 a smoke run must stay under. An explicit ``budget_ms`` is an
-    absolute acceptability bar; otherwise the ceiling is ``factor`` times what the
-    *measured queries* cost at baseline — a relative "don't get materially slower"
-    ratchet. None when neither is available (no budget, no baseline): nothing to
-    check against, so the smoke test can only measure, not fail.
-
-    ``queries`` is the set about to be measured, and passing it is what keeps the
-    comparison honest. The smoke test does not run a representative sample — it
-    deliberately runs the corpus's slowest queries (:func:`smoke_set`), whose
-    timings sit in the far tail of the distribution the corpus-wide p95 summarizes.
-    Priced against that corpus-wide number the bar lands *below* what those queries
-    already cost when the baseline was recorded, so the check fails on ordinary
-    run-to-run variance and says nothing about the change under test. Referenced
-    instead to the slowest of their own recorded timings — the statistic a p95 over
-    their samples actually approximates — the ratchet measures what it claims to.
-    Without ``queries`` (or with none of them in the baseline) the corpus-wide p95
-    is the fallback, which is right for a caller measuring the whole set."""
-    if budget_ms is not None:
-        return budget_ms
-    if not baseline:
-        return None
-    if queries:
-        by_query = baseline.get("by_query") or {}
-        marks = [by_query[q] for q in queries if q in by_query]
-        if marks:
-            return max(marks) * factor
-    if baseline.get("total", {}).get("p95"):
-        return baseline["total"]["p95"] * factor
-    return None
 
 
 def measure(

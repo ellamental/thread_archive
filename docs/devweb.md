@@ -61,7 +61,7 @@ ledgers.
 
 ## Why it is separate
 
-The archive's viewer ([../web-viewer.md](../web-viewer.md)) is for reading
+The archive's viewer ([public/web-viewer.md](public/web-viewer.md)) is for reading
 conversations. These are instruments for working on the archive itself, and the
 split between the two is structural rather than a flag: different bundle,
 different process, different port, different directory. There is nothing to

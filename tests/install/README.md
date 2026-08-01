@@ -10,7 +10,7 @@ complementary proofs, sharing one synthetic corpus (`make_fixtures.py`):
 - **Realistic first run** (`first_run.py`) — the path a *new user's first run* actually
   takes: a fake `$HOME` with every harness's store in its **real default location**
   (`~/.claude/projects`, `~/.codex/sessions`, the OS-correct app-data dir for
-  Cursor/Cowork, …), discovered and ingested through the installed `thread_archive watch
+  Cursor/Cowork, …), discovered and ingested through the installed `thread-archive watch
   --once` with **no hand-fed paths** (`import-export` for the two account exports a user
   drops in by hand), then reindexed and searched back. This is the cross-OS lane: the same
   run proves discovery on macOS (`~/Library/Application Support`) and on Linux

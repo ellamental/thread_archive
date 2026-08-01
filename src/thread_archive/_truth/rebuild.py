@@ -343,7 +343,7 @@ def _replay_kg_events(
 
     Loads the log into the ``kg_events`` table and replays each event in ``id`` order
     through the materializer, mutating ``thread_links`` / ``topic_messages`` on top of
-    whatever legacy snapshot seed was already loaded. The materializer is upsert +
+    whatever snapshot seed was already loaded. The materializer is upsert +
     tombstone, so a delta that re-touches a seeded row (or deletes one) reconciles
     cleanly and the replay is idempotent and order-stable. A no-op when the log is
     absent — an archive with no topic graph (or a purely lexical one) simply has nothing to fold.
@@ -656,7 +656,7 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
     readers reconnect on the next ``get_engine()`` call (the live engine's pools are
     disposed before the swap); *cross-process* readers keep serving the old inode
     until they reconnect or restart — an accepted stale-read window (long-lived
-    readers converge via :func:`thread_archive._api._reconnect_if_swapped`).
+    readers converge via :func:`thread_archive._store.reconnect_if_swapped`).
 
     Bulk loading targets the build file through a **FK-OFF Core** loader so
     dependency-agnostic inserts need no ordering and the conversation truth-log

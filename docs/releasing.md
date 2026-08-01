@@ -155,7 +155,17 @@ All in the worktree:
   only; the viewer is dev-only and no wheel carries it, so a stale bundle
   cannot reach an installed user.
 
-## Release candidates — optional, cut from the release branch
+## Release candidates — every release publishes at least one
+
+The rc is the only step that exercises the release's *delivery* surface
+before the final version number is at stake. Everything preflight checks
+runs code; the failure classes that have actually burned releases live in
+the machinery around it — the GitHub CI environment (ubuntu, the 3.12
+floor, librarian-free, fresh pip), CodeQL on the PR, the tag ruleset, the
+Trusted Publishing handshake, the wheel PyPI actually serves — and none of
+those can fail on this machine, only on GitHub, only when something real
+goes through them. The rc is that something. It is not optional: the final
+PR is not marked ready until an rc has gone green end to end (§4).
 
 PyPI has no release channels; PEP 440 pre-release versions are the
 mechanism, and they are enough. An `X.Y.ZrcN` upload lands on the same PyPI
@@ -191,8 +201,12 @@ or the PR — it is a tagged commit on `release/X.Y.Z`, published by hand:
    final's version number is at stake.
 
 Fixes found during the rc land on the release branch as usual; the next
-round is `rcN+1`. The §3 release commit replaces the rc string with the
-plain `X.Y.Z` — release.yml's version read accepts nothing else, so an rc
+round is `rcN+1` — the §3 release commit (changelog compression + version
+bump) is the only commit allowed between the last green rc and the final.
+Anything else landing on the branch after the rc means the published rc no
+longer proves the tree being shipped: cut `rcN+1`. The §3 release commit
+replaces the rc string with the plain `X.Y.Z` — release.yml's version read
+accepts nothing else, so an rc
 string accidentally left in place fails the tag workflow on `main` loudly
 instead of shipping. Like any version, a published rc's number is burned:
 PyPI never accepts a re-upload, and a bad rc is yanked the same way a bad
@@ -216,7 +230,7 @@ and narration included. Releasing rewrites them for readers of the release:
 
 Pick the number (semver; pre-0.1.0, all/breaking changes bump the minor). Edit
 `__version__` in `src/thread_archive/__init__.py`. If the truth-directory
-layout changed incompatibly, the format version in `docs/format.md` moves on
+layout changed incompatibly, the format version in `docs/public/format.md` moves on
 its own rules — that is a separate, deliberate decision, not part of the
 package bump.
 
@@ -230,8 +244,11 @@ Release X.Y.Z: compress changelog, bump version
 ## 4. The release PR — the operator ships it
 
 Push, set the PR's title to `Release X.Y.Z` and its body to the version's
-changelog section, and mark it ready for review. The diff is everything since
-the last release; the preflight above is already green on exactly this tree.
+changelog section, and mark it ready for review. Ready-for-review asserts
+three greens, all on the branch as it now stands: the preflight (§2), the
+PR's own GitHub CI and CodeQL runs, and an rc whose Publish `verify` job
+passed, with nothing but the §3 release commit on top of it. The diff is
+everything since the last release.
 
 The operator merges it (merge commit). That merge is the ship — everything
 after this section is follow-through, not gate.
@@ -306,6 +323,26 @@ git worktree remove ~/dev/archive-rc
 git branch -d release/X.Y.Z
 git push origin :release/X.Y.Z   # unless GitHub already deleted it on merge
 ```
+
+## A red check on main is fixed through the rc flow — never by probing with finals
+
+`main` is exactly the last shipped tree — nothing merges there but release
+PRs — so when a check goes red on `main` itself (a scheduled CodeQL run
+surfacing a new alert, a workflow rotting against a GitHub change), the
+only way to clear it is to ship a release carrying the fix. That is fine;
+the failure mode to refuse is using *final* versions as the probe: ship,
+watch `main`, still red, ship again. A final reaches every install and its
+number is burned; it must never be the experiment.
+
+The rc flow is the experiment channel. Land the fix on `dev`, cut
+`release/X.Y.Z` as usual, and iterate **on the branch**: every push runs
+the same CI, the PR runs the same CodeQL queries that red-flagged `main`,
+and an rc exercises the tag ruleset and the publish path — the entire
+surface a GitHub-side fix could be wrong about, without touching `main` or
+any install. Fix, push, read the checks, `rcN+1` if the publish surface is
+implicated; repeat until the branch is green everywhere. Only then does the
+final ship, once, and `main` goes green because the merge carries a fix
+already proven on the exact machinery that was failing.
 
 ## Yanking a bad release
 

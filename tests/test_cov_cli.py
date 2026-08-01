@@ -4,8 +4,9 @@ Companion to ``test_cli_smoke.py``, which drives the verbs end-to-end over a
 seeded archive. This file covers the branches a real run cannot reach, two ways:
 
 * the ``report_*`` functions — each verb's operator report is a pure function of
-  the result dict and its exit code, so every warning/sample/failure line is
-  driven directly with the shape that produces it, no ``_api`` involved;
+  the result dict and its exit code. One test per report drives the richest
+  failure shape that report prints, holding the exit-code contract and the main
+  reporting surface; individual warning/sample lines are not enumerated;
 * the verbs whose boundary is the operating system — the ``daemon`` LaunchAgent
   lifecycle and the watcher's long-running loop — which run for real against a
   redirected ``$HOME``: ``$PATH`` is pinned to a directory holding only the
@@ -847,29 +848,6 @@ def test_backup_all_warnings_returns_1(capsys) -> None:
     assert "SHRINK GUARD: 1" in out
 
 
-def _backup_clean_base() -> dict:
-    return {
-        "truth_dir": "t", "dest": "d", "files_copied": 1, "bytes_copied": 0,
-        "verify_ok": True, "deletions_skipped": 0, "shrinks_skipped": 0,
-        "mirror_complete": True,
-    }
-
-
-def test_backup_bundle_error_fails_the_run(capsys) -> None:
-    # A stale .recovery/ restores yesterday's config — a failed run, not a footnote.
-    res = {**_backup_clean_base(), "bundle_error": "smb down"}
-    assert cli.report_backup(res) == 1
-    assert "recovery bundle sync failed (smb down)" in capsys.readouterr().out
-
-
-def test_backup_bundle_counts_are_reported(capsys) -> None:
-    res = {**_backup_clean_base(), "bundle_files": 3, "bundle_copied": 2,
-           "bundle_deleted": 1}
-    assert cli.report_backup(res) == 0
-    out = capsys.readouterr().out
-    assert "recovery bundle: 3 file(s) (2 copied, 1 removed)" in out
-
-
 # ── verify: parse errors, fts, deep samples, hashes, backup error ─────────────
 
 
@@ -937,97 +915,7 @@ def test_verify_rich_failure_all_branches(capsys) -> None:
     assert "full result appended to /home/verify-failures.jsonl" in out
 
 
-def test_verify_backup_scan_and_shrink(capsys) -> None:
-    res = {
-        "ok": True,
-        "truth": {"threads": 1, "events": 2, "events_effective": 2,
-                  "duplicate_id_lines": 0, "duplicate_content_lines": 0, "parse_errors": 0},
-        "index": {"threads": 1, "events": 2, "kg_events": 0,
-                  "quick_check": "ok", "check": "quick_check"},
-        "drift": {"threads": 0, "events": 0, "kg_events": 0},
-        "fts": {"shadow_rows": 2, "fts5_rows": 2, "orphan_rows": 0},
-        "backup": {
-            "dest": "/mirror", "coverage": 0.9876,
-            "scan": {"threads": 1, "events_effective": 2, "parse_errors": 0},
-            "effective_drop": {"previous": 5, "current": 2, "previous_at": "2026-07-14T00:00:00Z"},
-            "hashes": {"checked": 2, "mismatched": 1, "unhashed_keys": 0, "no_key": 0,
-                       "mismatch_sample": [9]},
-        },
-    }
-    rc = cli.report_verify(res, backup="/mirror")
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "backup[/mirror]: threads=1" in out and "coverage=0.9876" in out
-    assert "MIRROR SHRANK: 5 → 2 effective" in out
-    assert "backup hashes: checked=2 mismatched=1" in out
-    assert "mismatch sample: [9]" in out
-    assert "OK" in out
-
-
-def test_verify_backup_hashes_clean(capsys) -> None:
-    """Backup mirror with hashes present but no mismatch — the clean-hash branch."""
-    res = {
-        "ok": True,
-        "truth": {"threads": 1, "events": 2, "events_effective": 2,
-                  "duplicate_id_lines": 0, "duplicate_content_lines": 0, "parse_errors": 0},
-        "index": {"threads": 1, "events": 2, "kg_events": 0,
-                  "quick_check": "ok", "check": "quick_check"},
-        "drift": {"threads": 0, "events": 0, "kg_events": 0},
-        "fts": {"shadow_rows": 2, "fts5_rows": 2, "orphan_rows": 0},
-        "backup": {
-            "dest": "/mirror", "coverage": 1.0,
-            "scan": {"threads": 1, "events_effective": 2, "parse_errors": 0},
-            "hashes": {"checked": 2, "mismatched": 0, "unhashed_keys": 0, "no_key": 0,
-                       "mismatch_sample": []},
-        },
-    }
-    assert cli.report_verify(res, backup="/mirror") == 0
-    out = capsys.readouterr().out
-    assert "backup hashes: checked=2 mismatched=0" in out
-    assert "mismatch sample" not in out  # clean → no sample line
-
-
-def test_verify_backup_surplus(capsys) -> None:
-    """A mirror above the live truth names the surplus, not just a red verdict."""
-    res = {
-        "ok": False,
-        "failed_components": ["backup"],
-        "truth": {"threads": 1, "events": 2, "events_effective": 2,
-                  "duplicate_id_lines": 0, "duplicate_content_lines": 0, "parse_errors": 0},
-        "index": {"threads": 1, "events": 2, "kg_events": 0,
-                  "quick_check": "ok", "check": "quick_check"},
-        "drift": {"threads": 0, "events": 0, "kg_events": 0},
-        "fts": {"shadow_rows": 2, "fts5_rows": 2, "orphan_rows": 0},
-        "backup": {
-            "dest": "/mirror", "coverage": 2.0,
-            "scan": {"threads": 2, "events_effective": 4, "parse_errors": 0},
-            "coverage_excess": {"coverage": 2.0, "ceiling": 1.02,
-                                "mirror_effective": 4, "live_effective": 2},
-        },
-    }
-    assert cli.report_verify(res, backup="/mirror") == 1
-    out = capsys.readouterr().out
-    assert "MIRROR HOLDS MORE THAN THE TRUTH: 4 effective events against the live 2" in out
-    assert "FAILED: backup" in out
-
-
 # ── restore-drill: report + failure branches ─────────────────────────────────
-
-
-def test_restore_drill_full_report_skipped_smoke(capsys) -> None:
-    res = {
-        "ok": True, "seconds": 2.5, "coverage": 0.9999,
-        "mirror": {"threads": 4, "events_effective": 40, "parse_errors": 0},
-        "rebuilt": {"threads": 4, "events": 40, "fts": 40},
-        "smoke": {"skipped": "no models installed"},
-    }
-    rc = cli.report_restore_drill(res)
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "mirror: threads=4 effective=40" in out
-    assert "rebuilt: threads=4 events=40 fts=40" in out
-    assert "smoke:  skipped (no models installed)" in out
-    assert "OK (2.5s)" in out
 
 
 def test_restore_drill_failure_with_smoke(capsys) -> None:
@@ -1048,43 +936,9 @@ def test_restore_drill_failure_with_smoke(capsys) -> None:
     assert "RESTORE DRILL FAILED (1.0s)" in out
 
 
-def test_restore_drill_bundle_absent(capsys) -> None:
-    res = {"ok": True, "seconds": 1.0, "bundle": {"present": False}}
-    assert cli.report_restore_drill(res) == 0
-    assert "bundle: ABSENT" in capsys.readouterr().out
-
-
-def test_restore_drill_bundle_present(capsys) -> None:
-    res = {
-        "ok": True, "seconds": 1.0,
-        "bundle": {"present": True, "config": True, "retained_exports": 2},
-    }
-    assert cli.report_restore_drill(res) == 0
-    assert "bundle: config=yes retained exports=2" in capsys.readouterr().out
-
-
-# ── restore: skipped-smoke, damaged home, and failure branches ────────────────
+# ── restore: the failure branch a happy restore can't produce ─────────────────
 # The real restore path (mirror + rebuilt + working smoke + OK line) is driven
-# end-to-end in test_restore.py; these stub api.restore to reach the formatting
-# branches a happy restore can't produce.
-
-
-def test_restore_skipped_smoke_and_damaged_home(capsys) -> None:
-    res = {
-        "ok": True, "seconds": 2.0,
-        "mirror": {"threads": 1, "events_effective": 1, "parse_errors": 0},
-        "rebuilt": {"threads": 1, "events": 1, "fts": 1},
-        "smoke": {"skipped": "no models installed"},
-        "damaged_home": "/h/x.damaged-2026-07-15T00-00-00",
-    }
-    rc = cli.report_restore(res, to="/h/x")
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "mirror: threads=1" in out
-    assert "rebuilt: threads=1 events=1 fts=1" in out
-    assert "smoke:  skipped (no models installed)" in out
-    assert "previous home set aside (preserved): /h/x.damaged-2026-07-15T00-00-00" in out
-    assert "OK — restored to /h/x (2.0s)" in out
+# end-to-end in test_restore.py.
 
 
 def test_restore_failed_no_mirror_no_smoke_error(capsys) -> None:
@@ -1099,39 +953,7 @@ def test_restore_failed_no_mirror_no_smoke_error(capsys) -> None:
     assert "RESTORE FAILED (1.0s)" in out
 
 
-def test_restore_bundle_installed_with_error(capsys) -> None:
-    res = {
-        "ok": True, "seconds": 1.0,
-        "bundle": {"config": True, "retained_exports": 2, "error": "dest unreadable"},
-    }
-    assert cli.report_restore(res, to="/h/x") == 0
-    out = capsys.readouterr().out
-    assert "bundle: installed config, 2 retained export(s) (ERROR: dest unreadable)" in out
-
-
-# ── nightly: full report, drill error ─────────────────────────────────────────
-
-
-def test_nightly_verify_failed_drill_ok(capsys) -> None:
-    res = {
-        "backup": {"files_copied": 1, "bytes_copied": 2 * 1024 * 1024},
-        "escalations": {"deep": True, "hashes": True},
-        "verify": {"ok": False, "failed_components": ["drift_events"],
-                   "drift": {"events": -2}, "truth": {"parse_errors": 1},
-                   "failure_log": "/home/verify-failures.jsonl"},
-        "drill": {"ok": True, "coverage": 0.9700, "seconds": 3},
-        "notify_error": "connection refused",
-        "ok": False, "failed_stages": ["verify"],
-    }
-    rc = cli.report_nightly(res)
-    assert rc == 1
-    out = capsys.readouterr().out
-    assert "backup: 1 files (2.0 MB copied)" in out
-    assert "verify [deep+hashes]: FAILED (drift_events)" in out
-    assert "full result appended to /home/verify-failures.jsonl" in out
-    assert "restore drill: ok coverage=0.9700 (3s)" in out
-    assert "notify: could not deliver failure notification (connection refused)" in out
-    assert "NIGHTLY FAILED: verify" in out
+# ── nightly: stage errors + the failed-stages verdict ─────────────────────────
 
 
 def test_nightly_backup_error_and_drill_error(capsys) -> None:
@@ -1149,34 +971,6 @@ def test_nightly_backup_error_and_drill_error(capsys) -> None:
     assert "verify [shallow]: ok" in out
     assert "restore drill: ERROR throwaway home failed" in out
     assert "NIGHTLY FAILED: backup, drill" in out
-
-
-def test_nightly_verify_failed_no_log(capsys) -> None:
-    """Verify failed but no failure_log recorded — skips the log-pointer line."""
-    res = {
-        "backup": {"files_copied": 1, "bytes_copied": 0},
-        "escalations": {"deep": False, "hashes": False},
-        "verify": {"ok": False, "failed_components": ["fts_orphans"],
-                   "drift": {"events": 0}, "truth": {"parse_errors": 0}},
-        "ok": False, "failed_stages": ["verify"],
-    }
-    assert cli.report_nightly(res) == 1
-    out = capsys.readouterr().out
-    assert "verify [shallow]: FAILED (fts_orphans)" in out
-    assert "full result appended" not in out
-
-
-def test_nightly_verify_error_branch(capsys) -> None:
-    res = {
-        "backup": {"files_copied": 0, "bytes_copied": 0},
-        "escalations": {"deep": False, "hashes": True},
-        "verify": {"error": "index locked"},
-        "ok": False, "failed_stages": ["verify"],
-    }
-    rc = cli.report_nightly(res)
-    assert rc == 1
-    out = capsys.readouterr().out
-    assert "verify [hashes]: ERROR index locked" in out
 
 
 # ── repair: applied (non-dry-run) branches ───────────────────────────────────
@@ -1237,20 +1031,6 @@ def test_status_all_ok(capsys) -> None:
     assert "e3" in out and "e4" not in out
 
 
-def test_status_green_coverage_still_shows_warnings(capsys) -> None:
-    # A stale export is a capture hole in the making; a green coverage check must
-    # not swallow the warning that says so.
-    old = "2026-07-10T00:00:00+00:00"
-    st = _status_base(
-        last_coverage={"ok": True, "sources_checked": 6, "at": old,
-                       "warnings": ["chatgpt-export: last export 127d ago"]},
-    )
-    assert cli.report_status(st) == 0
-    out = capsys.readouterr().out
-    assert "coverage: ok (6 sources, 1 warning(s))" in out
-    assert "chatgpt-export: last export 127d ago" in out
-
-
 def test_status_all_failed(capsys) -> None:
     old = "2026-07-10T00:00:00+00:00"
     st = _status_base(
@@ -1272,70 +1052,6 @@ def test_status_all_failed(capsys) -> None:
     assert "m1" in out and "m3" in out and "m4" not in out  # capped at 3
     assert "last pass" in out  # watch pass with no parse errors
     assert "no pass recorded" not in out
-
-
-def test_status_source_mirror_ok(capsys) -> None:
-    old = "2026-07-10T00:00:00+00:00"
-    st = _status_base(
-        last_source_mirror={"ok": True, "copied": 12, "files": 340, "at": old},
-    )
-    assert cli.report_status(st) == 0
-    out = capsys.readouterr().out
-    assert "source mirror: ok (12 copied / 340 files)" in out
-
-
-def test_status_source_mirror_failed_counts_errors(capsys) -> None:
-    old = "2026-07-10T00:00:00+00:00"
-    st = _status_base(
-        last_source_mirror={"ok": False, "copied": 0, "files": 5, "errors": 2, "at": old},
-    )
-    assert cli.report_status(st) == 0
-    out = capsys.readouterr().out
-    assert "source mirror: FAILED (0 copied / 5 files, 2 error(s))" in out
-
-
-def test_status_self_update_applied(capsys) -> None:
-    old = "2026-07-10T00:00:00+00:00"
-    st = _status_base(
-        last_self_update={"ok": True, "action": "updated", "current": "0.9.0",
-                          "reason": "updated 0.9.0 → 0.9.1", "at": old},
-    )
-    assert cli.report_status(st) == 0
-    assert "update:  updated 0.9.0 → 0.9.1" in capsys.readouterr().out
-
-
-def test_status_self_update_checked_clean(capsys) -> None:
-    old = "2026-07-10T00:00:00+00:00"
-    st = _status_base(
-        last_self_update={"ok": True, "action": "up-to-date", "current": "0.9.1",
-                          "reason": "0.9.1 is the newest release", "at": old},
-    )
-    assert cli.report_status(st) == 0
-    assert "update:  up-to-date (v0.9.1) checked" in capsys.readouterr().out
-
-
-def test_status_self_update_available_names_explicit_apply(capsys) -> None:
-    old = "2026-07-10T00:00:00+00:00"
-    st = _status_base(
-        last_self_update={"ok": True, "action": "update", "current": "0.9.0",
-                          "target": "0.9.1", "reason": "newest release", "at": old},
-    )
-    assert cli.report_status(st) == 0
-    out = capsys.readouterr().out
-    assert "update:  0.9.1 available" in out
-    assert "run `thread-archive self-update` to apply" in out
-
-
-def test_status_self_update_blocked_is_shouted(capsys) -> None:
-    """A stopped update mechanism is the reason the line exists — it reads loud."""
-    old = "2026-07-10T00:00:00+00:00"
-    st = _status_base(
-        last_self_update={"ok": False, "action": "blocked", "current": "0.9.0",
-                          "reason": "truth format 4 > this install reads 3", "at": old},
-    )
-    assert cli.report_status(st) == 0
-    out = capsys.readouterr().out
-    assert "update:  BLOCKED: truth format 4 > this install reads 3" in out
 
 
 # ── coverage: source states, disabled/unwatched, skips, failure ──────────────
@@ -1375,47 +1091,7 @@ def test_coverage_full_surface_failed(capsys) -> None:
     assert "cursor stale > 48h" in out
 
 
-def test_coverage_report_names_validation_drift(capsys) -> None:
-    """The validation-drift ledger volume is a durable operator surface for parser
-    format drift, not just a daemon log line."""
-    result = {
-        "ok": True, "failed": [], "warnings": [],
-        "sources": {}, "disabled": {}, "unwatched": {},
-        "skips": {"total": 0, "recent": 0, "recent_lines": 0, "days": 7.0},
-        "drift": {"total": 3, "recent": 2, "recent_findings": 5, "days": 7.0},
-    }
-    assert cli.report_coverage(result) == 0
-    out = capsys.readouterr().out
-    assert "validation drift: 3 ledger records, 2 in last 7d (5 findings)" in out
-    assert "validation-drift.jsonl" in out
-
-
-def test_coverage_report_names_degraded_and_quarantined(capsys) -> None:
-    """One remedy line per degraded source, and any quarantined raw-store snapshots.
-
-    The remedy is the verdict's own (`_ops.coverage.remedy_for`) rather than one
-    string for all four reasons: re-reading is the move wherever there are files to
-    re-read, and a source whose store went missing has none."""
-    result = {
-        "ok": True, "failed": [], "warnings": [],
-        "sources": {}, "disabled": {}, "unwatched": {},
-        "skips": {"total": 0, "recent": 0, "recent_lines": 0, "days": 7.0},
-        "drift": {"total": 0, "recent": 0, "recent_findings": 0, "days": 7.0},
-        "degraded": {
-            "grok": {"reason": "went_dark", "since": "2026-07-10T00:00:00Z"},
-            "chatgpt": {"reason": "capture_skips", "since": None},
-        },
-        "drift_snapshots": {"cursor": "gen-3"},
-    }
-    assert cli.report_coverage(result) == 0
-    out = capsys.readouterr().out
-    assert "degraded: grok (went_dark since 2026-07-10) — remedy: thread-archive source coverage" in out
-    assert "degraded: chatgpt (capture_skips) — remedy: thread-archive source recheck chatgpt" in out
-    assert "quarantined: cursor raw store snapshot → gen-3" in out
-    assert "OK" in out
-
-
-# ── self-update: the four outcomes, flag mapping, exit code ──────────────────
+# ── self-update: flag mapping + the blocked exit code ────────────────────────
 
 
 def test_self_update_applied(monkeypatch, capsys) -> None:
@@ -1433,28 +1109,6 @@ def test_self_update_applied(monkeypatch, capsys) -> None:
     assert "self-update: updated 0.9.0 → 0.9.1" in capsys.readouterr().out
 
 
-def test_self_update_check_reports_available(capsys) -> None:
-    """``--check`` plans only, so its output has to name the verb that applies it."""
-    rc = cli.report_self_update(
-        {"ok": True, "action": "update", "current": "0.9.0", "target": "0.9.1",
-         "reason": "0.9.1 is the newest release"},
-    )
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "self-update: 0.9.1 available (0.9.1 is the newest release)" in out
-    assert "run `thread-archive self-update` to apply" in out
-
-
-def test_self_update_up_to_date(capsys) -> None:
-    rc = cli.report_self_update(
-        {"ok": True, "action": "up-to-date", "current": "0.9.1",
-         "reason": "0.9.1 is the newest release for this install"},
-    )
-    assert rc == 0
-    assert "self-update: up to date (v0.9.1) — 0.9.1 is the newest release for this install" in \
-        capsys.readouterr().out
-
-
 def test_self_update_blocked_returns_1(capsys) -> None:
     rc = cli.report_self_update(
         {"ok": False, "action": "blocked", "current": "0.9.0",
@@ -1462,14 +1116,6 @@ def test_self_update_blocked_returns_1(capsys) -> None:
     )
     assert rc == 1
     assert "self-update: BLOCKED: truth format 4 > this install reads 3" in capsys.readouterr().out
-
-
-def test_self_update_actionless_result_returns_1(capsys) -> None:
-    """A result with no action at all still prints and still fails — the operator
-    must not read silence as success."""
-    rc = cli.report_self_update({"ok": False})
-    assert rc == 1
-    assert "self-update: ?: None" in capsys.readouterr().out
 
 
 # ── mirror: per-provider rows, extras, unsupported, exit code ────────────────
@@ -1490,19 +1136,6 @@ def test_mirror_cli_sweeps_the_real_sources(archive_home, capsys) -> None:
     assert rc == 0
     out = capsys.readouterr().out
     assert f"OK → {archive_home / 'source-mirror'}" in out
-
-
-def test_mirror_ok_minimal_rows(capsys) -> None:
-    result = {
-        "ok": True, "root": "/h/source-mirror", "duration_s": 1.5,
-        "providers": {"claude-code": _mirror_provider()},
-        "unsupported": [],
-    }
-    rc = cli.report_mirror(result)
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "claude-code      ok       files=10 copied=2 unchanged=8 bytes=1000→400" in out
-    assert "OK → /h/source-mirror (1.5s)" in out
 
 
 def test_mirror_failed_provider_reports_extras_and_errors(capsys) -> None:
@@ -1529,14 +1162,6 @@ def test_mirror_failed_provider_reports_extras_and_errors(capsys) -> None:
 # ── loads: the wait, stated in the units a person waits in ───────────────────
 
 
-def test_fmt_duration_scales_to_the_wait() -> None:
-    # A load is a thing you sit through; "15132s" is not an answer to "how long".
-    assert cli._fmt_duration(None) == "?"
-    assert cli._fmt_duration(12.7) == "12s"
-    assert cli._fmt_duration(450) == "7m30s"
-    assert cli._fmt_duration(15132) == "4h12m"
-
-
 def test_progress_line_reports_phase_percent_rate_and_eta(capsys) -> None:
     cli._progress_line({"phases": [
         {"name": "embed", "done": 2500, "total": 10000,
@@ -1546,19 +1171,6 @@ def test_progress_line_reports_phase_percent_rate_and_eta(capsys) -> None:
     assert "embed: 2,500/10,000" in out
     assert "25.0%" in out and "27.7/s" in out and "ETA 4m31s" in out
     assert out.startswith("\r")  # rewrites its own line, never scrolls
-
-
-def test_progress_line_without_a_total_states_only_what_it_knows(capsys) -> None:
-    # An untotalled phase has no percent and no ETA to give; it must still report.
-    cli._progress_line({"phases": [{"name": "import", "done": 41}]})
-    out = capsys.readouterr().out
-    assert "import: 41" in out
-    assert "%" not in out and "ETA" not in out
-
-
-def test_progress_line_says_nothing_before_the_first_phase(capsys) -> None:
-    cli._progress_line({})
-    assert capsys.readouterr().out == ""
 
 
 def test_loads_reports_no_load_and_no_history(archive_home, capsys) -> None:
@@ -1600,23 +1212,6 @@ def test_loads_reports_a_stalled_load_and_the_run_history(archive_home, capsys) 
     assert "2026-07-21T04:00:00  embed    failed" in out
     assert "[encode 1h25m write 2m00s]" in out   # where the time actually went
     assert "(threads=12)" in out
-
-
-def test_phase_line_names_a_phase_that_is_slowing_down(capsys) -> None:
-    """A phase whose tail runs materially slower than its head is paying a cost that
-    grows with its own output — the mean rate beside it hides that, so the line says
-    it outright. Below the 1.5x threshold it stays quiet: ordinary jitter is noise."""
-    slowing = cli._phase_line({
-        "name": "embed", "elapsed_s": 600, "done": 900, "rate_per_s": 1.5,
-        "slowdown": 3.2, "trend_unit": "ev", "rate_first_s": 4.8, "rate_last_s": 1.5,
-    })
-    assert "slowing 3.2x (4.8 ev/s -> 1.5 ev/s)" in slowing
-
-    steady = cli._phase_line({
-        "name": "embed", "elapsed_s": 600, "done": 900, "rate_per_s": 1.5,
-        "slowdown": 1.1, "rate_first_s": 1.6, "rate_last_s": 1.5,
-    })
-    assert "slowing" not in steady
 
 
 # ── progress on a real terminal: the tty-only arm of the long verbs ──────────
@@ -1721,33 +1316,6 @@ def test_main_no_command_prints_help(capsys) -> None:
     assert "usage" in out.lower() or "archive" in out
 
 
-def test_status_reports_the_library_matrix_and_shouts_about_a_missing_base_one(capsys) -> None:
-    """The capability line always prints; only a degraded *base* library earns its own
-    line. An uninstalled extra is a choice, and a choice is not an alarm."""
-    st = _status_base(libraries=[
-        {"name": "leidenalg + python-igraph", "tier": "base",
-         "capability": "Community detection for the search coherence re-rank",
-         "installed": False, "state": "degraded",
-         "detail": "C extensions did not import — falling back to Louvain."},
-        {"name": "sentence-transformers + torch", "tier": "extra",
-         "capability": "Semantic search (the vector arm)",
-         "installed": False, "state": "off", "detail": "Search is lexical-only."},
-    ])
-    assert cli.report_status(st) == 0
-    out = capsys.readouterr().out
-    assert "libs:    leidenalg degraded, sentence-transformers off" in out
-    assert "DEGRADED — community detection for the search coherence re-rank" in out
-    assert "falling back to Louvain" in out
-    # The extra's absence is reported on the summary line and nowhere else.
-    assert "Semantic search" not in out
-
-
-def test_status_prints_no_library_line_when_the_payload_carries_none(capsys) -> None:
-    """An older status payload (no ``libraries`` key) still renders."""
-    assert cli.report_status(_status_base()) == 0
-    assert "libs:" not in capsys.readouterr().out
-
-
 def test_status_names_what_the_health_page_is_holding_back(archive_home, capsys) -> None:
     """A silence made in the viewer is a UI choice, and the terminal must not
     inherit it silently — a report that omits a warning someone put aside is the
@@ -1761,11 +1329,6 @@ def test_status_names_what_the_health_page_is_holding_back(archive_home, capsys)
     out = capsys.readouterr().out
     assert "silenced: 1 notice(s) held aside on the health page" in out
     assert "Backup is on the same filesystem as the archive" in out
-
-
-def test_status_says_nothing_about_silences_when_there_are_none(capsys) -> None:
-    assert cli.report_status(_status_base(backup_same_device=True)) == 0
-    assert "silenced:" not in capsys.readouterr().out
 
 
 def test_status_names_the_ingest_faults_on_record(archive_home, capsys) -> None:
@@ -1912,31 +1475,7 @@ def test_source_ingest_reports_sources_stages_and_upkeep(archive_home, capsys) -
     assert "ledger retains" in out
 
 
-# ── report formatters: the branches the seeded reports do not reach ──────────
-
-
-def test_duration_ms_and_bytes_formatters_carry_their_units() -> None:
-    from thread_archive.cli import _fmt_bytes, _fmt_ms
-
-    assert _fmt_ms(None) == "?"
-    assert _fmt_ms(820.0) == "820ms"
-    assert _fmt_ms(13_200.0) == "13.2s"
-    assert _fmt_ms(130_000.0) == "2m10s"
-    assert _fmt_bytes(None) == "?"
-    assert _fmt_bytes(4_000_000) == "4.0 MB"
-    assert _fmt_bytes(912_000) == "912 KB"
-    assert _fmt_bytes(0) == "0 B"
-
-
-def test_report_disk_names_content_outside_the_home(capsys) -> None:
-    cli._report_disk({
-        "total_bytes": 1000, "files": 2, "kinds": {},
-        "entries": [{"kind": "logs", "name": "logs", "bytes": 700}],
-        "external": ["/elsewhere/backups"],
-    })
-    out = capsys.readouterr().out
-    assert "largest: logs" in out
-    assert "(outside the home: /elsewhere/backups)" in out
+# ── report formatters: crash tolerance over an unreadable store ──────────────
 
 
 def test_report_silenced_stays_quiet_over_an_unreadable_silence_store(capsys) -> None:

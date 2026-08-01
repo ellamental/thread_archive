@@ -13,7 +13,7 @@ number off them means anything.
 
 Corpora shaped like agent sessions — Claude Code / Codex / Cursor transcripts —
 are the domain match, and they carry no labels. Producing labels for them locally
-is not on the table: see `docs/search-quality.md` → "Why your own archive has no
+is not on the table: see `docs/public/search-quality.md` → "Why your own archive has no
 score" for why every scheme for doing so either grades the ranker with itself or
 asks questions nobody asked.
 
@@ -98,8 +98,8 @@ floor of several points and never read a small delta on it.
 
 ### Free — `beir_eval.py` already supports these
 
-[beir_eval.py](../../search_lab/beir_eval.py) carries published BM25 and dense
-references for 12 BEIR datasets; four are on the bench. Adding another is a
+[beir_eval.py](../search_lab/beir_eval.py) carries published BM25 and dense
+references for 12 BEIR datasets; two are on the bench (four rows). Adding another is a
 `--dataset` value and CPU time.
 
 | dataset | docs | embed | why it would be informative |
@@ -124,7 +124,7 @@ a scifact artifact.
 ### One loader away
 
 Each of these needs a `*_groups()` generator in the shape of the loaders in
-[haystack_eval.py](../../search_lab/haystack_eval.py) plus a dispatch branch, or a
+[haystack_eval.py](../search_lab/haystack_eval.py) plus a dispatch branch, or a
 HuggingFace fetch branch beside `beir_eval.py`'s UKP zip fetcher.
 
 | benchmark | shape | labels | scoring | domain distance | note |

@@ -27,6 +27,17 @@ from .rank import (
 # pool that reaches it was truncated and the tally renders as a floor ("N+").
 COUNT_FETCH_CAP = 1000
 
+# Per-line cap on rendered snippets and context windows. The ±N-line context
+# window is bounded in *lines*, not characters — a chat message with no newline
+# is one "line", so an uncapped render hands an agent the whole message per hit,
+# and ten hits over long prose is >100 KB of context. The full text is one
+# thread_read away; the render is a preview, and says so with an ellipsis.
+SNIPPET_LINE_CHARS = 400
+
+
+def _clip(line: str, cap: int = SNIPPET_LINE_CHARS) -> str:
+    return line if len(line) <= cap else line[: cap - 2].rstrip() + " …"
+
 
 def subjects_line(hits: list[EventHit]) -> str | None:
     """The ``subjects:`` orientation header over a result set, or None — the
@@ -255,22 +266,15 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
     if verdict:
         header += f" · quality={verdict[0]}"
 
-    # Shared prelude: what the caller must read before trusting any shape.
-    prelude = [header]
-    if verdict and verdict[1]:
-        prelude.append(f"  note: {verdict[1]}")
     subj_line = subjects_line(hits)
-    if subj_line:  # the topic graph as orientation: what subjects these hits cluster under
-        prelude.append(subj_line)
-
-    lines = [prelude[0]]
+    lines = [header]
     if verdict and verdict[1]:
         lines.append(f"  note: {verdict[1]}")
     # Guesses came back where an answer was asked for: the same moment a no-result
     # gets its alternatives, and the same reason.
     if verdict and verdict[0] == "weak":
         lines.extend(_next_moves(query))
-    if subj_line:
+    if subj_line:  # the topic graph as orientation: what subjects these hits cluster under
         lines.append(subj_line)
     lines.append("  open a hit: thread_read(thread_id, around_event=event_id)")
     if subj_line:
@@ -286,15 +290,22 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
             head += f" · {k}/{n_terms}"
             if k == 0:
                 head += " (semantic)"
+        # Date + provider close each head: "the most recent mention" is answered
+        # by reading dates off the hits, so the hits must carry them.
+        ts = h.get("occurred_at")
+        when = ts.strftime("%Y-%m-%d") if isinstance(ts, datetime) else str(ts or "")[:10]
+        tail = [p for p in (h.get("thread_source"), when) if p]
+        if tail:
+            head += " · " + " · ".join(tail)
         lines.append(head)
 
         context = h.get("context")
         if context:  # context_lines: a numbered multi-line block replaces the snippet
-            lines.extend(f"    {ln}" for ln in context.split("\n"))
+            lines.extend(f"    {_clip(ln)}" for ln in context.split("\n"))
         else:
             snippet = " ".join((h.get("snippet") or "").split())
             if snippet:
-                lines.append(f"    {snippet}")
+                lines.append(f"    {_clip(snippet)}")
 
         ctx_events = h.get("context_events") or {}
         for direction in ("before", "after"):

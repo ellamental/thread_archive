@@ -131,13 +131,13 @@ def test_plugin_block_policy_hides_renders_and_defers(demo_provider) -> None:
 
 def test_plugin_session_id_separator_resolves_a_bare_session_id(demo_provider) -> None:
     """A plugin composing ``{prefix}|{session}`` is resolvable by the bare session id."""
-    from thread_archive._store.resolve import resolve_session_source_id
+    from thread_archive._providers import resolve_session_ref
 
     tid = _seed([("user_message_sent", {"content": "hi"})], source_id="workspace|sess-9")
     with use_session() as s:
-        assert resolve_session_source_id(s, "sess-9", source="demo") == tid
-        assert resolve_session_source_id(s, "sess-9") == tid
-        assert resolve_session_source_id(s, "workspace|sess-9") == tid
+        assert resolve_session_ref(s, "sess-9", source="demo") == tid
+        assert resolve_session_ref(s, "sess-9") == tid
+        assert resolve_session_ref(s, "workspace|sess-9") == tid
 
 
 def test_a_plugin_declaring_no_policy_renders_as_stored(archive_home) -> None:

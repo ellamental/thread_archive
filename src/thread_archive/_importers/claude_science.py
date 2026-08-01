@@ -278,7 +278,11 @@ def _run_frame(
     model = frame.get("model")
     lines: list[dict] = []
     annotations_by_uuid: dict[str, dict] = {}
-    for row in message_rows:
+    # The watermark counts *raw* store rows, so the slice must too: filtering
+    # first and slicing the filtered list with a raw offset would skip one
+    # importable message for every filtered row behind it — permanently, since
+    # the watermark still advances to the raw total.
+    for row in message_rows[start:]:
         idx, raw = row[0], row[1]
         try:
             msg = json.loads(raw)
@@ -321,9 +325,8 @@ def _run_frame(
         )
         is_new_thread = True
 
-    new_lines = lines[start:]
     events_created, last_uuid = _import_science_lines(
-        session, thread_id, new_lines, annotations_by_uuid, parser, builder,
+        session, thread_id, lines, annotations_by_uuid, parser, builder,
         source_id=source_id,
     )
 

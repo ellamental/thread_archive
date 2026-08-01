@@ -1,7 +1,7 @@
 """The retrieval tools — ``thread_search`` and ``thread_read``, one implementation
 behind both front doors.
 
-Retrieval is served two ways: as MCP tools (:mod:`.._mcp.server`, what an agent
+Retrieval is served two ways: as MCP tools (:mod:`._mcp.server`, what an agent
 calls mid-conversation) and as the ``thread-archive search`` / ``thread_archive
 read`` CLI verbs (what a person types at a terminal). Both call the functions
 here, so there is one contract rather than two that drift: the same default
@@ -10,7 +10,7 @@ text, and one usage-ledger record per call.
 
 These signatures *are* the MCP tool schema — FastMCP builds it from the
 annotations — so a parameter added here reaches both surfaces, and the CLI's
-flags mirror it one for one (:func:`..cli.cmd_search`, :func:`..cli.cmd_read`).
+flags mirror it one for one (:func:`.cli.cmd_search`, :func:`.cli.cmd_read`).
 
 What an agent *reads* is tiered, because a tool description is paid for out of
 every session's context whether or not the tool is ever called. The compact
@@ -45,59 +45,18 @@ from ._retrieval import (
 )
 from ._retrieval import usage as _usage
 
-# Which front door a call is being served through. It rides the usage ledger so an
-# operator's own terminal searches can be told apart from an agent's — different
-# query populations, and the evals built off this ledger sample from it. It is also
-# the only thing that distinguishes the *cache states* the front doors run in: the
-# shared HTTP server warms its models at startup and serves thousands of calls from
-# one resident copy, while a per-client stdio server and a one-shot CLI process load
-# nothing ahead of time and pay that load inside their first search. Latency from
-# those three, pooled, is a distribution nobody experienced.
-#
-# The vocabulary belongs to the ledger that carries the field (see
-# :data:`.._retrieval.usage.UNATTRIBUTED`); this module is the one that stamps it.
+# Which front door a call is being served through, re-exported from the ledger that
+# carries the field. Both the vocabulary and the ambient value live beside the
+# ``surface`` column (:mod:`.._retrieval.usage`), because the retrieval package
+# writes rows of its own — the background warm pass — and must be able to name a
+# door without importing this module. The front doors themselves declare through
+# these names: the MCP server and the web app call :func:`set_default_surface` once
+# at startup, the CLI wraps each verb in :func:`serving`.
 UNATTRIBUTED = _usage.UNATTRIBUTED
-
-# The process's own answer, for a server that is one front door for its whole life;
-# the ContextVar overrides it per call for a process that is several (the CLI, whose
-# verbs wrap their one call). A module global rather than a ContextVar default so a
-# background thread — the warm pass, which records its own row — sees it too.
-_DEFAULT_SURFACE = UNATTRIBUTED
-_SURFACE: ContextVar[Optional[str]] = ContextVar("thread_archive_surface", default=None)
-
-
-def set_default_surface(surface: str) -> None:
-    """Declare what this process is, for every call it serves. Called once at
-    startup by a server that is a single front door."""
-    global _DEFAULT_SURFACE
-    _DEFAULT_SURFACE = surface
-
-
-@contextmanager
-def serving(surface: str) -> Iterator[None]:
-    """Name the front door the retrieval calls inside this block are served
-    through, overriding the process default for their duration."""
-    token = _SURFACE.set(surface)
-    try:
-        yield
-    finally:
-        _SURFACE.reset(token)
-
-
-def current_surface() -> str:
-    """The front door this call is being served through — the innermost
-    :func:`serving` block, else what the process declared, else
-    :data:`UNATTRIBUTED`."""
-    return _SURFACE.get() or _DEFAULT_SURFACE
-
-
-def _served_by() -> Optional[str]:
-    """The front door for the usage ledger — None when nothing has claimed the
-    call, which is what every row written before any surface declared itself
-    means, and is why readers must treat an absent value as *unattributed* rather
-    than as any particular door (None params are dropped)."""
-    surface = current_surface()
-    return None if surface == UNATTRIBUTED else surface
+set_default_surface = _usage.set_default_surface
+serving = _usage.serving
+current_surface = _usage.current_surface
+_served_by = _usage.served_by
 
 
 # What the tool itself measured on this call, for a surface that wraps it and
@@ -160,9 +119,10 @@ def _resolve_ref(ref: int | str) -> Optional[str]:
 #
 # Nothing is excluded at query time. What a search must not answer from is kept
 # out of the index instead: what a tool handed *back* (see
-# :data:`._retrieval._extract.UNINDEXED_CONTENT_TYPES`, the one exclusion that
-# measured better rather than merely cheaper), and stored thread summaries, which
-# are derived text a curation tool wrote over the archive rather than the record.
+# :data:`._retrieval._extract.UNINDEXED_CONTENT_TYPES` — a ranking decision as much
+# as a cost one, since the ranker's density term is IDF-blind and cannot discount a
+# grep dump itself), and stored thread summaries, which are derived text a curation
+# tool wrote over the archive rather than the record.
 #
 # The scope itself lives in the retrieval layer, which shares it with the warm pass.
 DEFAULT_SEARCH_CONTENT_TYPES = DEFAULT_CONTENT_TYPES
@@ -315,7 +275,8 @@ synonyms. Open a hit with `thread_read(thread_id, around_event=<event_id>)`.
 
 Filters: `thread_id` (a ULID, a legacy integer id, or a provider session id), \
 `content_type` (user/text/thinking/tool/title; default: everything indexed), \
-`source` ('claude-code,cursor'), `since`/`until` ('7d' or an ISO timestamp), \
+`source` ('claude-code,cursor'), `since`/`until` ('2h'/'7d'/'2w' or an ISO \
+timestamp), \
 `tool_name`, `types`, `agents` ('include'/'only' — agent-run subagent threads are \
 excluded by default), `sort='oldest'`, `match='substring'` (uncapped infix scan: \
 finds p4 inside mp4), `output` ('count'/'linkable'), `exclude_content_type`, \
@@ -393,7 +354,8 @@ def thread_search(
     ``exclude_content_type`` (comma-separated types to drop), ``tool_name``,
     ``source`` (comma-separated providers, e.g. 'claude-code,cursor'),
     ``types`` (comma-separated ``thread_type`` values — 'conversation',
-    'system'), and a ``since``/``until`` window (ISO timestamp or '7d').
+    'system'), and a ``since``/``until`` window (an ISO timestamp, or a relative
+    age: '2h', '7d', '2w').
 
     Agent-run threads — subagent / machinery sessions (🤖-titled) — are
     **excluded by default**: a swarm echoes its spawning prompt verbatim, and
@@ -491,7 +453,9 @@ def thread_search(
     search described above: it matches whole words, so ``p4`` finds ``p4`` and not
     ``mp4``. ``'substring'`` matches raw text anywhere inside a word — ``p4`` then
     also finds ``mp4``, ``p400``, ``gcp4`` — which no index can do, so it pays a
-    full-table scan (seconds on a large archive) and runs no fallback tiers. Reach
+    full-table scan (seconds on a large archive) and runs no fallback tiers.
+    ``OR`` and ``|`` separate alternative substrings (``"foo=" OR "foo axis"``
+    matches rows containing either literal). Reach
     for it when enumerating every occurrence of an identifier, a fragment, or a
     string that lives inside longer words; leave it alone otherwise.
     """
@@ -501,9 +465,12 @@ def thread_search(
     # exactly this reason; context_lines is a per-hit window, bounded likewise.
     limit = max(1, min(int(limit), 500))
     context_lines = max(0, min(int(context_lines), 50))
-    # The pool is sized from page*limit, so an unbounded page is an unbounded
-    # scan by another name. 200 pages of the 500-row max is far past any real
-    # enumeration and still a bounded worst case.
+    # Every page is a slice of ONE pool, sized independently of ``page``
+    # (max(limit*5, 200) rows — see :func:`.._retrieval.search`), so a large page
+    # number costs nothing: it slices past the end and says so. 200 is the deepest
+    # page any limit can reach — at limit=1 the 200-row pool floor is exactly 200
+    # pages, and every larger limit reaches fewer — so the bound cuts off nothing
+    # a walk could have returned.
     page = max(1, min(int(page), 200))
     if match is not None and match not in ("token", "substring"):
         return ("match must be 'token' (indexed, default) or 'substring' "
@@ -630,7 +597,7 @@ def thread_search(
                 "exclude_content_type": exclude_content_type, "since": since,
                 "until": until, "tool_name": tool_name, "source": source,
                 "types": types, "agents": agents, "path": path,
-                "path_ops": path_ops, "commit": commit, "pr": pr,
+                "path_ops": path_ops, "commit": commit, "pr": pr, "repo": repo,
                 "startswith": startswith, "sort": sort,
                 "output": output, "match": match, "page": page,
                 "surface": _served_by(),

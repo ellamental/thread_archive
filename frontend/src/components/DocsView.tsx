@@ -11,10 +11,23 @@ import { Markdown } from './Markdown'
 // address as the thing.
 
 // Where a link that leaves the manual goes. The docs cross-link a few files
-// outside docs/ (../SECURITY.md, ../search_lab/*.py); those exist in the repo,
-// not in this server's manual, so they resolve upstream rather than 404 into
-// the SPA shell. Same repo the package metadata points at.
+// outside docs/public/ (../../SECURITY.md, ../devweb.md); those exist in the
+// repo, not in this server's manual, so they resolve upstream rather than 404
+// into the SPA shell. Same repo the package metadata points at.
 const REPO_BLOB = 'https://github.com/ellamental/thread_archive/blob/main/'
+
+/** Where the manual sits in the repo — what a page's relative links resolve against. */
+const DOCS_ROOT = 'docs/public'
+
+/** A page-relative path as a repo path: `../devweb.md` → `docs/devweb.md`. */
+function repoPath(path: string): string {
+  const out: string[] = []
+  for (const segment of `${DOCS_ROOT}/${path}`.split('/')) {
+    if (segment === '..') out.pop()
+    else if (segment && segment !== '.') out.push(segment)
+  }
+  return out.join('/')
+}
 
 /** The visible text under a node — what a heading's anchor id is built from. */
 function textOf(node: ReactNode): string {
@@ -44,8 +57,9 @@ export function headingId(text: string): string {
  * `stability.md` and `stability.md#anchor` are how the docs address each other,
  * and here those are routes — internal, so a click stays in the app and keeps
  * the rail. A bare `#anchor` stays a same-page jump. Everything else leaves:
- * absolute URLs as written, and any other relative path (`../SECURITY.md`) to
- * the repo, since this server serves the manual and not the tree around it.
+ * absolute URLs as written, and any other relative path (`../../SECURITY.md`)
+ * to the repo, resolved from where the manual sits in it, since this server
+ * serves the manual and not the tree around it.
  */
 export function resolveDocHref(href: string, slugs: Set<string>): { to: string; external: boolean } {
   if (href.startsWith('#')) return { to: href, external: false }
@@ -53,7 +67,7 @@ export function resolveDocHref(href: string, slugs: Set<string>): { to: string; 
   const [path, hash] = href.split('#')
   const slug = path.replace(/\.md$/, '')
   if (slugs.has(slug)) return { to: `/docs/${slug}` + (hash ? '#' + hash : ''), external: false }
-  return { to: REPO_BLOB + (path.startsWith('../') ? path.slice(3) : 'docs/' + path), external: true }
+  return { to: REPO_BLOB + repoPath(path), external: true }
 }
 
 /** The renderers a manual page needs on top of the shared markdown defaults. */

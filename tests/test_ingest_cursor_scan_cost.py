@@ -20,6 +20,7 @@ import time
 from sqlalchemy import select
 
 from thread_archive._importers import import_cursor_db
+from thread_archive._importers._state import WATERMARK_SLACK_MS
 from thread_archive._importers.cursor import _cursor_stale_composers, _prefix_range
 from thread_archive._store import Event, get_session, init_db
 
@@ -74,11 +75,15 @@ def _event_count() -> int:
 
 
 def test_unchanged_composer_is_not_read_off_disk(archive_home, caplog) -> None:
-    """The scan that finds nothing to do must not touch a single message body."""
+    """The scan that finds nothing to do must not touch a single message body.
+
+    The composer's last write predates the import stamp by more than the race
+    slack — a genuinely settled conversation. A write landing *near* the stamp
+    is deliberately re-read instead (see ``store_write_settled``)."""
     init_db()
     db = archive_home / "state.vscdb"
     cid = "comp_idle"
-    _write_db(db, cid, _composer())
+    _write_db(db, cid, _composer(updated_at=_UPDATED_AT - WATERMARK_SLACK_MS - 60_000))
 
     assert import_cursor_db(db).events_created > 0
     imported = _event_count()

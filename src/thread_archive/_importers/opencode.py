@@ -47,7 +47,7 @@ from ._state import (
     create_thread,
     get_import_state,
     get_thread_by_source,
-    last_import_epoch_ms,
+    store_write_settled,
     upsert_import_state,
 )
 
@@ -213,10 +213,7 @@ def _run_opencode(session, session_id, session_data, messages, parts_by_message)
 
 
 def _opencode_session_unchanged(import_state: Optional[ImportState], session_data: dict[str, Any]) -> bool:
-    if not (import_state and import_state.last_import_at):
-        return False
-    time_updated_ms = session_data.get("time_updated") or 0
-    return time_updated_ms <= last_import_epoch_ms(import_state)
+    return store_write_settled(import_state, session_data.get("time_updated") or 0)
 
 
 def _opencode_resolve_thread(session, import_state, session_id, source_id, session_data) -> tuple[str, bool]:

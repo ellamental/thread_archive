@@ -103,8 +103,8 @@ WEB_INTERACTIVE_LIMIT = 40
 
 #: Present on every row the probe touched, so its absence — and only its absence —
 #: means a search this page cannot classify at all. Chosen because
-#: :meth:`.._probe.SearchProbe.as_record` emits it unconditionally while the cold
-#: flags ride along only when they fired.
+#: :meth:`thread_archive._retrieval._probe.SearchProbe.as_record` emits it
+#: unconditionally while the cold flags ride along only when they fired.
 REGIME_EVIDENCE = "pool_size"
 
 #: Stages worth charting, in pipeline order. The two arms run concurrently, so
@@ -321,9 +321,9 @@ def _regime(rec: dict) -> str:
 
 def _surface(rec: dict) -> str:
     """Which front door served one call. An absent field is reported as
-    :data:`UNATTRIBUTED` rather than resolved to a door: it is what every row
-    written before the surfaces declared themselves looks like, and naming one
-    would invent an attribution the ledger does not carry."""
+    :data:`UNATTRIBUTED` rather than resolved to a door: any door that fails to
+    stamp itself lands there too, so naming one would invent an attribution the
+    ledger does not carry."""
     return rec.get("surface") or UNATTRIBUTED
 
 

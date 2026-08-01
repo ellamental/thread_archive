@@ -11,7 +11,7 @@ written to be handed to one.
 
 ## Ground rules
 
-- **Work only inside this directory.** The one exception: running `archive`
+- **Work only inside this directory.** The one exception: running `thread-archive`
   commands named in this protocol. Never edit the thread-archive source tree —
   an edited core is lost the moment the install is updated, and it blocks a
   clone's own update; an override plugin here survives both.

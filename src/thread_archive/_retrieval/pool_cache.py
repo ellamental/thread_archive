@@ -5,8 +5,9 @@ embed, the vector matvec, RRF fusion, dedup) depends on the query, the structura
 filters, and the two pool-shaping knobs — ``pool_floor`` and ``rrf_k``. The
 **ranking** half (:func:`.rank.rank_search_results` and everything after it)
 depends on the weights. Tuning weights therefore re-pays the pool half on every
-configuration for a pool it already computed: measured over the findability gold
-file, that is ~90% of the wall-clock of a scoring run.
+configuration for a pool it already computed — and that half is nearly all of a
+scoring run's wall-clock, since ranking a pool is microseconds of arithmetic
+against an FTS scan, a query embed, and a matvec over the whole vector pack.
 
 This module is the seam that stops paying it. The contract mirrors
 :mod:`._probe`: a caller installs a cache for the duration of a block

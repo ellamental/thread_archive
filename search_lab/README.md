@@ -53,7 +53,7 @@ none is ever cited as evidence a change helped.
 ## The quality ladder
 
 Fastest tier first — climb until the evidence matches the stakes.
-(`docs/search-quality.md` tells the same story with the measured numbers.)
+(`docs/public/search-quality.md` tells the same story with the measured numbers.)
 
 (`python -m search_lab benchmark` runs tier 4 for you, skipping what a run has
 already measured at this configuration — see "Running the whole bench".)
@@ -63,7 +63,6 @@ already measured at this configuration — see "Running the whole bench".)
 | 0 | `tests/test_search_quality.py` + `tests/test_search_recall_shape.py` + `tests/test_reality_mechanisms.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding model | minutes | touching the model arm |
 | 2 | CI arm-liveness probes (`retrieval_eval.py --probes-only`) | live archive | ~a minute (it loads both models) | every commit, on the maintainer's local CI |
-| 2 | CI latency gate (`latency_smoke.py`) | live archive, the slowest recorded calls | ~a minute | every commit, on the maintainer's local CI |
 | 3 | `latency_replay.py` (speed over real traffic), `--behavior` | the live archive | minutes | evaluating a deliberate ranking change |
 | 4 | `python -m search_lab benchmark --quick`; `pytest -m beir` | seven external IR / conversational-memory benchmarks, sampled where a row is too large to score whole | under 20 min once the corpora are built | detecting damage on published labels — what a release is gated on |
 | 4 | `python -m search_lab benchmark` | the same seven, every judged query | about an hour, most of it PerLTQA; about a day of CPU to build the corpora the first time | the quality claim — calibrating against published baselines |
@@ -88,7 +87,7 @@ ledger), `dataset_pins.py` (what each corpus *is*, as a content hash — see "Th
 corpora are pinned"), `retrieval_report.py` (the latency series off the ledgers,
 `python search_lab/retrieval_report.py`), and `inventory.py` (what is on this box
 — which rows can run and which corpora are built; `python search_lab/inventory.py`,
-and the viewer's `/lab` dev page). The harnesses reach them by bare sibling import
+and devweb's `/lab` panel). The harnesses reach them by bare sibling import
 and the tests by `search_lab.*` — the dependency runs lab → package and never
 leaves a checkout.
 
@@ -229,18 +228,11 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   be — and read the gap as a fact about conditions, not about the code. Runs against
   the live archive, not a snapshot; `--baseline` sets the reference, and the
   timeseries is tagged `query_set=observed` so it never averages with rows from
-  another population.
-- **`latency_smoke.py`** — the same measurement as a *gate*, run unattended by the
-  CI sweeper on every commit (`latency-gate` in `ci.toml`). Replays the slowest
-  recorded calls against a baseline of its own (`query_set=smoke`), reds when they
-  got materially slower, and confirms a breach with a second pass before failing —
-  it shares a machine with everything else the sweep is doing, so one bad window is
-  the likeliest reading of one bad number. Loose on purpose (2× on those queries'
-  own recorded timings): it is here to catch the order-of-magnitude regression that
-  no other row can see, not to police drift. Seeds its own baseline on first run;
-  `--seed` re-establishes it when the archive has genuinely grown into a slower
-  shape. `latency_replay.py` remains the instrument you point at a change —
-  this is the tripwire that notices when nobody did.
+  another population. Speed is deliberately not a CI gate: a gate would run
+  against the live, growing archive, so its verdict is not repeatable — growth and
+  a code slowdown look identical to it. The usage telemetry
+  (`retrieval-usage.jsonl`, read by `retrieval_report.py`) is the standing warning
+  system; this is the instrument you point at a deliberate change.
 - **`beir_eval.py`** / **`cdr_eval.py`** / **`mtrag_eval.py`** /
   **`haystack_eval.py`** / **`perltqa_eval.py`** — the external
   yardsticks: the real pipeline over public benchmarks, beside their published

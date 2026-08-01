@@ -53,19 +53,18 @@ renders one page, served as markdown by `/api/docs` and rendered in the browser
 by the renderer transcripts already use — so the documentation is at the same
 address as the thing it documents. The pages come from
 `thread_archive._docs`, the same resolver behind `thread-archive docs`, which
-reads the packaged copy where there is one and this checkout's `docs/` where
-there isn't: editing a page here lands on the next request with nothing to
-rebuild. `docs/internal/` is not served — the maintainer's pages are one
-directory deeper, which is the whole public/internal split. Links between pages
-are routes; a link out of the manual (`internal/devweb.md`, `../SECURITY.md`)
-leaves for the repository, since this server serves the manual and not the tree
-around it.
+reads the packaged copy where there is one and this checkout's `docs/public/`
+where there isn't: editing a page here lands on the next request with nothing to
+rebuild. `docs/*.md` is not served — the maintainer's pages are one directory
+up, which is the whole public/internal split. Links between pages are routes; a
+link out of the manual (`../devweb.md`, `../../SECURITY.md`) leaves for the
+repository, since this server serves the manual and not the tree around it.
 
 **The maintainer's instruments are not here.** `/retrieval` (how search is
 performing), `/telemetry` (the operational ledgers read together) and `/lab`
 (what the bench has to measure with) are a separate app on a separate server —
 `devweb/`, run with `python -m devweb`, on `127.0.0.1:8789`. See
-[internal/devweb.md](internal/devweb.md). This server routes none of them and serves none of their
+[../devweb.md](../devweb.md). This server routes none of them and serves none of their
 endpoints: `/api/retrieval`, `/api/telemetry` and `/api/search-lab*` answer `404`
 here, and their page addresses fall through to a shell whose app has no route for
 them.
@@ -112,7 +111,8 @@ cd frontend && npm install && npm run build   # → ../src/thread_archive/_web/s
 
 **Archive-links.** With that persistent server, the archive owns the editor
 "open this conversation" link itself: `GET /api/archive-link?id=<session-uuid>&source=claude-code`
-resolves the session to its thread via `ImportState` and returns `{thread_id, url}`,
+resolves the session to its thread via `ImportState` and returns `{thread_id, url, id}`
+(the `id` echoing which candidate resolved),
 or `&redirect=1` → a `302` to `/archive/<id>`. (Local — no separate backend
 involved.) `id` may repeat — a caller that cannot tell which uuid it holds is the
 session id sends every candidate, best guess first, and the first that resolves

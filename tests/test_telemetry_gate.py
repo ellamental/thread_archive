@@ -31,7 +31,6 @@ from thread_archive._config import save_config
 from thread_archive._ops import ingest_errors, load_runs, telemetry
 from thread_archive._retrieval import usage
 from thread_archive._watcher import ingest_log
-from thread_archive._web import metrics
 
 SWITCHES = ("THREAD_ARCHIVE_USAGE_LOG", "THREAD_ARCHIVE_WEB_METRICS",
             "THREAD_ARCHIVE_INGEST_LOG", "THREAD_ARCHIVE_LOAD_LOG")
@@ -57,14 +56,12 @@ def test_a_plain_install_records_nothing(archive_home) -> None:
     """No config at all — the state every install starts in."""
     assert telemetry.recording("THREAD_ARCHIVE_USAGE_LOG") is False
     assert usage.enabled() is False
-    assert metrics.enabled() is False
     assert ingest_log.enabled(archive_home) is False
 
 
 def test_dev_mode_turns_every_gated_ledger_on(archive_home) -> None:
     save_config({"dev_mode": True}, home=archive_home)
     assert usage.enabled() is True
-    assert metrics.enabled() is True
     assert ingest_log.enabled(archive_home) is True
 
 
@@ -94,7 +91,7 @@ def test_the_env_switch_outranks_the_config_both_ways(archive_home, monkeypatch)
     save_config({"dev_mode": True}, home=archive_home)
     monkeypatch.setenv("THREAD_ARCHIVE_USAGE_LOG", "0")
     assert usage.enabled() is False
-    assert metrics.enabled() is True  # the others are untouched
+    assert ingest_log.enabled(archive_home) is True  # the others are untouched
 
 
 def test_the_switch_is_read_per_call_not_frozen(archive_home) -> None:
@@ -105,6 +102,30 @@ def test_the_switch_is_read_per_call_not_frozen(archive_home) -> None:
     assert usage.enabled() is False
     save_config({"dev_mode": True}, home=archive_home)
     assert usage.enabled() is True
+
+
+# ── the viewer's ledger (dev-only: no wheel carries the viewer) ──────────────
+#
+# ``thread_archive._web`` is excluded from the wheel, so an install has no
+# surface that could write a web-requests row and these assertions have nothing
+# to describe there. They are marked and imported locally rather than hoisted to
+# the module's imports, because a module-level ``from thread_archive._web import
+# …`` fails collection where the viewer is absent — which would take the rest of
+# this file down with it, including the fault records below that an install
+# needs most.
+
+
+@pytest.mark.viewer
+def test_the_web_ledger_follows_the_switch(archive_home, monkeypatch) -> None:
+    """The viewer's half of the switch tests above: off on a plain install, on
+    under ``dev_mode``, and unmoved by another ledger's env switch."""
+    from thread_archive._web import metrics
+
+    assert metrics.enabled() is False
+    save_config({"dev_mode": True}, home=archive_home)
+    assert metrics.enabled() is True
+    monkeypatch.setenv("THREAD_ARCHIVE_USAGE_LOG", "0")
+    assert metrics.enabled() is True
 
 
 # ── what stops being written ─────────────────────────────────────────────────
@@ -139,7 +160,10 @@ def test_a_real_search_leaves_no_row(archive_home) -> None:
     assert _rows(archive_home / usage.LEDGER_FILE) == []
 
 
+@pytest.mark.viewer
 def test_served_requests_are_not_ledgered(archive_home) -> None:
+    from thread_archive._web import metrics
+
     metrics.record_request("/api/search", status=200, duration_ms=12.0, size=99)
     assert _rows(archive_home / metrics.LEDGER_FILE) == []
 

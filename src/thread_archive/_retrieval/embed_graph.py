@@ -10,15 +10,14 @@ corpus-wide structure the topic graph cannot see.
 **The coherence re-rank is the production consumer.** Within a ranked search
 pool, threads whose community carries more of the pool's top mass get a small
 additive boost (:func:`coherence_order`). It is a light mid-list orderer, not a
-headline mover: on the log-mined click protocol (187 cases, full production
-pool) the shipped gamma lifts success and recall at depth while costing a
-little at rank 1 — baseline → 0.005: S@5 0.401→0.428, S@10 0.513→0.519,
-recall@10 0.417→0.426, S@1 0.203→0.193, MRR flat at 0.298. It consolidates the
-mid-list around the query's community; it does not improve the top hit. Those
-labels are click labels, censored by the incumbent ranker, so read the harness
-as a regression check rather than as evidence of a gain. The same signal
-computed from the topic graph loses on the identical cases, which is why the
-topic graph stays out of ranking. ``search_lab/graph_eval.py`` is the harness.
+headline mover: it consolidates the mid-list around the query's community and
+does not lift the top hit. Read :data:`COHERENCE_GAMMA` as *inherited and not
+currently re-derived* — it comes from a protocol ``search_lab/README.md``
+describes under "What a number here is worth", and nothing that runs today can
+re-derive it. The topic graph stays out
+of ranking for a reason that does not depend on any of that: it sees only the
+conversations somebody curated a topic for, where this graph covers every
+embedded thread.
 
 ``THREAD_ARCHIVE_COHERENCE`` tunes it per process: unset/``on`` uses the
 default gamma, ``off``/``0`` disables, a float overrides gamma.
@@ -34,12 +33,12 @@ builds only when there is none. :func:`rebuild_floor_s` bounds how often the
 *machine* rebuilds, across processes — the token moves with every ingest pass, so
 without it each of several concurrent processes rebuilds the same partition.
 
-**The cache outlives the process** (:mod:`.graph_cache`). Held only in memory, it
-starts empty at every restart, and until the first build lands the re-rank stands
-down — so the same query returns a different order for the first several seconds
-of a process, with nothing in the output to say so. A restart now serves the
-persisted graph immediately (stale, refreshing behind it, exactly as a long-lived
-process does) and skips the rebuild outright when the store has not moved.
+**The cache outlives the process** (:mod:`.graph_cache`). A restart serves the
+persisted graph immediately — stale, refreshing behind it, exactly as a long-lived
+process does — and skips the rebuild outright when the store has not moved. What
+that buys is the window it closes: a process with no graph stands the re-rank
+down, so the same query comes back in a different order with nothing in the
+output to say so.
 
 Reads only the vector pack (via :mod:`.vectors`' matrix cache — mmap, shared,
 validity-tokened) and the ``events``/``threads`` tables. ``reset_cache``
@@ -53,18 +52,23 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 from sqlalchemy import text as sa_text
 
-from .._store import get_session
+from .._store import current_archive, current_archive_or_none, get_session
+
+if TYPE_CHECKING:
+    from .._store import Archive
 
 logger = logging.getLogger(__name__)
 
-# Embedded pools that describe a thread's content. Deliberately the full
-# embedded set: user + assistant text + the thread-meta docs.
-_CTS = ("summary", "text", "title", "user")
+# The content-type pools a thread's centroid is built from — exactly the pools
+# :mod:`.vectors` embeds, since a type nothing embeds contributes no rows and only
+# invalidates every persisted graph when it is added or removed (it rides the build
+# shape, :func:`_cache_params`).
+_CTS = ("text", "title", "user")
 
 # Neighbors per node in the kNN graph, and the similarity floor under which a
 # neighbor is noise (at 768-d everything is vaguely similar; edges below the
@@ -76,11 +80,13 @@ MIN_SIM = 0.55
 # B x N float32).
 _BLOCK = 512
 
-# Coherence re-rank defaults: how many pool-head threads vote on community
-# mass, the RRF base constant, and the default gamma — the middle of the swept
-# 0.002–0.01 range, where the log-mined eval puts the S@5 and S@20 optima. The
-# sweep does not resolve one value: 0.01 reads better at S@10 and recall@10,
-# and the whole spread is a case or two on a 187-case protocol.
+# Coherence re-rank defaults: how many pool-head threads vote on community mass,
+# the RRF base constant, and the default gamma. Gamma sits in the middle of a
+# 0.002–0.01 range that no measurement ever resolved to a single value, and the
+# protocol it came from is retired — see the module docstring on what standing it
+# has. What keeps it safe is its scale, not its provenance: it is added to an RRF
+# base of 1/(60+rank), so it reorders inside the mid-list rather than rewriting
+# the head.
 TOP_MASS = 10
 RRF_K = 60
 COHERENCE_GAMMA = 0.005
@@ -124,15 +130,22 @@ class CorpusGraph:
         return out
 
 
-# Process-local cache: {engine_id: (validity_token, CorpusGraph | None)}.
-# None is cached too — a store with no embedded vectors shouldn't re-probe on
-# every search, only when the token moves.
-_CACHE: dict = {}
+# The graph cache, held by the open archive (``Archive.cache``): one slot holding
+# ``{"entry": (validity_token, CorpusGraph | None), "checked_at": monotonic ts}``.
+# ``None`` is cached as an entry too — a store with no embedded vectors shouldn't
+# re-probe on every search, only when the token moves.
+#
+# Held by the archive rather than in a module dict keyed on the engine: a corpus
+# graph is a partition of *these* threads, and the id of a disposed engine is
+# reused, so a keyed-by-engine cache could hand a fresh archive the previous one's
+# partition. It also means the graph is released when the archive closes, which
+# for a corpus-wide Leiden result is tens of MB.
+_SLOT = "embed_graph"
 # Engines with a background refresh thread in flight — the guard against spawning
 # a second one. It does not cover the build itself: `get(block=True)` builds on the
 # calling thread and would otherwise race a background refresh, so the work is
 # guarded separately below.
-_REFRESHING: set[int] = set()
+_REFRESHING: set[int] = set()  # archive tokens
 _REFRESH_LOCK = threading.Lock()
 # One build at a time per engine, whoever asked. The entry points — a background
 # refresh, an eval's inline build, a warm pass that found nothing on disk — otherwise
@@ -140,14 +153,13 @@ _REFRESH_LOCK = threading.Lock()
 # instead of duplicating it, which costs it nothing (it was going to wait out a build
 # either way) and halves the CPU and the peak memory of a corpus-wide Leiden
 # partition. Within one process only: `rebuild_floor_s` is the cross-process half.
-_BUILDING: set[int] = set()
+_BUILDING: set[int] = set()  # archive tokens
 _BUILD_LOCKS: dict[int, threading.Lock] = {}
 _BUILD_GUARD = threading.Lock()
 # Probe the validity token (a count scan) and kick a refresh at most this often: the
 # graph is a coarse community prior, so a minute of staleness is immaterial, and
 # without the gate every search during continuous ingest re-probes and rebuilds.
 _REFRESH_COOLDOWN_S = 60.0
-_checked_at: dict = {}  # {engine id: monotonic ts of the last staleness probe}
 
 _REBUILD_FLOOR_ENV = "THREAD_ARCHIVE_GRAPH_REBUILD_FLOOR_S"
 
@@ -196,7 +208,7 @@ def _rebuild_redundant() -> bool:
     return age is not None and age < floor
 
 
-def _refresh_if_stale(key: int) -> None:
+def _refresh_if_stale(arch: "Archive") -> None:
     """Probe the store's validity token and kick a background rebuild when the
     cached graph sits behind it — at most once per :data:`_REFRESH_COOLDOWN_S`, and
     never when :func:`_rebuild_redundant` says the machine already has a recent one.
@@ -204,10 +216,11 @@ def _refresh_if_stale(key: int) -> None:
     Shared by :func:`get` and :func:`warm` so a serving process ages its graph the
     same way however it came by it."""
     now = time.monotonic()
-    if now - _checked_at.get(key, 0.0) < _REFRESH_COOLDOWN_S:
+    cache = arch.cache(_SLOT)
+    if now - cache.get("checked_at", 0.0) < _REFRESH_COOLDOWN_S:
         return
-    _checked_at[key] = now
-    cached = _CACHE.get(key)
+    cache["checked_at"] = now
+    cached = cache.get("entry")
     if cached is None:
         return
     stale = True
@@ -219,16 +232,20 @@ def _refresh_if_stale(key: int) -> None:
     except Exception:  # noqa: BLE001 — a staleness probe must never break search
         stale = False
     if stale and not _rebuild_redundant():
-        _refresh_async(key)
+        _refresh_async(arch.token)
 
 
 def reset_cache() -> None:
     """Drop this process's graph cache. Memory only — the persisted copy is keyed
     by the store's own token and invalidated at its source
     (:func:`.graph_cache.drop`), so dropping it here would throw away a valid
-    cache that costs a rebuild to recreate."""
-    _CACHE.clear()
-    _checked_at.clear()
+    cache that costs a rebuild to recreate.
+
+    A no-op when no archive is open — dropping a cache must never be what opens
+    one."""
+    arch = current_archive_or_none()
+    if arch is not None:
+        arch.cache(_SLOT).clear()
 
 
 def _cache_params(knn: int, min_sim: float) -> dict:
@@ -268,7 +285,7 @@ def _disk_entry(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[tuple]:
 
 def coherence_gamma(env: str | None = None) -> float:
     """The configured coherence boost: 0.0 disables. Unset/``on``/``auto`` use
-    the swept default; ``off``/``0`` disable; a float overrides. ``env``
+    :data:`COHERENCE_GAMMA`; ``off``/``0`` disable; a float overrides. ``env``
     overrides the environment lookup (tests inject)."""
     raw = (os.environ.get(_ENV, "") if env is None else env).strip().lower()
     if raw in ("", "on", "auto"):
@@ -298,7 +315,7 @@ def mass_for(pool: list[str], community: dict[str, int], top: int = TOP_MASS) ->
 
 def coherence_order(pool: list[str], community: dict[str, int], gamma: float) -> list[str]:
     """Re-rank a thread pool by RRF base + gamma * its community's mass — pure.
-    The eval-proven formula: ``score = 1/(60+rank) + gamma * community_mass``."""
+    ``score = 1/(60+rank) + gamma * community_mass``."""
     mass = mass_for(pool, community)
     base = {t: 1.0 / (RRF_K + r) for r, t in enumerate(pool, start=1)}
     return sorted(pool, key=lambda t: (-(base[t] + gamma * mass.get(community.get(t, -1), 0.0)), t))
@@ -330,10 +347,9 @@ def get(*, block: bool = False) -> Optional[CorpusGraph]:
     starting server wants :func:`warm` instead."""
     if block:
         return build()
-    from .._store import get_engine
-
-    key = id(get_engine())
-    cached = _CACHE.get(key)
+    arch = current_archive()
+    cache = arch.cache(_SLOT)
+    cached = cache.get("entry")
     if cached is None:
         # Nothing in memory: the first touch of a fresh process. A persisted graph
         # is served without waiting for its token to be checked — serving stale is
@@ -341,10 +357,11 @@ def get(*, block: bool = False) -> Optional[CorpusGraph]:
         # fresher graph but none at all.
         cached = _disk_entry()
         if cached is None:
-            _refresh_async(key)  # nothing to serve yet — get the first build going
+            # nothing to serve yet — get the first build going
+            _refresh_async(arch.token)
             return None
-        _CACHE[key] = cached
-    _refresh_if_stale(key)
+        cache["entry"] = cached
+    _refresh_if_stale(arch)
     return cached[1]
 
 
@@ -366,16 +383,15 @@ def warm() -> Optional[CorpusGraph]:
     Leiden partition to answer that is the most expensive way to get an answer it
     already had — the load is tens of MB off disk against seconds of compute.
     """
-    from .._store import get_engine
-
-    key = id(get_engine())
-    if _CACHE.get(key) is None:
+    arch = current_archive()
+    cache = arch.cache(_SLOT)
+    if cache.get("entry") is None:
         entry = _disk_entry()
         if entry is None:
             return build()  # nothing to serve: this process pays the first build
-        _CACHE[key] = entry
-    _refresh_if_stale(key)
-    return _CACHE[key][1]
+        cache["entry"] = entry
+    _refresh_if_stale(arch)
+    return cache["entry"][1]
 
 
 def is_refreshing() -> bool:
@@ -411,15 +427,16 @@ def _refresh_async(key: int) -> None:
 def build(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[CorpusGraph]:
     """Build (or serve cached) the corpus graph. ``None`` when the store has no
     embedded vectors — the graph degrades with the semantic arm, not separately."""
-    from .._store import get_engine
     from .vectors import _validity_token, ensure_index
 
     if not ensure_index():  # creates event_vectors when absent, like _knn does
         return None
     with get_session() as s:
         token = _validity_token(s)
-    key = id(get_engine())
-    cached = _CACHE.get(key)
+    arch = current_archive()
+    cache = arch.cache(_SLOT)
+    key = arch.token
+    cached = cache.get("entry")
     if cached is not None and cached[0] == token:
         return cached[1]
 
@@ -428,7 +445,7 @@ def build(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[CorpusGraph]:
         # same token, so their result is ours and the build we were about to do is
         # already done. This is the whole point of the lock — not serializing
         # builds, but making the second one unnecessary.
-        cached = _CACHE.get(key)
+        cached = cache.get("entry")
         if cached is not None and cached[0] == token:
             return cached[1]
         # Some earlier process already built this exact token and wrote it down.
@@ -437,7 +454,7 @@ def build(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[CorpusGraph]:
         # the store as it stands.
         entry = _disk_entry(knn, min_sim)
         if entry is not None and entry[0] == token:
-            _CACHE[key] = entry
+            cache["entry"] = entry
             return entry[1]
         with _BUILD_GUARD:
             _BUILDING.add(key)
@@ -446,7 +463,7 @@ def build(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[CorpusGraph]:
         _t0 = time.perf_counter()
         graph = None
         try:
-            graph = _build_graph(key, token, knn, min_sim)
+            graph = _build_graph(cache, token, knn, min_sim)
             return graph
         finally:
             with _BUILD_GUARD:
@@ -487,9 +504,9 @@ def _build_lock(key: int) -> threading.Lock:
         return lock
 
 
-def _build_graph(key: int, token: object, knn: int, min_sim: float) -> Optional[CorpusGraph]:
-    """The build proper — always called holding this engine's build lock, with the
-    cache already checked against ``token``."""
+def _build_graph(cache: dict, token: object, knn: int, min_sim: float) -> Optional[CorpusGraph]:
+    """The build proper — always called holding this archive's build lock, with
+    ``cache`` (the archive's own graph slot) already checked against ``token``."""
     import networkx as nx
 
     from .community import detect_communities
@@ -500,7 +517,7 @@ def _build_graph(key: int, token: object, knn: int, min_sim: float) -> Optional[
     # it just tokened, and this call is already gated by the graph token cache above.
     _tok, ids, _ct_arr, mat, _doc_inv, _doc_rep, scope_rows, _ts = _build_matrix_entry(_CTS)
     if len(ids) == 0:
-        _CACHE[key] = (token, None)  # no vectors: don't re-probe until the store moves
+        cache["entry"] = (token, None)  # no vectors: don't re-probe until the store moves
         return None
     with get_session() as s:
         ev2thread = _event_threads(s)
@@ -512,7 +529,7 @@ def _build_graph(key: int, token: object, knn: int, min_sim: float) -> Optional[
     )
     keep = row_thread >= 0
     if not keep.any():
-        _CACHE[key] = (token, None)
+        cache["entry"] = (token, None)
         return None
 
     dim = mat.shape[1]
@@ -563,7 +580,7 @@ def _build_graph(key: int, token: object, knn: int, min_sim: float) -> Optional[
         community=community,
         edges=g.number_of_edges(),
     )
-    _CACHE[key] = (token, graph)
+    cache["entry"] = (token, graph)
     from . import graph_cache
 
     graph_cache.save(token, graph, _cache_params(knn, min_sim))

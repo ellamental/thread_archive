@@ -394,8 +394,8 @@ class Watcher:
                     if not w.is_available():
                         continue
                     # Only thread the progress callback when tracking — the continuous
-                    # path calls poll() with its historical signature, so a source
-                    # (a plugin, a test stub) that hasn't adopted on_item still works.
+                    # path calls poll() with no arguments, so a source (a plugin, a
+                    # test stub) whose poll() takes no ``on_item`` still works.
                     r = w.poll(on_item=on_item) if on_item is not None else w.poll()
                 except Exception as e:  # noqa: BLE001 — a broken source must not stop the loop
                     logger.warning("%s: poll error: %s", w.source_name, e)

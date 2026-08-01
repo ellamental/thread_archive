@@ -16,7 +16,7 @@ spelling still resolves (``_LEGACY_VERBS``, and ``backup <dest>`` via
 :func:`_normalize`): the installed service manifests carry them, and a rename
 that strands a running agent is not a rename.
 
-**The whole tree is public surface** (``docs/stability.md``). This is the
+**The whole tree is public surface** (``docs/public/stability.md``). This is the
 process seam: the service manifests, lab's cron script, the /ci skill, the
 monitor's heartbeat contract and an operator's shell history all name these
 verbs, and none of them can follow a rename. What a verb is called and what
@@ -51,7 +51,7 @@ import time
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
-from . import __version__
+from . import __version__, _fmt
 from ._config import resolve_paths
 from ._viewer import viewer_available
 
@@ -341,15 +341,65 @@ def _served(tool_name: str) -> Iterator[None]:
                 pass
 
 
+def _record_delegated_serve(tool_name: str) -> None:
+    """The ``serve`` row for a call the shared server answered.
+
+    ``delegated`` marks it: the call's ``search``/``read`` row was written by the
+    *server* (no ``surface``, per :data:`.._retrieval.usage.UNATTRIBUTED`), so a
+    delegated CLI call contributes a ``surface="cli"`` serve row with no matching
+    cli-surfaced tool row — the door was here, the engine was there. Fail-soft,
+    like every ledger write.
+    """
+    try:
+        from ._retrieval import usage as _usage
+
+        _usage.record_serve({
+            "kind": "serve",
+            "surface": "cli",
+            "tool": tool_name,
+            "served_ms": round((time.monotonic() - _ENTERED) * 1000.0, 1),
+            "delegated": True,
+        })
+    except Exception:  # noqa: BLE001 — advisory
+        pass
+
+
 def cmd_search(args: argparse.Namespace) -> int:
     """``thread-archive search`` — the ``thread_search`` tool, rendered to stdout.
 
     Every flag is passed through unchanged: the clamping, the default scope, the
     degradation notice, and the usage-ledger record are the tool's, so a query
     typed here and the same query asked over MCP return the same text.
+
+    When the shared HTTP server is up and serving this same archive, the call is
+    delegated to it instead of built here (:mod:`._delegate`) — the warm process
+    answers in milliseconds what a one-shot pays a model load for. The answer is
+    the same text either way; ``--local`` forces the in-process path, and any
+    delegation failure falls back to it silently.
     """
+    import inspect
+
     from . import _api as api
-    from . import _tools
+    from . import _delegate, _tools
+
+    if not args.local and _delegate.eligible(args.home):
+        # Built from the tool's own signature rather than a second list of names:
+        # the delegated call and the in-process one below must carry the same
+        # scope, and a filter this list forgot would come back as a confidently
+        # wrong answer — the warm server would run a *wider* search than the flags
+        # asked for. The flags themselves are held against the same signature by
+        # tests/meta/test_retrieval_surface.py, so a parameter with no flag reds
+        # there rather than silently resolving to None here.
+        arguments = {
+            name: getattr(args, name)
+            for name in inspect.signature(_tools.thread_search).parameters
+            if getattr(args, name, None) is not None
+        }
+        out = _delegate.call("thread_search", arguments)
+        if out is not None:
+            _record_delegated_serve("thread_search")
+            print(out)
+            return 0
 
     api.open_archive(args.home)
     try:
@@ -528,7 +578,7 @@ def cmd_docs(args: argparse.Namespace) -> int:
     if not listing:
         print(
             "this installation carries no manual — read it at\n"
-            "https://github.com/ellamental/thread_archive/tree/main/docs",
+            "https://github.com/ellamental/thread_archive/tree/main/docs/public",
             file=sys.stderr,
         )
         return 1
@@ -1468,19 +1518,10 @@ def report_repair(res: dict) -> int:
     return 0
 
 
-def _age(iso: str | None) -> str:
-    from datetime import datetime, timezone
-
-    if iso is None:
-        return "?"
-    try:
-        dt = datetime.fromisoformat(iso)
-    except (TypeError, ValueError):
-        return "?"
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
-    return f"{hours / 24:.1f}d ago" if hours >= 48 else f"{hours:.1f}h ago"
+# The status tables' age column. Defined in `_fmt` so the setup wizard can borrow
+# it without importing a front door; aliased here because this module's own call
+# sites (and the tests that drive them) name it `_age`.
+_age = _fmt.age
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -1992,7 +2033,7 @@ def build_parser(*, has_viewer: Optional[bool] = None) -> argparse.ArgumentParse
     p_search.add_argument("--exclude-content-type", default=None, metavar="TYPES",
                           help="comma-separated content types to drop")
     p_search.add_argument("--since", default=None, metavar="WHEN",
-                          help="lower bound — ISO timestamp or a relative age like 7d")
+                          help="lower bound — ISO timestamp or a relative age like 2h, 7d, 2w")
     p_search.add_argument("--until", default=None, metavar="WHEN",
                           help="upper bound — ISO timestamp or a relative age")
     p_search.add_argument("--tool-name", default=None, metavar="NAME",
@@ -2036,6 +2077,10 @@ def build_parser(*, has_viewer: Optional[bool] = None) -> argparse.ArgumentParse
     p_search.add_argument("--match", default=None, metavar="MODE",
                           help="'token' (default, indexed) or 'substring' (uncapped infix "
                                "scan — finds p4 inside mp4)")
+    p_search.add_argument("--local", action="store_true",
+                          help="answer in this process even when the shared archive-mcp "
+                               "server is up (asking it is the default when it serves this "
+                               "same archive — same answer, warm process)")
     p_search.set_defaults(func=cmd_search)
 
     p_read = sub.add_parser(

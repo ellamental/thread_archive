@@ -8,11 +8,11 @@ materializer — but in-process, folding to SQLite rather than to a graph server
 :func:`apply_event` dispatches one event to its projection mutation. It is called
 in two places, both with the session it must mutate:
 
-* **live write** — :mod:`thread_archive._knowledge.write` appends an event *and*
+* **live write** — the external writing layer appends an event *and*
   applies it in the same transaction, so one call yields a durable log line plus an
   updated projection;
 * **reindex replay** — ``truth.jsonl_log`` replays the whole log in ``id`` order to
-  rebuild the projection from scratch (on top of any legacy snapshot seed).
+  rebuild the projection from scratch (on top of any snapshot seed).
 
 Every mutation is **upsert + tombstone**, never blind insert: ``link.created`` on an
 existing edge updates it, ``link.deleted`` removes it whether it came from the log or

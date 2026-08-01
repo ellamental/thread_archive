@@ -5,19 +5,19 @@ search for and which results they go on to read. This ledger captures that
 real task — every ``thread_search`` and ``thread_read`` the tools serve, over
 MCP or from the CLI verbs — so evals (and the knowledge-layer verdict) can be
 built from observed behaviour instead of intuition: it is the sampling frame of
-real query shapes, and the population ``latency_replay.py`` measures speed over. A
-read joins to the searches before it by thread id. A ``surface`` field marks the calls that came from a terminal;
-its absence means MCP, the population these records have always described.
+real query shapes, and the population ``latency_replay.py`` measures speed over.
+A read joins to the searches before it by thread id. A ``surface`` field names
+the front door a call came through; a row without one is *unattributed* rather
+than any particular door (see :data:`UNATTRIBUTED`).
 
 Records hold query text, filter parameters, result *ids*, and the call's
 wall-clock latency (``duration_ms``) — never event content, snippets, or
-transcripts — so a leaked ledger
-names conversations without quoting them. Latency rides along because it is
-the one regression class result-quality evals can't see: a search that returns
-the right hits ever slower looks perfect until someone measures. The file
-lives beside the other home-root ledgers (``capture-skips.jsonl``,
-``validation-drift.jsonl``), outside ``truth/`` — it is operational telemetry,
-not archive data, and no backup/verify path depends on it.
+transcripts — so a leaked ledger names conversations without quoting them.
+Latency rides along because it is the one regression class result-quality evals
+can't see: a search that returns the right hits ever slower looks perfect until
+someone measures. The file lives beside the other home-root ledgers
+(``capture-skips.jsonl``, ``validation-drift.jsonl``), outside ``truth/`` — it is
+operational telemetry, not archive data, and no backup/verify path depends on it.
 
 Four record kinds, distinguished by ``kind``: ``search`` and ``read`` for the two
 tools, ``warm`` for one :func:`thread_archive._retrieval.warm_models` pass, and
@@ -43,6 +43,9 @@ whatever fit in the current file.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -54,13 +57,68 @@ logger = logging.getLogger(__name__)
 
 LEDGER_FILE = "retrieval-usage.jsonl"
 
-#: What ``surface`` means when it is absent: nothing claimed the call. Every row
-#: written before the front doors began naming themselves reads this way, so a
-#: reader must treat it as *unattributed* rather than resolve it to a door.
+#: What ``surface`` means when it is absent: nothing claimed the call. A row that
+#: names no door is *unattributed* — a reader must not resolve it to one, because
+#: any door that fails to stamp itself lands here alongside the rest.
 #: Defined here rather than beside the code that stamps it because the ledger owns
 #: its own field's vocabulary, and a reader should be able to learn it without
 #: importing the tool surface (:mod:`.._tools`, ~400 ms of engine).
 UNATTRIBUTED = "mcp"
+
+# Which front door the current call is being served through — the ambient value of
+# the ``surface`` field above, kept beside the field for the same reason its
+# vocabulary is: everything that *writes* a row needs it, including the background
+# warm pass, which records its own row from inside the retrieval package and must
+# not have to import the tool surface to name a door.
+#
+# The distinction the field carries: an operator's own terminal searches are a
+# different query population from an agent's, and the evals built off this ledger
+# sample from it. It is also the only thing that separates the *cache states* the
+# doors run in — a shared HTTP server warms its models at startup and serves
+# thousands of calls from one resident copy, while a per-client stdio server and a
+# one-shot CLI process load nothing ahead of time and pay that load inside their
+# first search. Latency from those three, pooled, is a distribution nobody
+# experienced.
+#
+# A module global for the process default rather than a ContextVar default, so a
+# background thread sees it too; the ContextVar overrides it per call for a process
+# that is several doors (the CLI, whose verbs wrap their one call).
+_DEFAULT_SURFACE = UNATTRIBUTED
+_SURFACE: ContextVar[Optional[str]] = ContextVar("thread_archive_surface", default=None)
+
+
+def set_default_surface(surface: str) -> None:
+    """Declare what this process is, for every call it serves. Called once at
+    startup by a server that is a single front door."""
+    global _DEFAULT_SURFACE
+    _DEFAULT_SURFACE = surface
+
+
+@contextmanager
+def serving(surface: str) -> Iterator[None]:
+    """Name the front door the retrieval calls inside this block are served
+    through, overriding the process default for their duration."""
+    token = _SURFACE.set(surface)
+    try:
+        yield
+    finally:
+        _SURFACE.reset(token)
+
+
+def current_surface() -> str:
+    """The front door this call is being served through — the innermost
+    :func:`serving` block, else what the process declared, else
+    :data:`UNATTRIBUTED`."""
+    return _SURFACE.get() or _DEFAULT_SURFACE
+
+
+def served_by() -> Optional[str]:
+    """The front door for the usage ledger — None when nothing has claimed the
+    call, which is what every row written before any surface declared itself
+    means, and is why readers must treat an absent value as *unattributed* rather
+    than as any particular door (None params are dropped)."""
+    surface = current_surface()
+    return None if surface == UNATTRIBUTED else surface
 
 #: Query text a bench or a smoke test left in the ledger rather than an agent asking
 #: something. Every reader that computes a distribution over this file drops them:
@@ -68,11 +126,12 @@ UNATTRIBUTED = "mcp"
 #: leaving them in pulls every percentile toward the trivial.
 #:
 #: Defined here for the same reason :data:`UNATTRIBUTED` is — the ledger owns the
-#: vocabulary of its own fields, and the alternative is what it replaced: a copy per
-#: reader, each quietly a different list, so two reports over one file disagreed about
-#: which rows were traffic. Exact text, never a shape heuristic: a short query is not
-#: automatically a probe (agents really do search ``p50``, ``EDS``, ``mps``), and a
-#: filter that guessed would silently drop the real ones.
+#: vocabulary of its own fields, and one definition is what keeps its readers
+#: agreeing: a copy per reader drifts into a different list each, and two reports
+#: over one file then disagree about which rows were traffic. Exact text, never a
+#: shape heuristic: a short query is not automatically a probe (agents really do
+#: search ``p50``, ``EDS``, ``mps``), and a filter that guessed would silently drop
+#: the real ones.
 PROBE_QUERIES = ("x", "test", "warmup", "hello", "bogus")
 
 _MAX_RESULT_IDS = 20  # per-search result ids retained — enough to judge rank quality
@@ -310,8 +369,8 @@ def record_warm(
     context: Optional[dict[str, Any]] = None,
 ) -> None:
     """Record one :func:`thread_archive._retrieval.warm_models` pass — how long a
-    process took to become useful, split by stage (``embed_ms``, ``graph_ms``,
-    ``search_ms``, and ``wait_ms`` for the queue in front of them).
+    process took to become useful, split by stage (``embed_ms``, ``matrix_ms``,
+    ``graph_ms``, ``search_ms``, and ``wait_ms`` for the queue in front of them).
 
     ``duration_ms`` covers the wait as well as the work, because the question it
     answers is when the process started being useful and a queued process is not

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.0.12 — 2026-07-31
+
+- Releases publish a mandatory rc first: GitHub CI, CodeQL, and the publish path are proven before the final ships.
+- Web and devweb static requests resolve via an index of the built bundle; nothing the build didn't emit can be served.
+- `match='substring'` honors `OR`/`|` as a union; `since`/`until` reject unknown units; hits carry source and date.
+- `thread-archive search` delegates to a live shared MCP server (~0.5s vs ~6s cold); fallback re-runs in-process.
+- Import fixes: claude-science incremental slicing, cursor/opencode settled-window re-scans, cursor WAL watched.
+- The open archive is an object: per-archive caches under a non-recycling identity; opening no longer writes env vars.
+- The KNN matrix never builds inline in a request thread; pack builds serialize on a machine-wide lock, assemble faster.
+- The shipped manual is `docs/public/` (default-closed wheel include); stale retrieval rationales audited out.
+- New ratchets: retrieval surface derived from the tool signature, provider conformance kit, truth↔index property test.
+- The suite runs serially; coverage floors ratchet behavior, not presentation; the CI latency gate is removed.
+
 ## 0.0.11 — 2026-07-30
 
 - The bench's quick tier is sized against this box's slow days rather than its median — the same row measures a factor

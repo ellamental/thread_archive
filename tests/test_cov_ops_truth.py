@@ -333,11 +333,76 @@ def test_same_inode_false_for_broken_handle(tmp_path):
     assert drain._same_inode(fh, p) is False
 
 
+def _fsync_recorder():
+    """A stand-in for ``os.fsync`` recording which *file* each fd pointed at.
+
+    Identity is (device, inode) off ``fstat`` — a path read back from the fd is
+    not portable, and the inode is the stronger claim anyway: it says the fd was
+    open on this file, not merely on a name that resolves to it."""
+    synced: list[tuple[int, int]] = []
+
+    def fsync(fd: int) -> None:
+        st = os.fstat(fd)
+        synced.append((st.st_dev, st.st_ino))
+        os.fsync(fd)  # still do the real thing — the durability under test
+
+    return synced, fsync
+
+
+def _file_id(path) -> tuple[int, int]:
+    st = os.stat(path)
+    return (st.st_dev, st.st_ino)
+
+
 def test_fsync_handle_reopens_uncached_path(tmp_path):
+    """An uncached path is reopened by fd and *that fd* is synced.
+
+    The reopen arm is the durability of a bulk batch: past ``MAX_OPEN_HANDLES``
+    the early handles are evicted, and eviction flushes to the OS without
+    syncing. Asserting the syscall — not merely that the call returns — is the
+    whole point here, because nothing this function does is visible afterwards.
+    """
     p = tmp_path / "f.jsonl"
     p.write_text("line\n")
     drain.reset_handles()  # ensure not cached
-    drain._fsync_handle(p)  # must reopen by fd and fsync without error
+    synced, fsync = _fsync_recorder()
+    drain._fsync_handle(p, fsync=fsync)
+    assert synced == [_file_id(p)], "the reopened fd was never fsynced"
+
+
+def test_fsync_handle_syncs_the_live_handle_it_holds(tmp_path):
+    """The cached arm syncs the open append handle rather than a fresh fd."""
+    p = tmp_path / "f.jsonl"
+    drain.reset_handles()
+    try:
+        drain.append_line(p, {"type": "event", "id": 1})
+        fh = drain._handles[str(p)]
+        synced, fsync = _fsync_recorder()
+        drain._fsync_handle(p, fsync=fsync)
+        assert synced == [_file_id(p)]
+        assert not fh.closed, "the live handle is synced in place, never reopened"
+    finally:
+        drain.reset_handles()
+
+
+def test_fsync_handle_syncs_an_evicted_path_by_fd(tmp_path):
+    """The bulk-batch case end to end: evict past the cap, then fsync the evicted
+    path. A body that skipped the syscall for evicted files would look identical
+    from the outside — the batch still returns, the lines are still in the page
+    cache — which is exactly the silent durability drop this guards."""
+    drain.reset_handles()
+    try:
+        first = tmp_path / "t-first.jsonl"
+        drain.append_line(first, {"type": "event", "id": 1})
+        for i in range(drain.MAX_OPEN_HANDLES):
+            drain._handle(tmp_path / f"t{i}.jsonl")
+        assert str(first) not in drain._handles, "precondition: the handle was evicted"
+
+        synced, fsync = _fsync_recorder()
+        drain._fsync_handle(first, fsync=fsync)
+        assert synced == [_file_id(first)], "an evicted path skipped its fsync"
+    finally:
+        drain.reset_handles()
 
 
 def test_handle_evicts_lru_beyond_cap(tmp_path):

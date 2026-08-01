@@ -172,6 +172,53 @@ def test_incremental_append_imports_only_new(archive_home, tmp_path) -> None:
     assert followup == 1
 
 
+def test_incremental_pass_survives_filtered_rows(archive_home, tmp_path) -> None:
+    """A store row the importer filters (a non-user/assistant role, undecodable
+    JSON) must not shift the incremental slice: the watermark counts raw rows, so
+    the slice must too — sliced against the filtered list, every filtered row
+    would silently drop one of the next pass's newest messages, permanently."""
+    init_db()
+    db = tmp_path / "operon-cli.db"
+    conn = _make_db(db)
+    _add_frame(conn, id="root1", agent_name="OPERON", status="completed",
+               conversation_type="agent", name="Filtered Rows",
+               model="claude-opus-4-8", project_id="proj_real",
+               created_at=1_700_000_000_000)
+    conn.executemany(
+        "INSERT INTO frame_messages (frame_id, idx, msg_json) VALUES (?, ?, ?)",
+        [("root1", 0, json.dumps(_user("hello", "u1"))),
+         ("root1", 1, json.dumps({"role": "system",
+                                  "content": [{"type": "text", "text": "injected"}]})),
+         ("root1", 2, json.dumps(_assistant("hi there", "a1"))),
+         ("root1", 3, "{not json")],
+    )
+    conn.commit()
+    conn.close()
+    import_claude_science_db(db, ORG)
+
+    # The conversation grows by a turn after the watermark landed.
+    conn = sqlite3.connect(db)
+    conn.executemany(
+        "INSERT INTO frame_messages (frame_id, idx, msg_json) VALUES (?, ?, ?)",
+        [("root1", 4, json.dumps(_user("newest question", "u2"))),
+         ("root1", 5, json.dumps(_assistant("newest answer", "a2")))],
+    )
+    conn.commit()
+    conn.close()
+
+    scan = import_claude_science_db(db, ORG)
+    assert scan.events_created > 0
+    with get_session() as s:
+        # User content lands at $.content, assistant text at text_complete's $.text.
+        for key, text in (("$.content", "newest question"), ("$.text", "newest answer")):
+            n = s.execute(
+                select(func.count(Event.id)).where(
+                    func.json_extract(Event.payload, key) == text
+                )
+            ).scalar_one()
+            assert n == 1, f"lost across the filtered-row watermark: {text!r}"
+
+
 def test_watcher_discovers_mtime_gates_and_self_gates(archive_home, tmp_path) -> None:
     init_db()
     base = tmp_path / "orgs"

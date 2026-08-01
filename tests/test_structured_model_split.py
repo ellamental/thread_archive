@@ -4,7 +4,7 @@
 boundary — one message per model inference — so a mid-turn model change lands on a
 message boundary (and gets its own tint in the viewer) instead of hiding inside one
 merged bubble. See ``read_thread_structured`` / the ``split`` flag in
-``retrieval/read.py``.
+``_retrieval/read.py``.
 """
 
 from __future__ import annotations

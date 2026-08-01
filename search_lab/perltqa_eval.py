@@ -38,8 +38,8 @@ protagonists are distinct and every one of the 32 questioned people matches one.
 
 No published retrieval baseline is printed. The PerLTQA paper reports a memory
 retrieval subtask, but not in a form this run reproduces, and a borrowed number
-reads as a comparison it is not. ``bm25_baseline.py`` is what would give this row
-a local reference.
+reads as a comparison it is not. A local lexical-only run (``--vectors`` off) is
+the reference available here.
 
 Never touches the real archive: ``search_lab.eval_home`` refuses any home that
 overlaps one. The build is cached under

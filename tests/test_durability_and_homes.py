@@ -11,11 +11,13 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 from sqlalchemy import select
 
 from thread_archive import _api as ta
+from thread_archive import _config as config
 from thread_archive._store import Event, Thread, get_session, init_db
 from thread_archive._truth import jsonl_log
 
@@ -83,6 +85,55 @@ def test_home_switch_does_not_split_the_archive(tmp_path) -> None:
     # Each rebuilds losslessly from its own truth.
     assert ta.search("durability", home=str(home_a))
     assert ta.search("different", home=str(home_b))
+
+
+def test_opening_an_archive_selects_a_home_without_touching_the_environment(tmp_path) -> None:
+    """Which archive this process has open is the archive layer's own state.
+
+    It used to be ``$THREAD_ARCHIVE_HOME``, which made reading an archive mutate
+    the process environment: shared with every other library in the process,
+    inherited by every child it spawns, and — worst — indistinguishable
+    afterwards from what the operator actually set, so code that needed the
+    environment's answer could no longer get it. Two call sites had to defend
+    against it by hand.
+    """
+    from thread_archive._config import env_home, pinned_home, resolve_paths
+
+    home = tmp_path / "selected"
+    before = os.environ.get(config.ENV_HOME)
+
+    ta.open_archive(str(home))
+
+    assert pinned_home() == home
+    assert resolve_paths().home == home, "resolution follows the open archive"
+    assert os.environ.get(config.ENV_HOME) == before, (
+        "opening an archive wrote its home into the process environment"
+    )
+    # Still answerable separately: what this process opened, and what the
+    # environment says, are different questions with different answers.
+    assert env_home() != home
+
+    ta.close()
+    assert pinned_home() is None, "closing an archive leaves no selection behind"
+
+
+def test_the_selection_outranks_the_environment_only_while_open(tmp_path, monkeypatch) -> None:
+    """An open archive wins — a query about *this* archive must not resolve
+    against a home the environment names and nothing is connected to. Once it
+    closes, the environment is the answer again."""
+    from thread_archive._config import resolve_paths
+
+    env_named = tmp_path / "from-env"
+    opened = tmp_path / "opened"
+    monkeypatch.setenv(config.ENV_HOME, str(env_named))
+
+    assert resolve_paths().home == env_named
+    ta.open_archive(str(opened))
+    assert resolve_paths().home == opened
+    # An explicit argument still outranks both — it names an archive, not a state.
+    assert resolve_paths(str(env_named)).home == env_named
+    ta.close()
+    assert resolve_paths().home == env_named
 
 
 def test_jsonl_write_failure_aborts_the_commit(archive_home) -> None:

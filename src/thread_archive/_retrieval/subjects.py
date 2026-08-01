@@ -137,8 +137,11 @@ def format_subjects_line(subjects: list[tuple[str, str, int]]) -> Optional[str]:
     """The one-line ``subjects:`` orientation header, or None when there's nothing
     to show. ``(N)`` is how many of the result conversations the subject links.
     Each subject carries its ``[topic <id>]`` so the lens is followable, not just
-    legible: the id opens the topic page via ``thread_read(topic_id)`` and
-    scopes a drill-in via ``thread_search(topic_id=...)``."""
+    legible: the id opens the topic page via ``thread_read(topic_id)`` — a topic is
+    a thread, so the ordinary read reaches it. The engine's ``topic_id`` search
+    scope is deliberately not a tool parameter (the extension region is storage,
+    not product — see ``test_retrieval_tools_expose_no_extension_region_surface``);
+    scoped drill-in belongs to the knowledge layer's own tools."""
     if not subjects:
         return None
     parts = [f"{title} [topic {tid}] ({chats})" for tid, title, chats in subjects]

@@ -98,8 +98,8 @@ belong to commits (truth ⊇ index, always).
 **Thread record** — `type: "thread"` plus the thread's fields: `id` (ULID
 string), `legacy_id` (int or absent — the pre-ULID integer id, kept as a
 permanent alias), `name` (unique slug), `title`, `thread_type`
-(`"conversation"` — an imported transcript; `"system"` — archive's own
-bookkeeping threads), `description`, `search_description`, `summary`,
+(`"conversation"` — an imported transcript; `"system"` — a subagent/machinery
+run, captured but out of default search and browse), `description`, `search_description`, `summary`,
 `indexed_summary`, `source` (provider, e.g. `"claude-code"`), `source_id`,
 `source_metadata` (object), `thought_count`, `user_id`, `experiment_id`,
 `archived` (bool), `exclude_from_search` (bool), `workspace`,

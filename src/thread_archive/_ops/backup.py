@@ -381,8 +381,9 @@ def _snapshot_generation(dest: Path) -> dict:
     newest ``_GEN_KEEP_RECENT`` distinct UTC days is kept (pruning a same-day
     sibling would discard exactly the pre-bad-run state generations exist
     for), plus the newest generation of each distinct month until
-    ``_GEN_KEEP_MONTHS`` months are covered. Failure to snapshot degrades to
-    the pre-generations behavior (reported, never blocks the mirror itself)."""
+    ``_GEN_KEEP_MONTHS`` months are covered. Failure to snapshot degrades to a
+    mirror with no generation behind it (reported, never blocks the mirror
+    itself)."""
     import logging
     import shutil
     from datetime import datetime, timezone
@@ -621,7 +622,7 @@ def backup(
     failure is reported (``bundle_error``, and it fails the health record's
     ``ok``) but never aborts the truth mirror itself.
     """
-    from .._api import open_archive
+    from .._lifecycle import open_archive
 
     _t0 = time.monotonic()
     open_archive(home)
@@ -795,7 +796,7 @@ def restore_drill(
     import tempfile
     import time
 
-    from .._api import close, open_archive
+    from .._lifecycle import close, open_archive
 
     paths = open_archive(home)
     from .._truth import scan_truth_counts
@@ -933,7 +934,7 @@ def restore(
     import time
     from datetime import datetime, timezone
 
-    from .._api import close, open_archive
+    from .._lifecycle import close, open_archive
     from .._truth import scan_truth_counts
 
     started = time.monotonic()

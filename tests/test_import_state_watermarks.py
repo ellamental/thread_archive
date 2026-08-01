@@ -170,3 +170,33 @@ def test_unchanged_checks_read_naive_last_import_as_utc() -> None:
         else:
             os.environ["TZ"] = orig_tz
         time.tzset()
+
+
+def test_unchanged_checks_reread_writes_near_the_stamp() -> None:
+    """A store write landing between the read and the wall-clock stamp carries a
+    timestamp *older* than the stamp while its content was never read — under a
+    bare <= comparison it is skipped on every later poll until another write
+    moves the store's timestamp. The gate must keep re-scanning until the store
+    has been quiet for WATERMARK_SLACK_MS past the stamp; the row cursor and
+    cross-pass dedup make those re-scans no-ops."""
+    from datetime import datetime, timedelta, timezone
+
+    from thread_archive._importers._state import WATERMARK_SLACK_MS
+    from thread_archive._importers.cursor import _cursor_composer_unchanged
+    from thread_archive._importers.opencode import _opencode_session_unchanged
+
+    now = datetime.now(timezone.utc)
+    state = ImportState(
+        source="cursor", source_id="race",
+        last_import_at=now.replace(tzinfo=None),
+    )
+    # Landed 5s before the stamp — a plausible read→stamp race. Must re-scan.
+    raced_ms = (now - timedelta(seconds=5)).timestamp() * 1000
+    assert not _cursor_composer_unchanged(state, {"lastUpdatedAt": raced_ms}), \
+        "write racing the import stamp was skipped as already-seen"
+    assert not _opencode_session_unchanged(state, {"time_updated": raced_ms})
+
+    # Settled comfortably before the stamp — safe to skip.
+    settled_ms = raced_ms - WATERMARK_SLACK_MS
+    assert _cursor_composer_unchanged(state, {"lastUpdatedAt": settled_ms})
+    assert _opencode_session_unchanged(state, {"time_updated": settled_ms})

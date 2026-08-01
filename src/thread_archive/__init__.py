@@ -8,18 +8,18 @@ The public API is exactly five things:
 * the retrieval tools — ``thread_search`` and ``thread_read``, served to agents
   by ``archive-mcp`` and to a person by the ``thread-archive search`` /
   ``thread-archive read`` verbs (one implementation behind both),
-* the ``thread-archive`` CLI (``docs/cli.md``) — every verb, and the flags each
+* the ``thread-archive`` CLI (``docs/public/cli.md``) — every verb, and the flags each
   takes. It is the process seam: service manifests, cron entries and operator
   scripts name these verbs, so a spelling that ever worked keeps resolving.
   What a verb *prints* is not the contract, only what it is called and what it
   accepts,
-* the on-disk truth format (``docs/format.md``, versioned by
+* the on-disk truth format (``docs/public/format.md``, versioned by
   ``manifest.json``'s ``version``) — the durability promise: data written by
   one release stays readable by the next. Read-only access to the documented
   stores themselves (``index.db`` is plain SQLite, the truth directory is
   documented JSONL) rides on this contract,
 * the provider plugin API — ``thread_archive.provider`` and its ``parse``
-  / ``testing`` submodules (``docs/providers.md``), the surface a provider
+  / ``testing`` submodules (``docs/public/providers.md``), the surface a provider
   maintained outside this repo is written against,
 * and the web viewer — the read-only UI the watcher cohosts at
   ``http://127.0.0.1:8787``: its page routes (``/``, ``/search``,
@@ -47,6 +47,6 @@ from __future__ import annotations
 # CLI + the truth format + the provider plugin API + the web viewer's URLs
 # only; everything else is free to change without notice.
 # Don't bump past 0.0.x as part of release mechanics.
-__version__ = "0.0.11"
+__version__ = "0.0.12"
 
 __all__ = ["__version__"]

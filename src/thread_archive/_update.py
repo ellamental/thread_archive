@@ -24,7 +24,7 @@ machine that holds someone's entire conversation history:
   installed from the file itself — the gate cannot be read off one artifact and
   applied to another.
 - **Never across a truth-format bump without asking.** A reader refuses a truth
-  directory newer than it understands (docs/format.md), so applying a release
+  directory newer than it understands (docs/public/format.md), so applying a release
   that bumps ``TRUTH_FORMAT_VERSION`` makes rollback a hard stop the moment the
   new code touches the store. The candidate's declared format version is read
   out of the wheel; if it is newer than ours — or cannot be determined — the

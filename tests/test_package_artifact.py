@@ -82,6 +82,17 @@ def test_wheel_carries_the_whole_runtime(dist) -> None:
     assert any(n.startswith("thread_archive/_retrieval/") for n in names)
 
 
+def test_wheel_carries_the_typing_marker(dist) -> None:
+    """PEP 561: without ``py.typed`` in the artifact, a type checker ignores this
+    package's annotations entirely — so a provider plugin written against
+    ``thread_archive.provider`` gets no checking of the one public Python surface
+    it codes to, however well annotated that surface is in the repo."""
+    wheel, _ = dist
+    names = zipfile.ZipFile(wheel).namelist()
+
+    assert "thread_archive/py.typed" in names
+
+
 def test_wheel_carries_the_manual(dist) -> None:
     # The public docs ship as package data under thread_archive/_docs, so an
     # install can answer for itself: `thread-archive docs` reads these, offline,
@@ -89,24 +100,23 @@ def test_wheel_carries_the_manual(dist) -> None:
     wheel, _ = dist
     names = set(zipfile.ZipFile(wheel).namelist())
     shipped = {n for n in names if n.startswith("thread_archive/_docs/") and n.endswith(".md")}
-    on_disk = {f"thread_archive/_docs/{p.name}" for p in (REPO / "docs").glob("*.md")}
+    on_disk = {f"thread_archive/_docs/{p.name}" for p in (REPO / "docs" / "public").glob("*.md")}
     assert shipped == on_disk, f"the wheel's manual is not the repo's: {shipped ^ on_disk}"
     # And the resolver that reads them, beside them.
     assert "thread_archive/_docs/__init__.py" in names
 
 
 def test_wheel_carries_no_internal_docs(dist) -> None:
-    # docs/internal/ is the maintainer's half — the release process, the bench
+    # docs/*.md is the maintainer's half — the release process, the bench
     # landscape, the dev panels. It names branches and instruments no install
-    # has, and an ordinary include (not force-include, which ignores `exclude`)
-    # is what keeps it out of the artifact.
+    # has, and the wheel's include naming `docs/public` by path is what keeps it
+    # out of the artifact: a page ships only if it was written under public/.
     wheel, _ = dist
     names = zipfile.ZipFile(wheel).namelist()
-    leaked = [n for n in names if "internal" in n]
+    internal = sorted(p.stem for p in (REPO / "docs").glob("*.md"))
+    assert internal, "docs/*.md is empty — this test proves nothing"
+    leaked = [n for n in names if any(n.endswith(f"/{stem}.md") for stem in internal)]
     assert not leaked, f"internal docs leaked into the wheel: {leaked}"
-    internal = sorted(p.stem for p in (REPO / "docs" / "internal").glob("*.md"))
-    assert internal, "docs/internal/ is empty — this test proves nothing"
-    assert not [n for n in names if any(f"/{stem}.md" in n for stem in internal)]
 
 
 def test_wheel_carries_no_viewer(dist) -> None:
@@ -359,8 +369,8 @@ def test_installed_cli_advertises_only_verbs_an_install_can_run(installed, tmp_p
         assert r.returncode == 0, f"{verb} --help failed: {r.stdout}\n{r.stderr}"
         assert "Traceback" not in r.stderr, f"{verb}: {r.stderr}"
 
-    # And a removed verb is an argparse error, never an ImportError from a module
-    # the wheel no longer carries.
+    # And an unregistered verb is an argparse error, never an ImportError from a
+    # module the wheel does not carry.
     gone = _run(installed, ["thread_archive", "mine"], tmp_path)
     assert gone.returncode == 2
     assert "invalid choice" in gone.stderr and "Traceback" not in gone.stderr

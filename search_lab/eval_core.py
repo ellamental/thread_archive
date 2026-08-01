@@ -11,7 +11,7 @@ checked-in corpus and therefore true by construction. That is what keeps it clea
 of the admission rule — and what bounds it. Tier 0 is near-saturated by design
 (MRR ≈ 1.0), so it can only fall: a breakage detector, never an improvement
 meter. **Nothing scores this archive's real corpus through here, and nothing
-should** — see ``docs/search-quality.md`` → "The admission rule".
+should** — see ``docs/public/search-quality.md`` → "The admission rule".
 
 The external calibration harnesses (``beir_eval``, ``cdr_eval``,
 ``haystack_eval``, ``mtrag_eval``, ``perltqa_eval``) do **not** score through

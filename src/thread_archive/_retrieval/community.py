@@ -16,10 +16,10 @@ import, so a read path can never crash on community detection. Both paths are
 The two engines agree on most of a corpus and differ on the modularity metric by
 under a point, so the fallback is not a broad quality cliff — but where they
 disagree, a whole region can partition differently and the coherence re-rank
-consolidates that region's mid-list differently with it. On the gold bench that
-lands as a single topic breaching its recall floor while the pooled numbers barely
-move, which is why the fallback is reported (:func:`engine`) rather than trusted
-to be harmless.
+consolidates that region's mid-list differently with it. A partition built by one
+engine is therefore not interchangeable with the other's, which is why the live
+engine is reported (:func:`engine`) and recorded in a persisted graph's build
+shape rather than trusted to be harmless.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ def leiden_available() -> bool:
     A failed probe logs at info, not warning. Absent is the correct state for a
     lexical-only install, which never builds the graph this engine partitions; whether
     it is a *fault* depends on what else is installed, and that judgment belongs to
-    :func:`thread_archive.libraries`, which can see the vector arm from here."""
+    :func:`thread_archive._api.libraries`, which can see the vector arm from here."""
     global _LEIDEN_AVAILABLE
     if _LEIDEN_AVAILABLE is None:
         try:
@@ -64,7 +64,7 @@ def leiden_available() -> bool:
 def engine() -> str:
     """The live community engine: ``"leiden"`` or ``"louvain"``.
 
-    Reported by :func:`thread_archive.status` so which one is running is a fact an
+    Reported by :func:`thread_archive._api.status` so which one is running is a fact an
     operator can read rather than infer — the module docstring covers what the
     difference costs."""
     return "leiden" if leiden_available() else "louvain"

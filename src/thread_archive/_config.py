@@ -13,17 +13,27 @@ A single archive lives under one *home* directory:
       dumps/              # drop zone: account exports dropped here are auto-imported
       config.json         # operator choices (source opt-outs, setup state); absent = all defaults
 
-`home` resolves from ``THREAD_ARCHIVE_HOME`` (env), else ``~/.thread/archive``
+`home` resolves from the archive this process has open (:func:`pin_home`, set by
+``open_archive``), else ``THREAD_ARCHIVE_HOME`` (env), else ``~/.thread/archive``
 (the family's ``~/.thread/<product>/`` namespace; ``~/.thread_archive``
 survives as a compat symlink on some boxes).
 Truth and index paths can be overridden individually (e.g. for tests).
+
+Which home is *selected* is this layer's business, not the environment's. Opening
+an archive has to make every layer agree on one home — the SQLite engine, the
+truth log's append handles and search all resolve independently — and the pin is
+where that agreement lives. It is deliberately not an environment variable:
+`os.environ` is shared with every library in the process and inherited by every
+child it spawns, so a selection written there is a side effect of *reading* an
+archive that outlives the read, and code that legitimately wants to know what the
+environment said can no longer find out.
 
 ``config.json`` is the durable form of the choices a user makes in the
 ``thread_archive`` setup flow — which sources to ingest, what setup decided —
 and every ingest path (the watcher daemon, opted-in MCP catch-up, ``archive
 watch``) consults it via :func:`source_enabled`. A missing file means "all
-defaults": every source enabled, exactly the pre-config behavior. An existing
-file that cannot be trusted disables every source until it is repaired.
+defaults": every source enabled. An existing file that cannot be trusted
+disables every source until it is repaired.
 """
 
 from __future__ import annotations
@@ -80,14 +90,62 @@ class ArchivePaths:
         """Drop zone for downloaded account exports (auto-imported by the watcher)."""
         return self.home / "dumps"
 
+# The home of the archive this process has open, or None when none is. A plain
+# module global rather than a ContextVar: every thread in the process shares the
+# one open archive — the viewer's request handlers, the watcher's background
+# passes, the search federation's workers — and a context-scoped pin would leave
+# a thread nobody copied a context into resolving a different home than the
+# engine it is querying.
+_pinned_home: Path | None = None
+
+
+def pin_home(home: Path) -> None:
+    """Select ``home`` as the archive this process is working in.
+
+    Called by ``open_archive`` once the home is resolved, so that the engine, the
+    truth log and search cannot disagree about which archive they are on. Opening
+    a different one repins; :func:`clear_pinned_home` (from ``close_engine``)
+    releases the selection when the archive closes.
+    """
+    global _pinned_home
+    _pinned_home = home
+
+
+def clear_pinned_home() -> None:
+    """Release the selection — no archive is open. Idempotent."""
+    global _pinned_home
+    _pinned_home = None
+
+
+def pinned_home() -> Path | None:
+    """The open archive's home, or None when none is open.
+
+    For a caller that must distinguish *what this process chose* from *what the
+    environment said* — asking whether an installed agent covers a given home is
+    the case that gets this wrong, since the selection is true of the asker and
+    says nothing about the agent.
+    """
+    return _pinned_home
+
+
+def env_home() -> Path | None:
+    """The home ``THREAD_ARCHIVE_HOME`` names, ignoring any open archive."""
+    value = os.environ.get(ENV_HOME)
+    return Path(value).expanduser() if value else None
+
+
 def resolve_paths(
     home: str | os.PathLike[str] | None = None,
     *,
     truth_dir: str | os.PathLike[str] | None = None,
     index_path: str | os.PathLike[str] | None = None,
 ) -> ArchivePaths:
-    """Resolve archive paths from explicit args, then env, then defaults."""
-    base = Path(home) if home is not None else Path(os.environ.get(ENV_HOME) or default_home())
+    """Resolve archive paths: explicit args, then the open archive, then env,
+    then defaults."""
+    if home is not None:
+        base = Path(home)
+    else:
+        base = _pinned_home or Path(os.environ.get(ENV_HOME) or default_home())
     base = base.expanduser()
 
     truth = (
@@ -210,7 +268,7 @@ def dev_mode(cfg: dict) -> bool:
 
     Two things turn on it. **Runtime telemetry** — the ledgers of served requests,
     retrieval calls, ingest passes and load runs — records only here
-    (:mod:`.._ops.telemetry`): they are instruments for whoever maintains
+    (:mod:`._ops.telemetry`): they are instruments for whoever maintains
     thread-archive, nothing in the product reads them, and an install that is
     merely run should not be accumulating a row per page someone opened. Fault
     records are not part of that and never stop: an operator is owed the news that

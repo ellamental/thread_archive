@@ -600,8 +600,8 @@ def _repo_with_commit(tmp_path, files, message, repo=None, when=None):
 
 @pytest.mark.skipif(not _git_available(), reason="git not installed")
 def test_the_committing_session_does_not_displace_the_contributors(archive_home, tmp_path):
-    """The mistake this replaces: a commit resolved to whoever ran ``git commit``
-    and stopped looking. A commit carries work from several sittings, and the
+    """The failure this guards: resolving a commit to whoever ran ``git commit``
+    and stopping there. A commit carries work from several sittings, and the
     session that typed the command is often not the one that did it."""
     repo, sha = _repo_with_commit(tmp_path, {"rank.py": "x\n"}, "change the ranker")
 

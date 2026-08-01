@@ -19,7 +19,7 @@ must be *queried* with it (llama.cpp-nomic ≠ torch-nomic are different spaces)
 ``$THREAD_ARCHIVE_EMBED=off`` pins a process lexical-only: every embedder reports
 unavailable, so no model loads and search runs on the lexical arm alone. It is the
 switch for a box that has the extra installed but wants search cheap and cold-start
-free (``retrieval_eval.py --lexical-only`` sets it for the run it measures).
+free (``search_lab/eval_home.pin_arms`` sets it for a lexical benchmark run).
 """
 
 from __future__ import annotations
@@ -50,8 +50,8 @@ class SentenceEncoder(Protocol):
 
 # Cap input length before embedding. On the in-process torch path a batch of many
 # 6000-char docs (≈1500 tokens each) spikes MPS memory — it hangs and crawls
-# (~9 docs/s). 2048 chars keeps the gist of all but the longest code/tool dumps
-# (mean doc is ~300 chars) and runs ~7× faster with no hang.
+# (~9 docs/s). 2048 chars sits well above the mean embedded doc, so it keeps the
+# gist of all but the longest code/tool dumps, and runs ~7× faster with no hang.
 EMBEDDING_CHAR_CAP = 2048
 
 # Query vectors kept per embedder, most-recently-used last. A query embed is a
@@ -98,8 +98,7 @@ def models_enabled(var: str = "THREAD_ARCHIVE_EMBED") -> bool:
     """False when ``$THREAD_ARCHIVE_EMBED`` is set to an off value (``off``, ``0``,
     ``false``, ``no``) — the switch that pins a process to lexical search without
     uninstalling the ``[embeddings]`` extra. Read per call, so it can be set for a
-    single command or subprocess. ``var`` names the switch, so the re-rank stage
-    reads its own with the same spellings."""
+    single command or subprocess. ``var`` names the environment variable to read."""
     return os.environ.get(var, "").strip().lower() not in _OFF
 
 
@@ -160,12 +159,9 @@ def _device() -> str:
 
 def dtype_kwargs(device: str) -> dict:
     """Model kwargs for ``device``: fp16 on an accelerator — roughly double the
-    inference speed at a numerical difference that does not move ranking — and
-    nothing on CPU, where fp16 is emulated and slower.
-
-    Both model paths share this one policy. They did not always: the cross-encoder
-    applied it and the embedder loaded fp32, which is the difference between a cold
-    corpus embedding in an hour and in several."""
+    inference speed at a numerical difference that does not move ranking, and the
+    difference between a cold corpus embedding in an hour and in several — and
+    nothing on CPU, where fp16 is emulated and slower."""
     if not device.startswith(("mps", "cuda")):
         return {}
     try:
@@ -342,7 +338,13 @@ class Embedder:
         # Load policy: when the process defers construction to warm (a server), a
         # query arriving before the model is resident sits the arm out (lexical
         # stays fast) rather than blocking on the tens-of-seconds cold load.
+        #
+        # Flagged here because this is the only place the *reason* is known: a
+        # caller upstream sees the same ``None`` for models switched off, a cached
+        # load failure, and this — and those want opposite responses (reinstall,
+        # investigate, wait a few seconds).
         if defer_construction() and not self.is_loaded():
+            _probe.flag("embed_deferred")
             return None
         # One lock acquisition per chunk rather than one for the whole batch, so a
         # search query waits out at most :data:`EMBED_BATCH_CHUNK` documents instead

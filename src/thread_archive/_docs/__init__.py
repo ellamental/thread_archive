@@ -1,6 +1,6 @@
-"""The manual this installation carries: the public ``docs/`` pages, as data.
+"""The manual this installation carries: the ``docs/public/`` pages, as data.
 
-The manual ships. The wheel carries ``docs/*.md`` here as package data
+The manual ships. The wheel carries ``docs/public/*.md`` here as package data
 (``pyproject.toml``), so ``pip install thread-archive`` carries the pages the
 repo does — install, cli, mcp, format, providers, the rest — and an install can
 answer "what is this and how do I drive it" with no network and no clone. Two
@@ -8,22 +8,23 @@ readers resolve through this module and share its ordering: the
 ``thread-archive docs`` verb at a terminal, and the viewer's ``/docs`` pages
 (``_web/server.py``).
 
-**Top-level pages only, and that is the whole public/internal split.**
-``docs/internal/`` — the release process, the bench landscape, the dev panels —
-is written for whoever works on this repo: it names branches, gates and
-instruments no install has. Those pages neither ship (the wheel excludes the
-directory) nor list here, because the glob below reads one directory deep. So
-the boundary is which directory a page sits in, drawn once, with nothing to keep
-in sync: moving a file across it moves what installs get and what both readers
-show.
+**Pages under ``public/`` only, and that is the whole public/internal split.**
+``docs/*.md`` — the release process, the bench landscape, the dev panels — is
+written for whoever works on this repo: it names branches, gates and instruments
+no install has. Those pages neither ship (the wheel includes ``docs/public``
+and nothing else under ``docs/``) nor list here, because the glob below reads
+one directory and that directory is ``public/``. So the boundary is which
+directory a page sits in, drawn once, with nothing to keep in sync: moving a
+file across it moves what installs get and what both readers show. Publishing a
+page is a deliberate move into ``public/``, never an oversight.
 
 Two locations answer, in this order:
 
 * ``thread_archive/_docs/*.md`` — the packaged copy. What an install has.
-* ``<repo>/docs/*.md`` — the tree the packaged copy is made from. A checkout
-  (and an editable install, which resolves the package out of ``src/``) has no
-  packaged copy and reads this one, so editing a page lands in the viewer on the
-  next request with nothing to rebuild.
+* ``<repo>/docs/public/*.md`` — the tree the packaged copy is made from. A
+  checkout (and an editable install, which resolves the package out of ``src/``)
+  has no packaged copy and reads this one, so editing a page lands in the viewer
+  on the next request with nothing to rebuild.
 
 The packaged copy wins where it exists, because an install must never read a
 directory it happens to sit near. Neither location is guaranteed — a stripped
@@ -44,8 +45,8 @@ from pathlib import Path
 from typing import Optional
 
 _PACKAGED = Path(__file__).resolve().parent
-#: ``src/thread_archive/_docs`` → ``<repo>/docs``.
-_CHECKOUT = _PACKAGED.parents[2] / "docs"
+#: ``src/thread_archive/_docs`` → ``<repo>/docs/public``.
+_CHECKOUT = _PACKAGED.parents[2] / "docs" / "public"
 
 #: Where a manual is looked for, in order. The default for every function here,
 #: and a seam rather than a knob: this tree always resolves the checkout copy, so
@@ -169,8 +170,9 @@ def pages(locations: Sequence[Path] = LOCATIONS) -> list[Page]:
     directory = docs_dir(locations)
     if directory is None:
         return []
-    # One directory deep, deliberately: `docs/internal/` is the maintainer's half
-    # of the manual and is not a reader's to find (see the module docstring).
+    # One directory deep, deliberately: `docs/*.md` — the directory above this
+    # one in a checkout — is the maintainer's half of the manual and is not a
+    # reader's to find (see the module docstring).
     found = {p.stem: p for p in sorted(directory.glob("*.md"))}
     ordered = [found.pop(slug) for slug in ORDER if slug in found]
     return [_page(p) for p in ordered + sorted(found.values())]

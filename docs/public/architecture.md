@@ -44,7 +44,7 @@ src/thread_archive/
                     #   server and the CLI verbs both serve
   _api.py           # internal coordination layer the CLI / MCP / web call into
   cli.py            # the `thread-archive` command — every verb, incl. `setup`
-  _docs/            # the manual, as package data: docs/*.md, force-included at build
+  _docs/            # the manual, as package data: docs/public/*.md, renamed in at build
   _setup/           # what the archive puts on a machine and takes back off it: the wizard
                     #   behind `thread-archive setup` (first-run setup + status), and the
                     #   `thread-archive uninstall` flow
@@ -59,7 +59,7 @@ src/thread_archive/
   _retrieval/       # FTS5 + vector search, read reconstruction, the code axis (code.py)
   _knowledge/       # storage seam for the truth format's extension region — an
                     #   external knowledge layer's records, stored and backed up
-                    #   here, written and specified elsewhere (docs/format.md)
+                    #   here, written and specified elsewhere (docs/public/format.md)
   _watcher/         # local-source watcher (self-feeding ingest)
   _mcp/             # the library-native read MCP server
   _web/             # the viewer: stdlib server + built bundle (cohosted by `watch --web`);
@@ -72,7 +72,7 @@ src/thread_archive/
 frontend/           # the viewer's React+Vite source (dev-only; builds into _web/static/)
 devweb/             # the dev panels (retrieval / telemetry / lab): their own server,
                       #   their own app, their own port — `python -m devweb`. Ships in
-                      #   nothing; see docs/internal/devweb.md
+                      #   nothing; see docs/devweb.md
 host/               # operator layer: Makefile over `thread-archive service`, family-manifest writer
 scripts/            # repo tooling (coverage gate, frontend-build check, license notices)
 search_lab/         # the search lab (never shipped): the scoring core, quality + calibration
@@ -80,4 +80,8 @@ search_lab/         # the search lab (never shipped): the scoring core, quality 
                       #   search_lab/README.md
 tests/install/      # from-nothing install proofs: clean-container Docker + realistic
                       #   discovery-driven first run (~/.claude-style stores, macOS + Linux)
+docs/                 # the maintainer's half of the manual (releasing, benchmarks, the
+                      #   dev panels); ships in no wheel
+docs/public/          # the manual proper — the pages the wheel carries and both
+                      #   `thread-archive docs` and the viewer serve
 ```

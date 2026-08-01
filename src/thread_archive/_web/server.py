@@ -4,7 +4,10 @@ The whole read surface the UI needs already exists as the plain Python library
 (:mod:`thread_archive._api`): ``search`` / ``read_thread`` / ``status``. This is a
 skin over it — no ranking/fusion logic is duplicated here. :func:`route` is a pure
 ``(method, path, params, body) -> (status, content_type, body, headers)`` function
-so tests drive it without opening a socket. :func:`serve_in_thread` runs it in a
+so tests drive it without opening a socket, and it dispatches through
+:data:`ROUTES` — a table, so what this server answers can be *enumerated* and not
+only executed (the public-URL pin and the rules every endpoint is held to both
+read it). :func:`serve_in_thread` runs it in a
 background daemon thread so the always-on ``thread-archive watch --web`` process can
 cohost the viewer (one process, one engine) — that's how the read surface gets a
 persistent URL with no extra daemon. ``thread-archive web`` opens that URL; it
@@ -26,6 +29,8 @@ import re
 import shutil
 import threading
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -216,6 +221,23 @@ def _serve_file(p: Path, *, headers: Optional[dict] = None) -> Response:
         return _text(404, "not found")
     ctype = _CTYPES.get(p.suffix.lower(), "application/octet-stream")
     return 200, ctype, p.read_bytes(), headers or {}
+
+
+def _bundled_asset(root: Path, rel: str) -> Optional[Path]:
+    """The file the built bundle publishes at ``rel``, or ``None``.
+
+    A lookup in an index of what the bundle actually holds, rather than joining
+    the request onto ``root`` and then arguing about where the result landed:
+    the path served comes out of the walk, so a climb — encoded or not — cannot
+    name a file the build did not emit. The request string is only ever a key.
+
+    The index is built per request. It is a handful of files, and a frontend
+    rebuild has to be live on the next reload rather than at the next restart
+    of the process hosting this.
+    """
+    return {
+        p.relative_to(root).as_posix(): p for p in root.rglob("*") if p.is_file()
+    }.get(rel)
 
 
 #: Stamped into the served shell when the operator has asked for the dev-panel
@@ -823,7 +845,7 @@ def resolve_archive_link(link_id: str, source: Optional[str] = None) -> Optional
     shapes every surface accepts: a ULID (the primary key), an all-digit legacy
     integer alias (``Thread.legacy_id``, a permanent alias — pasted integer links
     keep resolving), or a provider session id via the shared
-    :func:`thread_archive._store.resolve.resolve_session_source_id` union
+    :func:`thread_archive._providers.resolve_session_ref` union
     (``Thread.source_id`` plus the ``ImportState`` watermarks — a compaction
     continuation's uuid lives only there), the same union the MCP reader uses, so
     every surface answers alike. ``source`` narrows to one provider (an editor
@@ -832,13 +854,14 @@ def resolve_archive_link(link_id: str, source: Optional[str] = None) -> Optional
     junk candidate must never land on an unrelated thread through the ULID or
     legacy-alias branches. Owned here: the watcher cohosts the persistent server,
     so the archive serves its own editor links."""
+    from .._providers import resolve_session_ref
     from .._retrieval.read import resolve_thread_ref
-    from .._store import get_session, resolve_session_source_id
+    from .._store import get_session
 
     api.open_archive()
     with get_session() as s:
         if source:
-            return resolve_session_source_id(s, link_id, source=source.replace("_", "-"))
+            return resolve_session_ref(s, link_id, source=source.replace("_", "-"))
         return resolve_thread_ref(s, link_id)
 
 
@@ -861,6 +884,381 @@ def _search_shape(params: dict) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 # the router (socket-free, the testable core)
 # ---------------------------------------------------------------------------
+# Dispatch is a table, not a chain of path comparisons, because the surface has
+# readers that are not this function. What endpoints exist is asked by the public
+# API pin (a URL other programs call must not be renamed by accident), by the
+# tests that hold every route to a cross-cutting rule, and by anyone reading the
+# server to find out what it answers. A chain can only be *executed*; a table can
+# be enumerated, so those readers derive their answer instead of keeping a second
+# list that silently goes stale.
+#
+# Only the API is in it. Everything else the server answers — a built asset, and
+# the SPA shell every other path falls through to — is not an endpoint but a
+# fallback, and is resolved after the table misses (see :func:`route`).
+
+
+@dataclass(frozen=True)
+class Request:
+    """One request, as a handler sees it.
+
+    ``tail`` is the raw remainder after a prefix route's prefix — undecoded,
+    because what it holds differs per route: a content hash matched against a
+    strict regex, a percent-encoded model id that may contain slashes, a thread
+    ref. Each handler decodes what it actually has.
+    """
+
+    path: str
+    params: dict
+    body: Optional[RequestBody] = None
+    tail: str = ""
+
+
+Handler = Callable[[Request], Response]
+
+
+@dataclass(frozen=True)
+class Route:
+    """One endpoint: how it is addressed, and what it does with the archive."""
+
+    method: str
+    #: The exact path, or — with ``prefix`` — the leading segment it claims.
+    path: str
+    handler: Handler
+    prefix: bool = False
+    #: True where the endpoint changes something. The adapter's cross-site guard
+    #: is keyed on the *method* (only POST is guarded), so this is what keeps the
+    #: two agreeing: a writing route reachable by GET would be a write with no
+    #: guard in front of it.
+    writes: bool = False
+
+    def matches(self, method: str, path: str) -> bool:
+        if method != self.method:
+            return False
+        return path.startswith(self.path) if self.prefix else path == self.path
+
+
+# ── writes ───────────────────────────────────────────────────────────────────
+# Each carries its own cross-site guard (see _write_allowed) on top of the Host
+# check every request passes.
+
+def _route_upload(req: Request) -> Response:
+    """Accept an account-export bundle into the drop zone the cohosting watcher
+    already imports from."""
+    if req.body is None:
+        return _text(400, "missing upload body")
+    return _receive_drop(_first(req.params, "name") or "", req.body)
+
+
+def _notice_write(req: Request, act) -> Response:
+    """Shared body of the two notice writes.
+
+    The notice key rides the query string rather than a JSON body: the write
+    guard is the header and Origin, not the content type, and keeping the one
+    body-reading endpoint the one that needs a body (a multi-gigabyte export)
+    leaves the router with nothing to parse.
+    """
+    key = _first(req.params, "key")
+    if not key:
+        return _text(400, "missing notice key")
+    try:
+        return _ok(act(key))
+    except KeyError:
+        # Silencing something that isn't firing would park a silence in the store
+        # waiting to hide a future occurrence — refuse, and say so, rather than
+        # accept a write with no condition behind it.
+        return _text(404, f"no active notice with key {key!r}")
+
+
+def _route_silence(req: Request) -> Response:
+    return _notice_write(req, api.silence_notice)
+
+
+def _route_unsilence(req: Request) -> Response:
+    return _notice_write(req, api.unsilence_notice)
+
+
+# ── reads: thin wrappers over thread_archive._api ────────────────────────────
+
+def _route_health(_: Request) -> Response:
+    """Cheap liveness for probes (the family manifest's health URL).
+
+    /api/status is the real survey but counts the whole index — seconds, not the
+    milliseconds a poller budgets.
+    """
+    paths = api.open_archive()
+    return _ok({"ok": paths.index_path.exists(), "home": str(paths.home)})
+
+
+def _route_status(_: Request) -> Response:
+    return _ok(_status())
+
+
+def _route_notices(_: Request) -> Response:
+    """The action queue with silences applied.
+
+    Its own endpoint rather than a field on /api/status: it is cheap (records +
+    import probes, no index counting), and silencing one has to re-read it
+    immediately — which must not mean re-running the survey behind status.
+    """
+    return _ok(api.notices())
+
+
+def _route_loads(req: Request) -> Response:
+    """Live load progress + recent runs. Cheap by construction — two small files
+    off the home, no index counting — so a page watching a running load can poll
+    it without competing with the load for the store."""
+    return _ok(api.load_status(limit=_int(req.params, "limit", 20, hi=200)))
+
+
+def _route_disk(_: Request) -> Response:
+    """What the home costs, by kind.
+
+    Its own endpoint rather than a field on /api/status because it walks the
+    directory tree: the health page polls status every 30s and has no reason to
+    re-walk 40k files that often. This one is polled too, and several viewers
+    poll it at once, so it takes the staleness budget that keeps those onto one
+    walk — a served number that is seconds old is indistinguishable from a fresh
+    one at this scale.
+    """
+    from .._ops.disk import POLL_MAX_AGE_S
+
+    return _ok(api.disk_usage(max_age_s=POLL_MAX_AGE_S))
+
+
+def _route_drops(_: Request) -> Response:
+    """The drop zone as the upload page reads it. Directory listings only — cheap
+    enough to poll while an import the watcher owns runs elsewhere."""
+    return _ok(_drops())
+
+
+def _route_sources(_: Request) -> Response:
+    return _ok({"sources": _list_sources()})
+
+
+def _route_stats(req: Request) -> Response:
+    """Token/cost analytics.
+
+    Backed by an incrementally-maintained rollup (_store._metrics), so only the
+    first survey on a fresh cache is slow — thereafter it folds just new events.
+    By default every model is listed (no silent cap); `?models=N` optionally caps
+    the by-model list.
+    """
+    models = _first(req.params, "models")
+    limit = int(models) if models and models.isdigit() else None
+    return _ok(api.stats(model_limit=limit))
+
+
+def _route_model_stats(req: Request) -> Response:
+    """Per-model drill-down. The tail is the model name — taken whole (model ids
+    like 'deepseek/deepseek-v4-pro' contain slashes) and percent-decoded (the SPA
+    links with encodeURIComponent; a hand-typed literal slash works too)."""
+    model = unquote(req.tail)
+    detail = api.model_stats(model)
+    if detail is None:
+        return 404, "application/json", json.dumps({"error": f"no data for model {model!r}"}).encode(), {}
+    return _ok(detail)
+
+
+def _route_archive_link(req: Request) -> Response:
+    """Resolve a session id to its thread — the editor buttons' endpoint.
+
+    ``id`` may repeat: a caller that cannot tell which of the uuids it can see is
+    the session id sends every candidate, best guess first, and the archive — the
+    only party that knows what was actually imported — picks the first that
+    resolves. An editor webview holds ids for turns, drafts and client-side
+    threads that look exactly like a session uuid and can never resolve; making
+    them harmless beats guessing right.
+    """
+    link_ids = _repeated(req.params, "id")
+    if not link_ids:
+        return _text(400, "missing id")
+    source = _first(req.params, "source")
+    for link_id in link_ids:
+        tid = resolve_archive_link(link_id, source)
+        if tid is not None:
+            url = f"/archive/{tid}"
+            if _bool(req.params, "redirect", False):
+                return _redirect(url)
+            return _ok({"thread_id": tid, "url": url, "id": link_id})
+    tried = ", ".join(link_ids)
+    return 404, "application/json", json.dumps({"error": f"no thread for id={tried}"}).encode(), {}
+
+
+def _route_blob(req: Request) -> Response:
+    """A blob-store file (extracted/materialized image or document content — see
+    _truth.blobs), addressed by content hash; the reader's <img> tags point here.
+    The name regex is the traversal guard, and content addressing makes the
+    response immutable, so cache it hard."""
+    m = re.match(r"^([0-9a-f]{64})(\.[A-Za-z0-9]{1,8})?$", req.tail)
+    if not m:
+        return _text(404, "bad blob name")
+    api.open_archive()
+    from .._truth.blobs import blob_file, media_type_for_path
+
+    # The URL's extension, when it carries one, is what resolves the file: the
+    # same bytes can be stored under several (one message's image/png is
+    # another's image/svg+xml), and a link that said .png must not be answered
+    # with an SVG's Content-Type.
+    bp = blob_file(m.group(1), ext=m.group(2))
+    if bp is None:
+        return _text(404, "no such blob")
+    try:
+        blob = bp.read_bytes()
+    except OSError:
+        return _text(404, "no such blob")
+    return 200, media_type_for_path(bp), blob, {
+        "Cache-Control": "public, max-age=31536000, immutable",
+        # Blob content is untrusted: its bytes and its declared media type both
+        # came out of an archived payload. Most of it is inert as an image, but
+        # a stored SVG *navigated to* — the reader's images link through to
+        # full size — is a document on this origin, and the page-level policy
+        # only stops it scripting, not painting. `sandbox` drops it into an
+        # opaque origin, so what it can impersonate is nothing. Documents only:
+        # a response CSP does not apply to a subresource, so the <img> that
+        # renders the same blob inline is unaffected.
+        "Content-Security-Policy": "sandbox",
+    }
+
+
+def _route_search(req: Request) -> Response:
+    params = req.params
+    q = (_first(params, "q") or "").strip()
+    # Both shapes page. `page` is 1-based and every page is a slice of ONE
+    # ordering (see _retrieval.search) — the viewer walks a result set rather
+    # than being handed a cut and told to narrow the query.
+    limit, page = _search_shape(params)
+    if not q:
+        # Empty query = browse, the same contract as MCP thread_search: one
+        # row per thread by last activity, honoring the structural filters.
+        # Rows carry thread_source / n_events; content options don't apply.
+        hits = api.search(
+            "",
+            limit=limit,
+            page=page,
+            source=_csv(params, "source"),
+            since=_first(params, "since"),
+            until=_first(params, "until"),
+            agents=_first(params, "agents"),
+        )
+        return _ok({"query": "", "browse": True, "hits": hits,
+                    "quality": None, "subjects": _subjects_payload(hits),
+                    **_page_facts(hits, limit)})
+    hits = api.search(
+        q,
+        limit=limit,
+        page=page,
+        source=_csv(params, "source"),
+        content_types=_csv(params, "content_types"),
+        since=_first(params, "since"),
+        until=_first(params, "until"),
+        agents=_first(params, "agents"),
+        context_lines=0,  # the viewer builds its own ±1 snippet from full_content
+    )
+    quality = _quality_signal(hits, q)
+    return _ok({"query": q, "browse": False, "hits": _shape_search_hits(hits, q),
+                "quality": quality, "subjects": _subjects_payload(hits),
+                **_page_facts(hits, limit)})
+
+
+def _route_read(req: Request) -> Response:
+    """A thread, flat or structured.
+
+    Two URLs, one handler: ``/api/thread/`` serves the viewer's reader (typed
+    render blocks), ``/api/read/`` the CLI-shaped transcript string. The tail is a
+    thread ref — a ULID id, a legacy integer alias, or a provider session id —
+    resolved the same way every other surface does.
+    """
+    structured = req.path.startswith("/api/thread/")
+    ref = unquote(req.path.rsplit("/", 1)[-1])
+    tid = resolve_archive_link(ref)
+    if tid is None:
+        return _text(404, f"no thread with id {ref}")
+    thinking = _bool(req.params, "thinking", structured)
+    tools = _bool(req.params, "tools", True)
+    if structured:
+        return _ok(api.read_thread_structured(tid, include_thinking=thinking, include_tools=tools))
+    # flat transcript string (CLI-shaped). 'full' shows tool calls (with
+    # thinking), 'chat' is the readable assistant text only.
+    transcript = api.read_thread(tid, mode="full" if tools else "chat")
+    return _ok({"thread_id": tid, "transcript": transcript})
+
+
+def _route_threads(req: Request) -> Response:
+    return _ok(
+        _list_threads(
+            limit=_int(req.params, "limit", 100),
+            page=_int(req.params, "page", 1, hi=1_000_000),
+            q=_first(req.params, "q"),
+            types=_csv(req.params, "types"),
+        )
+    )
+
+
+def _route_thread_types(_: Request) -> Response:
+    return _ok({"types": _list_thread_types()})
+
+
+# The manual: the same pages `thread-archive docs` prints. Markdown source,
+# rendered in the browser by the renderer the transcripts already use. Served
+# from the resolver rather than the static bundle, so a clone's edit to
+# docs/public/ is live on the next request with no rebuild.
+
+def _route_docs(_: Request) -> Response:
+    return _ok({"pages": [
+        {"slug": p.slug, "title": p.title, "summary": p.summary} for p in _docs.pages()
+    ]})
+
+
+def _route_doc_page(req: Request) -> Response:
+    doc = _docs.find(unquote(req.tail))
+    if doc is None:
+        return _text(404, "no such manual page")
+    return _ok({"slug": doc.slug, "title": doc.title, "markdown": doc.read()})
+
+
+#: Every endpoint the server answers, in match order. Exact paths are resolved
+#: before prefixes, so a route like ``/api/stats`` is never shadowed by
+#: ``/api/stats/model/`` and neither has to be declared with the other in mind.
+ROUTES: tuple[Route, ...] = (
+    Route("POST", "/api/upload", _route_upload, writes=True),
+    Route("POST", "/api/notices/silence", _route_silence, writes=True),
+    Route("POST", "/api/notices/unsilence", _route_unsilence, writes=True),
+    Route("GET", "/api/health", _route_health),
+    Route("GET", "/api/status", _route_status),
+    Route("GET", "/api/notices", _route_notices),
+    Route("GET", "/api/loads", _route_loads),
+    Route("GET", "/api/disk", _route_disk),
+    Route("GET", "/api/drops", _route_drops),
+    Route("GET", "/api/sources", _route_sources),
+    Route("GET", "/api/stats", _route_stats),
+    Route("GET", "/api/archive-link", _route_archive_link),
+    Route("GET", "/api/search", _route_search),
+    Route("GET", "/api/threads", _route_threads),
+    Route("GET", "/api/thread-types", _route_thread_types),
+    Route("GET", "/api/docs", _route_docs),
+    Route("GET", "/api/stats/model/", _route_model_stats, prefix=True),
+    Route("GET", "/api/blob/", _route_blob, prefix=True),
+    Route("GET", "/api/read/", _route_read, prefix=True),
+    Route("GET", "/api/thread/", _route_read, prefix=True),
+    Route("GET", "/api/docs/", _route_doc_page, prefix=True),
+)
+
+
+def resolve(method: str, path: str) -> Optional[Route]:
+    """The route that answers ``(method, path)``, or None.
+
+    Exact before prefix, so declaration order in :data:`ROUTES` carries no
+    meaning a reader has to hold in their head.
+    """
+    for route_ in ROUTES:
+        if not route_.prefix and route_.matches(method, path):
+            return route_
+    for route_ in ROUTES:
+        if route_.prefix and route_.matches(method, path):
+            return route_
+    return None
+
+
 def route(
     method: str, path: str, params: dict, body: Optional[RequestBody] = None
 ) -> Response:
@@ -868,234 +1266,19 @@ def route(
 
     ``body`` is the unread request body, present only on a write. The adapter has
     already established that a write may be made at all — the router's job is
-    what it means, not whether it is allowed."""
+    what it means, not whether it is allowed.
+    """
+    matched = resolve(method, path)
+    if matched is not None:
+        tail = path[len(matched.path):] if matched.prefix else ""
+        return matched.handler(Request(path=path, params=params, body=body, tail=tail))
+
+    if method not in ("GET", "POST"):
+        return _text(405, "method not allowed")
     if method == "POST":
-        if path == "/api/upload":
-            if body is None:
-                return _text(400, "missing upload body")
-            return _receive_drop(_first(params, "name") or "", body)
-        if path in ("/api/notices/silence", "/api/notices/unsilence"):
-            # The notice key rides the query string rather than a JSON body: the
-            # write guard is the header and Origin, not the content type, and
-            # keeping the one body-reading endpoint the one that needs a body
-            # (a multi-gigabyte export) leaves the router with nothing to parse.
-            key = _first(params, "key")
-            if not key:
-                return _text(400, "missing notice key")
-            try:
-                if path.endswith("/silence"):
-                    return _ok(api.silence_notice(key))
-                return _ok(api.unsilence_notice(key))
-            except KeyError:
-                # Silencing something that isn't firing would park a silence in
-                # the store waiting to hide a future occurrence — refuse, and say
-                # so, rather than accept a write with no condition behind it.
-                return _text(404, f"no active notice with key {key!r}")
         # Every other path is a read surface, so the method is what is wrong with
         # this request — not the address.
         return _text(405, "method not allowed")
-    if method != "GET":
-        return _text(405, "method not allowed")
-
-    # ---- JSON API: thin wrappers over thread_archive._api ----
-    if path == "/api/health":
-        # Cheap liveness for probes (the family manifest's health URL).
-        # /api/status is the real survey but counts the whole index — seconds,
-        # not the milliseconds a poller budgets.
-        paths = api.open_archive()
-        return _ok({"ok": paths.index_path.exists(), "home": str(paths.home)})
-
-    if path == "/api/status":
-        return _ok(_status())
-
-    if path == "/api/notices":
-        # The action queue with silences applied. Its own endpoint rather than a
-        # field on /api/status: it is cheap (records + import probes, no index
-        # counting), and silencing one has to re-read it immediately — which must
-        # not mean re-running the survey behind status.
-        return _ok(api.notices())
-
-    if path == "/api/loads":
-        # Live load progress + recent runs. Cheap by construction — two small
-        # files off the home, no index counting — so a page watching a running
-        # load can poll it without competing with the load for the store.
-        return _ok(api.load_status(limit=_int(params, "limit", 20, hi=200)))
-
-    if path == "/api/disk":
-        # What the home costs, by kind. Its own endpoint rather than a field on
-        # /api/status because it walks the directory tree: the health page polls
-        # status every 30s and has no reason to re-walk 40k files that often.
-        # This one is polled too, and several viewers poll it at once, so it takes
-        # the staleness budget that keeps those onto one walk — a served number
-        # that is seconds old is indistinguishable from a fresh one at this scale.
-        from .._ops.disk import POLL_MAX_AGE_S
-
-        return _ok(api.disk_usage(max_age_s=POLL_MAX_AGE_S))
-
-    if path == "/api/drops":
-        # The drop zone as the upload page reads it. Directory listings only —
-        # cheap enough to poll while an import the watcher owns runs elsewhere.
-        return _ok(_drops())
-
-    if path == "/api/sources":
-        return _ok({"sources": _list_sources()})
-
-    if path == "/api/stats":
-        # Token/cost analytics. Backed by an incrementally-maintained rollup
-        # (_store._metrics), so only the first survey on a fresh cache is slow —
-        # thereafter it folds just new events. By default every model is listed (no
-        # silent cap); `?models=N` optionally caps the by-model list.
-        models = _first(params, "models")
-        limit = int(models) if models and models.isdigit() else None
-        return _ok(api.stats(model_limit=limit))
-
-    if path.startswith("/api/stats/model/"):
-        # Per-model drill-down. The tail is the model name — taken whole (model ids
-        # like 'deepseek/deepseek-v4-pro' contain slashes) and percent-decoded (the
-        # SPA links with encodeURIComponent; a hand-typed literal slash works too).
-        model = unquote(path[len("/api/stats/model/"):])
-        detail = api.model_stats(model)
-        if detail is None:
-            return 404, "application/json", json.dumps({"error": f"no data for model {model!r}"}).encode(), {}
-        return _ok(detail)
-
-    if path == "/api/archive-link":
-        # ``id`` may repeat: a caller that cannot tell which of the uuids it can
-        # see is the session id sends every candidate, best guess first, and the
-        # archive — the only party that knows what was actually imported — picks
-        # the first that resolves. An editor webview holds ids for turns, drafts
-        # and client-side threads that look exactly like a session uuid and can
-        # never resolve; making them harmless beats guessing right.
-        link_ids = _repeated(params, "id")
-        if not link_ids:
-            return _text(400, "missing id")
-        source = _first(params, "source")
-        for link_id in link_ids:
-            tid = resolve_archive_link(link_id, source)
-            if tid is not None:
-                url = f"/archive/{tid}"
-                if _bool(params, "redirect", False):
-                    return _redirect(url)
-                return _ok({"thread_id": tid, "url": url, "id": link_id})
-        tried = ", ".join(link_ids)
-        return 404, "application/json", json.dumps({"error": f"no thread for id={tried}"}).encode(), {}
-
-    if path.startswith("/api/blob/"):
-        # A blob-store file (extracted/materialized image or document content —
-        # see _truth.blobs), addressed by content hash; the reader's <img> tags
-        # point here. The name regex is the traversal guard, and content
-        # addressing makes the response immutable, so cache it hard.
-        m = re.match(r"^([0-9a-f]{64})(\.[A-Za-z0-9]{1,8})?$", path[len("/api/blob/"):])
-        if not m:
-            return _text(404, "bad blob name")
-        api.open_archive()
-        from .._truth.blobs import blob_file, media_type_for_path
-
-        # The URL's extension, when it carries one, is what resolves the file: the
-        # same bytes can be stored under several (one message's image/png is
-        # another's image/svg+xml), and a link that said .png must not be answered
-        # with an SVG's Content-Type.
-        bp = blob_file(m.group(1), ext=m.group(2))
-        if bp is None:
-            return _text(404, "no such blob")
-        try:
-            blob = bp.read_bytes()
-        except OSError:
-            return _text(404, "no such blob")
-        return 200, media_type_for_path(bp), blob, {
-            "Cache-Control": "public, max-age=31536000, immutable",
-            # Blob content is untrusted: its bytes and its declared media type both
-            # came out of an archived payload. Most of it is inert as an image, but
-            # a stored SVG *navigated to* — the reader's images link through to
-            # full size — is a document on this origin, and the page-level policy
-            # only stops it scripting, not painting. `sandbox` drops it into an
-            # opaque origin, so what it can impersonate is nothing. Documents only:
-            # a response CSP does not apply to a subresource, so the <img> that
-            # renders the same blob inline is unaffected.
-            "Content-Security-Policy": "sandbox",
-        }
-
-    if path == "/api/search":
-        q = (_first(params, "q") or "").strip()
-        # Both shapes page. `page` is 1-based and every page is a slice of ONE
-        # ordering (see _retrieval.search) — the viewer walks a result set rather
-        # than being handed a cut and told to narrow the query.
-        limit, page = _search_shape(params)
-        if not q:
-            # Empty query = browse, the same contract as MCP thread_search: one
-            # row per thread by last activity, honoring the structural filters.
-            # Rows carry thread_source / n_events; content options don't apply.
-            hits = api.search(
-                "",
-                limit=limit,
-                page=page,
-                source=_csv(params, "source"),
-                since=_first(params, "since"),
-                until=_first(params, "until"),
-                agents=_first(params, "agents"),
-            )
-            return _ok({"query": "", "browse": True, "hits": hits,
-                        "quality": None, "subjects": _subjects_payload(hits),
-                        **_page_facts(hits, limit)})
-        hits = api.search(
-            q,
-            limit=limit,
-            page=page,
-            source=_csv(params, "source"),
-            content_types=_csv(params, "content_types"),
-            since=_first(params, "since"),
-            until=_first(params, "until"),
-            agents=_first(params, "agents"),
-            context_lines=0,  # the viewer builds its own ±1 snippet from full_content
-        )
-        quality = _quality_signal(hits, q)
-        return _ok({"query": q, "browse": False, "hits": _shape_search_hits(hits, q),
-                    "quality": quality, "subjects": _subjects_payload(hits),
-                    **_page_facts(hits, limit)})
-
-    if path.startswith("/api/read/") or path.startswith("/api/thread/"):
-        # The tail is a thread ref — a ULID id, a legacy integer alias, or a
-        # provider session id — resolved the same way every other surface does.
-        ref = unquote(path.rsplit("/", 1)[-1])
-        tid = resolve_archive_link(ref)
-        if tid is None:
-            return _text(404, f"no thread with id {ref}")
-        thinking = _bool(params, "thinking", path.startswith("/api/thread/"))
-        tools = _bool(params, "tools", True)
-        if path.startswith("/api/thread/"):
-            # structured render blocks (the viewer's reader)
-            return _ok(api.read_thread_structured(tid, include_thinking=thinking, include_tools=tools))
-        # flat transcript string (CLI-shaped). 'full' shows
-        # tool calls (with thinking), 'chat' is the readable assistant text only.
-        transcript = api.read_thread(tid, mode="full" if tools else "chat")
-        return _ok({"thread_id": tid, "transcript": transcript})
-
-    if path == "/api/threads":
-        return _ok(
-            _list_threads(
-                limit=_int(params, "limit", 100),
-                page=_int(params, "page", 1, hi=1_000_000),
-                q=_first(params, "q"),
-                types=_csv(params, "types"),
-            )
-        )
-
-    if path == "/api/thread-types":
-        return _ok({"types": _list_thread_types()})
-
-    # ---- the manual: the same pages `thread-archive docs` prints ----
-    # Markdown source, rendered in the browser by the renderer the transcripts
-    # already use. Served from the resolver rather than the static bundle, so a
-    # clone's edit to docs/ is live on the next request with no rebuild.
-    if path == "/api/docs":
-        return _ok({"pages": [
-            {"slug": p.slug, "title": p.title, "summary": p.summary} for p in _docs.pages()
-        ]})
-    if path.startswith("/api/docs/"):
-        doc = _docs.find(unquote(path[len("/api/docs/"):]))
-        if doc is None:
-            return _text(404, "no such manual page")
-        return _ok({"slug": doc.slug, "title": doc.title, "markdown": doc.read()})
 
     # unmatched API path — don't fall through to the SPA shell
     if path.startswith("/api/"):
@@ -1103,21 +1286,15 @@ def route(
 
     # ---- a real static asset from the built bundle (assets/*.js|css, favicon…) ----
     rel = path.lstrip("/")
-    if rel:
-        candidate = (STATIC_DIR / rel).resolve()
-        # Containment spelled as an equality-or-ancestor test, not
-        # `is_relative_to`: the two decide identically, but CodeQL's
-        # path-injection query models this form as a sanitizer and the other
-        # not at all, so the terser spelling reds the scan on a request path
-        # that is already checked.
-        if (candidate == STATIC_DIR or STATIC_DIR in candidate.parents) and candidate.is_file():
-            # Vite emits content-hashed filenames under assets/ — a changed file
-            # gets a new URL, so the browser may cache these forever.
-            cache = (
-                {"Cache-Control": "public, max-age=31536000, immutable"}
-                if rel.startswith("assets/") else None
-            )
-            return _serve_file(candidate, headers=cache)
+    asset = _bundled_asset(STATIC_DIR, rel) if rel else None
+    if asset is not None:
+        # Vite emits content-hashed filenames under assets/ — a changed file
+        # gets a new URL, so the browser may cache these forever.
+        cache = (
+            {"Cache-Control": "public, max-age=31536000, immutable"}
+            if rel.startswith("assets/") else None
+        )
+        return _serve_file(asset, headers=cache)
 
     # ---- SPA fallback: every other path renders the app shell (client routing) ----
     return _serve_shell()

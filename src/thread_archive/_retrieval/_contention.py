@@ -33,7 +33,7 @@ Three signals, each cheap enough to take on every search:
 
 ``uptime_s``
     How long the serving process had been alive. Every cache retrieval leans on —
-    the vector matrix, the embedding and cross-encoder models, the exact-set memo,
+    the vector matrix, the embedding model, the exact-set memo,
     SQLite's page cache — is process-local and starts empty, so the same query
     against the same corpus costs an order of magnitude more at second five than at
     second five hundred. Without this the two are the same row, and *every*
@@ -61,10 +61,10 @@ Three signals, each cheap enough to take on every search:
 
 ``rss_mb`` / ``rss_now_mb``
     Peak resident memory of the serving process, and what it holds at this instant.
-    The model arms are hundreds of megabytes each and the vector matrix is read
-    whole into memory, so a process serving search is the largest thing on the box,
-    and the point where the machine starts swapping is a latency finding that no
-    timer can see.
+    The embedding model is hundreds of megabytes and the vector pack is a gigabyte
+    the matvec streams end to end, so a process serving search is the largest thing
+    on the box, and the point where the machine starts swapping is a latency
+    finding that no timer can see.
 
     Both, because the gap between them is the finding. Peak is a high-water mark
     since process start and never falls, so it answers whether this process has

@@ -44,7 +44,7 @@ answer is a support tier plus a repair loop, not a promise nobody can keep:
   Archive runs no agent itself — you work the scaffold, or point yours at it
   under whatever scope you choose, remembering that the samples are transcript
   data an agent should treat as untrusted input (see
-  [SECURITY.md](../SECURITY.md)).
+  [SECURITY.md](../../SECURITY.md)).
   Activation is deterministic — the scaffold's tests must pass in a fresh
   subprocess (including a dedup re-import guard) before the override is enabled
   and the ledger-driven re-import recovers the gap.

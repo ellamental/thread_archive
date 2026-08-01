@@ -27,11 +27,11 @@ The watched providers, at their default home-dir locations:
 
 | provider       | store                                                        |
 |----------------|--------------------------------------------------------------|
-| claude-code    | `~/.claude*/projects/**/*.jsonl` (+ `*/subagents/*.jsonl`)   |
+| claude-code    | `~/.claude*/projects/**/*.jsonl` (+ `*/subagents/**/agent-*.jsonl`) |
 | codex          | `~/.codex/sessions/**/*.jsonl`                               |
 | grok           | `~/.grok/sessions/**/chat_history.jsonl`                     |
 | antigravity    | `~/.gemini/antigravity-cli/brain/**/transcript.jsonl`       |
-| cursor         | Cursor `state.vscdb` (SQLite, mtime-gated)                   |
+| cursor         | Cursor `state.vscdb` (SQLite, WAL-gated)                     |
 | opencode       | `~/.local/share/opencode/opencode.db` (SQLite, WAL-gated)    |
 | cowork         | `~/Library/Application Support/Claude/local-agent-mode-sessions/` |
 | claude-science | `~/.claude-science/orgs/*/operon-cli.db` (SQLite, WAL-gated) |

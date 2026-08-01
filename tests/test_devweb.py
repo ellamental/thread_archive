@@ -72,6 +72,27 @@ def test_an_unknown_api_path_is_a_404_not_the_shell(archive_home) -> None:
     assert not ctype.startswith("text/html")
 
 
+def test_the_bundle_is_the_only_thing_served_off_disk(archive_home) -> None:
+    """This server reads the machine's ledgers with no auth, and its static
+    branch must not become a second way to read the disk: a request names a file
+    the build emitted or it names nothing, and lands on the shell."""
+    from pathlib import Path
+
+    assets = Path(devweb_server.STATIC_DIR) / "assets"
+    if not assets.is_dir():
+        pytest.skip("dev panels not built (no static/assets)")
+    js = next((p for p in assets.iterdir() if p.suffix == ".js"), None)
+    assert js is not None, "no built JS asset found"
+
+    status, ctype, body = _get(f"/assets/{js.name}")
+    assert status == 200 and "javascript" in ctype and len(body) > 0
+
+    for path in ("/../../etc/passwd", "/%2e%2e/%2e%2e/etc/passwd", "/../server.py"):
+        status, ctype, body = _get(path)
+        assert status == 200 and ctype.startswith("text/html"), path
+        assert b"root:" not in body and b"def route(" not in body, path
+
+
 def test_a_non_loopback_bind_is_refused(archive_home) -> None:
     """The panels read this machine's ledgers with no auth, so exposing them
     past loopback must be deliberate rather than a typo'd --host."""

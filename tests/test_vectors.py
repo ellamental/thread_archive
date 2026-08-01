@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from thread_archive._retrieval import _rrf_merge, vectors
-from thread_archive._store import init_db
+from thread_archive._store import current_archive, init_db
 
 
 def _unit(*nonzero) -> np.ndarray:
@@ -241,6 +241,127 @@ def test_knn_pack_mmap_lifecycle(archive_home) -> None:
     vectors._refresh_matrix(vectors._matrix_key(("user",)), ("user",))
     res = vectors._knn(b.tolist(), ("user",), cand=10)
     assert [eid for eid, _, _ in res][0] == 1  # sees the upserted vector
+
+
+def test_cold_matrix_defers_to_background_under_construction_policy(archive_home) -> None:
+    """A process that defers construction (a warmed server) never assembles a pack on
+    the request thread: a cold-cache search sits the vector arm out (None — lexical
+    degrade), flags ``matrix_deferred``, and kicks the single-flight background
+    refresh; once that lands, the same search serves semantically."""
+    import time as _time
+
+    from thread_archive._retrieval import _probe
+    from thread_archive._retrieval.model_slot import set_defer_construction
+
+    init_db()
+    vectors.ensure_index()
+    vectors.reset_matrix_cache()
+    a = _unit((0, 1.0))
+    vectors.index_vectors([(1, "user", a)])
+    emb = _FixedEmbedder(a)
+
+    set_defer_construction(True)
+    try:
+        with _probe.install() as probe:
+            assert vectors.search("anything", embedder=emb) is None  # arm sat out
+        assert probe.matrix_deferred is True
+        assert probe.matrix_built is False
+        # The kick was a background refresh; wait for the single-flight to land.
+        deadline = _time.monotonic() + 10.0
+        while vectors.is_refreshing() and _time.monotonic() < deadline:
+            _time.sleep(0.02)
+        with _probe.install() as probe:
+            res = vectors._knn(a.tolist(), ("user", "text", "title"), cand=10)
+        assert res is not None and [eid for eid, _, _ in res] == [1]  # the arm rejoined
+        assert probe.matrix_deferred is False
+        assert probe.matrix_built is False  # …off the refreshed cache, not an inline build
+    finally:
+        set_defer_construction(False)
+
+
+def test_a_warming_server_is_a_deferral_not_the_cold_model_tail(archive_home, monkeypatch) -> None:
+    """``embed_cold`` names a load *paid* inside the request. Under the deferral policy
+    an unloaded model means the opposite — the arm sat out and the search was fast —
+    so sampling it as cold there would file every fast degraded search under the
+    cold-model tail the band analysis reads (``search_lab/latency_replay.py``). The
+    deferral gets its own flag instead, and the whole search still serves lexically."""
+    pytest.importorskip("sentence_transformers")
+
+    from thread_archive._retrieval import _probe, search
+    from thread_archive._retrieval.model_slot import set_defer_construction
+
+    # The process embedder, available and not resident — a server's state between
+    # startup and the moment its warm pass lands.
+    monkeypatch.delenv("THREAD_ARCHIVE_EMBED", raising=False)
+    init_db()
+    _seed_thread(archive_home, "the deferral window question")
+    vectors.ensure_index()
+    vectors.index_vectors([(1, "user", _unit((0, 1.0)))])  # so the arm reaches the embed
+
+    set_defer_construction(True)
+    try:
+        with _probe.install() as probe:
+            hits = search("deferral", limit=5)
+    finally:
+        set_defer_construction(False)
+
+    assert probe.embed_deferred is True
+    assert probe.embed_cold is False, "a query that paid no load reported the cold tail"
+    assert probe.cold is False and "cold" not in probe.as_record()
+    # The point of sitting the arm out: the lexical half still answers.
+    assert [h["thread_id"] for h in hits], "the lexical arm did not carry the search"
+
+
+def test_prime_matrix_builds_synchronously_for_the_default_scope(archive_home) -> None:
+    """The warm pass's prime: after ``prime_matrix``, a deferring process serves the
+    vector arm on its first search — no inline build, no lexical-only window."""
+    from thread_archive._retrieval import _probe
+    from thread_archive._retrieval.model_slot import set_defer_construction
+
+    init_db()
+    vectors.ensure_index()
+    vectors.reset_matrix_cache()
+    a = _unit((0, 1.0))
+    vectors.index_vectors([(1, "user", a)])
+    emb = _FixedEmbedder(a)
+
+    vectors.prime_matrix(None)  # the default scope, as warm_models primes it
+    set_defer_construction(True)
+    try:
+        with _probe.install() as probe:
+            res = vectors._knn(emb.vec, ("user", "text", "title"), cand=10)
+        assert res is not None and [eid for eid, _, _ in res] == [1]
+        assert probe.matrix_deferred is False
+        assert probe.matrix_built is False
+    finally:
+        set_defer_construction(False)
+
+
+def test_pack_turn_serializes_and_releases(archive_home) -> None:
+    """The pack-build turn: exclusive while held (a second taker waits out its bound),
+    reacquirable once released, and fail-soft — it must never leave the lock held."""
+    import fcntl
+    import os as _os
+    import time as _time
+
+    init_db()
+    vectors.ensure_index()
+    d = vectors._pack_dir()
+    with vectors._pack_turn(d):
+        lock_path = d / vectors._PACK_LOCK_FILE
+        assert lock_path.exists()
+        # A rival on its own fd cannot take the flock while the turn is held.
+        fd = _os.open(lock_path, _os.O_RDWR)
+        try:
+            with pytest.raises(OSError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            _os.close(fd)
+    # Released on exit: the next taker gets it immediately, not after the timeout.
+    started = _time.monotonic()
+    with vectors._pack_turn(d):
+        pass
+    assert _time.monotonic() - started < 1.0
 
 
 def test_split_matrix_matmul_and_gather() -> None:
@@ -543,15 +664,16 @@ def test_matrix_cache_canonical_key_and_bounded(archive_home) -> None:
     init_db()
     vectors.ensure_index()
     assert vectors.index_vectors([(1, "user", _unit((0, 1.0)))]) == 1
-    vectors._MATRIX_CACHE.clear()
+    cache = current_archive().cache(vectors._MATRIX_SLOT)
+    cache.clear()
 
     vectors._load_matrix(("user", "text"))
     vectors._load_matrix(("text", "user"))
-    assert len(vectors._MATRIX_CACHE) == 1
+    assert len(cache) == 1
 
     for cts in (("user",), ("text",), ("title",), ("user", "text"), ("user", "title")):
         vectors._load_matrix(cts)
-    assert len(vectors._MATRIX_CACHE) <= vectors._MATRIX_CACHE_MAX
+    assert len(cache) <= vectors._MATRIX_CACHE_MAX
 
 
 def test_exclude_all_embedded_types_sits_semantic_out(archive_home) -> None:
@@ -682,6 +804,38 @@ def test_rrf_merge_fuses_and_carries_semantic() -> None:
     two = next(h for h in merged if h["event_id"] == 2)
     assert two["_semantic"] == 0.91    # semantic provenance carried onto the fused hit
     assert all("_rrf" in h for h in merged)
+
+
+def test_rrf_scores_are_the_documented_recipe_peak_normalized() -> None:
+    """``Σ 1/(k + rank)`` on **1-based** ranks, divided by the peak.
+
+    The values are not decoration: ``fusion_weight`` in the ranker is calibrated
+    against this scale, so a change to the rank base or the normalization silently
+    re-weights fusion against every other feature while the *ordering* out of this
+    function stays identical — nothing downstream would look wrong.
+    """
+    lexical = [{"event_id": i, "content_type": "user"} for i in (1, 2, 3)]
+    semantic = [{"event_id": i, "content_type": "user"} for i in (3, 2, 1)]
+    merged = _rrf_merge([lexical, semantic], limit=5, k=60)
+    by_id = {h["event_id"]: h["_rrf"] for h in merged}
+
+    raw = {1: 1 / 61 + 1 / 63, 2: 1 / 62 + 1 / 62, 3: 1 / 63 + 1 / 61}
+    peak = max(raw.values())
+    assert by_id == {i: round(v / peak, 6) for i, v in raw.items()}
+    assert max(by_id.values()) == 1.0, "the top hit anchors the scale at 1.0"
+
+
+def test_rrf_breaks_score_ties_on_event_id() -> None:
+    """Tied hits come back in a stable order that does not depend on which arm
+    saw them first. Without the tie-break the order is the arms' insertion order,
+    so the same query answers differently once an arm is added, reordered, or
+    sits out — and a paging client silently sees a hit twice or not at all."""
+    a = [{"event_id": 7, "content_type": "user"}, {"event_id": 3, "content_type": "user"}]
+    b = [{"event_id": 3, "content_type": "user"}, {"event_id": 7, "content_type": "user"}]
+
+    forward = [h["event_id"] for h in _rrf_merge([a, b], limit=5)]
+    reversed_arms = [h["event_id"] for h in _rrf_merge([b, a], limit=5)]
+    assert forward == reversed_arms == [3, 7]
 
 
 def test_encode_honors_the_off_switch(monkeypatch):
@@ -888,11 +1042,11 @@ def _dated_events(stamps: list[str], tag: str = "a") -> list[int]:
 
 
 def test_a_time_window_is_read_off_the_pack_not_queried_from_events(archive_home) -> None:
-    """The scope query this replaces had to name every in-scope event id — millions of
-    them for a wide window, against a pack holding a fraction as many rows, because
-    most events carry no vector at all. The pack already knows each row's date, so the
-    window is a comparison over an array it holds. Same rows either way: that
-    equivalence is the whole claim, and it is what this pins."""
+    """Naming every in-scope event id costs millions of them for a wide window,
+    against a pack holding a fraction as many rows, because most events carry no
+    vector at all. The pack already knows each row's date, so the window is a
+    comparison over an array it holds. Same rows either way: that equivalence is the
+    whole claim, and it is what this pins."""
     init_db()
     vectors.ensure_index()
     ids = _dated_events(["2026-01-01T10:00:00+00:00", "2026-03-01T10:00:00+00:00",
@@ -912,8 +1066,8 @@ def test_a_time_window_is_read_off_the_pack_not_queried_from_events(archive_home
                                           until="2026-04-01T00:00:00+00:00")]
     assert both == [ids[1]]
 
-    # And it agrees with the id-mask path it replaced, which is the only thing that
-    # makes the substitution safe — the two narrow the same pool to the same rows.
+    # And it agrees with the id-mask path, which is the only thing that makes the
+    # substitution safe — the two narrow the same pool to the same rows.
     masked = [e for e, _, _ in vectors._knn(
         a.tolist(), ("user",), cand=10, allowed_ids=np.asarray(ids[1:], dtype=np.int64))]
     assert masked == windowed
@@ -931,8 +1085,8 @@ def test_an_undated_row_is_in_no_time_window_including_an_open_ended_one(
     """A vector whose event is missing packs to an empty timestamp, and empty bytes
     sort below every real one. Ordering alone would therefore place it *before* any
     ``until`` bound and sweep it into every open-ended window — so exclusion is
-    explicit. The id-query this replaces got the same answer for free: an event that
-    isn't in ``events`` was never in its result."""
+    explicit. The id-mask path gets the same answer for free: an event that isn't in
+    ``events`` is never in its result."""
     init_db()
     vectors.ensure_index()
     dated = _dated_events(["2026-01-01T10:00:00+00:00"])

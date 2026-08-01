@@ -58,8 +58,11 @@ from thread_archive._retrieval.rank import (
     term_hit_count,
 )
 from thread_archive._retrieval.read import (
+    _accumulate_turns,
+    _build_steps,
     _fmt_hm,
     _fmt_ts,
+    _group_steps_into_turns,
     _pr_ref,
     _unknown_payload_text,
     read_thread,
@@ -374,6 +377,54 @@ def test_around_event_drops_oversized_preceding_context(archive_home) -> None:
     out = read_thread(tid, around_event=3, context_turns=1, max_chars=200)
     assert "the focused question" in out
     assert "focused reply" in out
+
+
+def _uniform_turns(archive_home, n: int = 3):
+    """``n`` identically-sized turns, as ``_accumulate_turns`` receives them."""
+    events = []
+    for i in range(n):
+        events.append(("user_message_sent", {"content": f"question {i:03d}"}, i * 2 + 1))
+        events.append(("text_complete", {"text": f"answer {i:03d} " + "A" * 100}, i * 2 + 2))
+    tid = _seed(events)
+    with get_session() as s:
+        rows = list(s.query(Event).filter(Event.thread_id == tid).order_by(Event.id).all())
+        return _group_steps_into_turns(_build_steps(rows))
+
+
+def test_the_char_budget_admits_the_turn_that_exactly_fills_it(archive_home) -> None:
+    """The size gate stops *before* a turn that would take the page over budget —
+    over, not up to. A turn landing exactly on the budget still belongs to the page.
+
+    Asserted against the accumulator's own measurement rather than a literal, so
+    the boundary stays pinned when the rendering around a turn changes width. The
+    failure this guards is silent by construction: an off-by-one here just moves
+    one turn to the next chunk, and every caller still returns a well-formed page
+    with a correct resume offset.
+    """
+    turns = _uniform_turns(archive_home, 3)
+    view = {"strip_tools": False, "strip_thinking": False,
+            "include_results": False, "user_only": False}
+
+    _, consumed, whole = _accumulate_turns(turns, 10, 0, **view)  # 0 = unbudgeted
+    assert consumed == 3
+    per_turn, remainder = divmod(whole, 3)
+    assert remainder == 0, "the turns must be uniform for the boundary to be exact"
+
+    _, exact, chars = _accumulate_turns(turns, 10, 2 * per_turn, **view)
+    assert exact == 2 and chars == 2 * per_turn, "a turn that exactly fills the budget is in"
+
+    _, under, _ = _accumulate_turns(turns, 10, 2 * per_turn - 1, **view)
+    assert under == 1, "one char short of two turns takes one"
+
+
+def test_a_single_oversized_turn_is_emitted_whole(archive_home) -> None:
+    """The gate never returns an empty page: a turn bigger than the whole budget
+    cannot be split, so it goes out entire and the caller resumes after it."""
+    turns = _uniform_turns(archive_home, 3)
+    view = {"strip_tools": False, "strip_thinking": False,
+            "include_results": False, "user_only": False}
+    page, consumed, chars = _accumulate_turns(turns, 10, 1, **view)
+    assert consumed == 1 and page and chars > 1
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -3,7 +3,7 @@
 # without that tool it is inert documentation of the full local quality bar.
 # {repo} = this repo root, {home} = the user's home.
 #
-# Gates the documented quality bar (docs/install.md → "confirm green"): ruff + the pytest
+# Gates the documented quality bar (docs/public/install.md → "confirm green"): ruff + the pytest
 # suite from the repo's own venv, and a typecheck of the frontend. Fast gates
 # first so failures surface early.
 
@@ -106,6 +106,26 @@ argv = ["{repo}/.venv/bin/pytest", "-q", "--tb=short", "-p", "no:cacheprovider",
 # cwd omitted = repo root, so it resolves testpaths=["tests"] from pyproject.
 timeout = 1800
 
+# The same suite in one process, and the only row that can see cross-file state
+# leaks. `--dist=loadfile` puts each file on some worker, so a global one file
+# leaves dirty is only ever read by another file that happens to land beside it —
+# six workers make that a coin flip, and the row above wins the flip most days.
+# Serial is the worst case made deterministic: every file, one process, in
+# collection order.
+#
+# It is not redundant with the parallel row and does not replace it. The parallel
+# row is the fast gate and the one that measures coverage; this one costs its own
+# ~4 minutes to answer a question no other row asks. A leak it catches is a real
+# failure of a real `-n 0` run — pyproject documents that as the interactive
+# escape hatch for --pdb/-s, and it is also what `-n auto` resolves to on a
+# one-core box, which is how the Docker install lane can red on a machine nobody
+# was looking at.
+[[suite]]
+name = "pytest-serial"
+argv = ["{repo}/.venv/bin/pytest", "-q", "--tb=short", "-p", "no:cacheprovider",
+        "-n", "0", "--no-cov"]
+timeout = 1800
+
 # Per-package coverage floors (a regression ratchet, not a target — floors and
 # rationale live in the script). Reads the JSON the pytest row just wrote, so it
 # must stay ordered after that row.
@@ -144,23 +164,11 @@ argv = ["{repo}/.venv/bin/python", "{repo}/search_lab/retrieval_eval.py",
         "--probes-only", "--require-semantic"]
 timeout = 600
 
-# The speed half of that gate, and the one exception to the no-metric rule above:
-# a millisecond is not graded by the ranker that produced it, so it can be checked
-# here without the circularity that keeps quality numbers on the public bench.
-#
-# Replays the slowest calls agents actually made (from the usage ledger, with their
-# recorded parameters) against a baseline recorded in THIS lane, and reds when they
-# got materially slower. What it is protecting against is the regression class no
-# other row can see: search that returns exactly the right hits, ever slower.
-#
-# Noise is the real design constraint — it runs on the operator's live machine
-# beside the rest of the sweep — so it is loose by construction: a 2x ratchet on
-# those queries' own recorded timings, and a confirm re-measure before any failure.
-# It seeds its own baseline on first run and passes. See the module docstring.
-[[suite]]
-name = "latency-gate"
-argv = ["{repo}/.venv/bin/python", "{repo}/search_lab/latency_smoke.py"]
-timeout = 900
+# Speed is deliberately NOT gated here: any latency check runs against the live,
+# growing archive, so its verdict is not repeatable — growth and a code slowdown
+# look identical to it. Latency is watched through the retrieval usage telemetry
+# (retrieval-usage.jsonl, retrieval_report.py) and measured deliberately with
+# latency_replay.py when evaluating a change.
 
 # The release lane: build the wheel + sdist, prove their contents, install the
 # wheel into a clean venv, and run the real CLI lifecycle from it. Deselected

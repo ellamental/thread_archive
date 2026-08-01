@@ -6,6 +6,8 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-black)](https://github.com/ellamental/thread_archive)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/ellamental/thread_archive/blob/main/LICENSE)
 
+A note from the human in the loop: This app is an experiment to see if vibe coding can produce something robust. If that makes you not trust the project, welcome to the club! I have over 10 years of professional dev experience, but I'll be honest, I haven't read any of the code. Nevertheless I get a lot of benefit from the functionality, and we have pretty good tests, so 🤷🏻‍♀️ (review the project yourself, or ask your AI).
+
 **A local-first archive for the AI agents that work on your machine — built by
 Claude Code, for Claude Code.** Every session your agent harnesses record lands
 in one durable, append-only archive you own, on your own disk — and your agents
@@ -74,20 +76,20 @@ import from account exports you download by hand.
 This is the manual, and it ships inside the package: `thread-archive docs` lists
 these pages and `thread-archive docs <page>` prints one, offline. From a clone,
 the web viewer serves the same pages at `/docs`. The links below are those pages
-on GitHub. (`docs/internal/` is
-the other half — the release process, the bench landscape, the maintainer's dev
-panels — written for whoever works on this repo, and in no install.)
+on GitHub. (`docs/*.md`, one level up from them, is the other half — the release
+process, the bench landscape, the maintainer's dev panels — written for whoever
+works on this repo, and in no install.)
 
-- [Install](https://github.com/ellamental/thread_archive/blob/main/docs/install.md) — the setup wizard, optional semantic search, updating, from-source, uninstall
-- [Search and retrieval](https://github.com/ellamental/thread_archive/blob/main/docs/retrieval.md) — the two tools, filters, and the code index
-- [CLI](https://github.com/ellamental/thread_archive/blob/main/docs/cli.md) — every verb, grouped by what it acts on
-- [MCP](https://github.com/ellamental/thread_archive/blob/main/docs/mcp.md) — server modes and client wiring
-- [Web viewer](https://github.com/ellamental/thread_archive/blob/main/docs/web-viewer.md) — the dev-only local UI, run from a clone
-- [How it works](https://github.com/ellamental/thread_archive/blob/main/docs/architecture.md) — the event model, durability, platform assumptions, repo layout
-- [Stability](https://github.com/ellamental/thread_archive/blob/main/docs/stability.md) — the four public interfaces and what may change
-- [When an import drifts](https://github.com/ellamental/thread_archive/blob/main/docs/import-drift.md) — the support tier and the repair loop
-- [Not supported](https://github.com/ellamental/thread_archive/blob/main/docs/scope.md) — the deliberate scope: one machine, one user, macOS/Linux
-- [On-disk format](https://github.com/ellamental/thread_archive/blob/main/docs/format.md) · [Provider plugin API](https://github.com/ellamental/thread_archive/blob/main/docs/providers.md) · [Search quality](https://github.com/ellamental/thread_archive/blob/main/docs/search-quality.md) · [Related projects](https://github.com/ellamental/thread_archive/blob/main/docs/related.md)
+- [Install](https://github.com/ellamental/thread_archive/blob/main/docs/public/install.md) — the setup wizard, optional semantic search, updating, from-source, uninstall
+- [Search and retrieval](https://github.com/ellamental/thread_archive/blob/main/docs/public/retrieval.md) — the two tools, filters, and the code index
+- [CLI](https://github.com/ellamental/thread_archive/blob/main/docs/public/cli.md) — every verb, grouped by what it acts on
+- [MCP](https://github.com/ellamental/thread_archive/blob/main/docs/public/mcp.md) — server modes and client wiring
+- [Web viewer](https://github.com/ellamental/thread_archive/blob/main/docs/public/web-viewer.md) — the dev-only local UI, run from a clone
+- [How it works](https://github.com/ellamental/thread_archive/blob/main/docs/public/architecture.md) — the event model, durability, platform assumptions, repo layout
+- [Stability](https://github.com/ellamental/thread_archive/blob/main/docs/public/stability.md) — the four public interfaces and what may change
+- [When an import drifts](https://github.com/ellamental/thread_archive/blob/main/docs/public/import-drift.md) — the support tier and the repair loop
+- [Not supported](https://github.com/ellamental/thread_archive/blob/main/docs/public/scope.md) — the deliberate scope: one machine, one user, macOS/Linux
+- [On-disk format](https://github.com/ellamental/thread_archive/blob/main/docs/public/format.md) · [Provider plugin API](https://github.com/ellamental/thread_archive/blob/main/docs/public/providers.md) · [Search quality](https://github.com/ellamental/thread_archive/blob/main/docs/public/search-quality.md) · [Related projects](https://github.com/ellamental/thread_archive/blob/main/docs/public/related.md)
 
 ## Scope
 
@@ -95,7 +97,7 @@ Deliberately narrow: one machine, one user, macOS and Linux only. The archive
 preserves and retrieves — it never writes back to a harness store and never
 sends a message. Live capture of web chats is out; account exports are the
 path. The reasoning behind each line is in
-[docs/scope.md](https://github.com/ellamental/thread_archive/blob/main/docs/scope.md).
+[docs/public/scope.md](https://github.com/ellamental/thread_archive/blob/main/docs/public/scope.md).
 
 ## Similar and related projects
 
@@ -103,7 +105,7 @@ Preserving and searching AI conversation history is a crowded space, and a lot
 of the work in it is good — session-search neighbors (CASS, ctx, deja-vu,
 episodic-memory, synty, and more), agent memory layers (mem0, Letta, Zep), and
 the prior art outside AI (notmuch). The annotated survey lives in
-[docs/related.md](https://github.com/ellamental/thread_archive/blob/main/docs/related.md).
+[docs/public/related.md](https://github.com/ellamental/thread_archive/blob/main/docs/public/related.md).
 The short version of the difference: most tools treat the harness's own files
 as the record and their index as a cache over it; archive treats preservation
 as the product — its own append-only truth log, backup with restore drills, and

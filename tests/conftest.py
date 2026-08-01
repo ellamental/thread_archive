@@ -1,7 +1,9 @@
 """Shared test fixtures + global-state isolation.
 
-The store keeps a module-global engine and the truth-log keeps cached file handles;
-both must be reset around every test so state never leaks between tests. Critically,
+The open archive (`_store._instance.Archive`) owns the engine and every cache above
+it, and the truth-log keeps cached file handles; both must be dropped around every
+test so state never leaks between tests. Closing the archive is one call and covers
+every cache in it — only genuinely process-scoped state needs its own line. Critically,
 every test is defaulted to a *throwaway* home so nothing can ever touch the real
 ``~/.thread/archive`` (the global engine lazily resolves its DSN from ``$THREAD_ARCHIVE_HOME``,
 so an un-homed test would otherwise create the real default).
@@ -68,7 +70,8 @@ def _isolate_home(monkeypatch):
 def _isolate_archive(tmp_path, monkeypatch):
     from thread_archive import _config as config
     from thread_archive import _tools
-    from thread_archive._retrieval import embed_graph, fts, model_slot, vectors
+    from thread_archive._ops import ingest_errors
+    from thread_archive._retrieval import embed_graph, model_slot, vectors
     from thread_archive._store import _base
     from thread_archive._truth import jsonl_log
 
@@ -93,11 +96,6 @@ def _isolate_archive(tmp_path, monkeypatch):
     # deterministic coverage (test_embed_graph.py builds inline and injects
     # gamma explicitly; tests that need the env set their own).
     monkeypatch.setenv("THREAD_ARCHIVE_COHERENCE", "off")
-    # The known-archives registry records every home open_archive touches into
-    # ~/.thread/archives.json. Off suite-wide so hundreds of tmp homes don't
-    # accumulate there and each open stays a pure store op; the registry has its
-    # own coverage (test_archives_registry.py opts back in with a tmp path).
-    monkeypatch.setenv("THREAD_ARCHIVE_REGISTRY", "0")
     # Runtime telemetry records only on a dev install (_ops/telemetry.py), and a
     # tmp home has no config.json — so every ledger assertion in this suite would
     # otherwise be asserting over a file nothing writes, and pass for the wrong
@@ -115,16 +113,22 @@ def _isolate_archive(tmp_path, monkeypatch):
     # Same shape for the default retrieval surface: a daemon declares it once at
     # startup (`set_default_surface`), so a test that boots the web viewer would
     # relabel every ledger row the worker's later tests write as served-by-web.
-    _tools._DEFAULT_SURFACE = _tools.UNATTRIBUTED
+    # Reset through the product's own knob, so this cannot drift from where the
+    # state actually lives.
+    _tools.set_default_surface(_tools.UNATTRIBUTED)
+    # Closing the archive is the whole cache teardown: the matrix, the corpus graph
+    # and the exact-set memo live inside the `Archive` (`_store._instance`) and go
+    # with it. A cache added above the store needs no line here and cannot be
+    # forgotten by a fixture that does not know about it.
     _base.close_engine()
     jsonl_log.reset_handles()
-    # The retrieval caches key on id(get_engine()); a closed engine's id can be reused
-    # by the next test's engine, so drop them with the engine or a stale matrix/graph
-    # from a prior test's DB gets served (serve-stale skips the token check within the
-    # cooldown).
-    vectors.reset_matrix_cache()
-    embed_graph.reset_cache()
-    fts.reset_set_memo()
+    # The ingest-error tally is deliberately *process*-scoped, not archive-scoped —
+    # it counts this process's sightings — so it is reset separately. The ledger only
+    # writes a signature's first sighting and then powers of ten, so a count left
+    # behind by an earlier test silences the *next* test's identical fault, which
+    # reads as an empty ledger rather than as leaked state, and only in whatever run
+    # puts the two tests on the same worker.
+    ingest_errors.reset_tally()
     yield
     # Let any in-flight single-flight refresh finish before the engine closes: a daemon
     # refresh thread that outlives its test would touch a torn-down engine and leak a
@@ -134,9 +138,7 @@ def _isolate_archive(tmp_path, monkeypatch):
         time.sleep(0.01)
     jsonl_log.reset_handles()
     _base.close_engine()
-    vectors.reset_matrix_cache()
-    embed_graph.reset_cache()
-    fts.reset_set_memo()
+    ingest_errors.reset_tally()
     # sqlite3 and subprocess objects can participate in cycles, delaying their
     # ResourceWarning until an unrelated later test. Collect at the isolation
     # boundary so a leaked resource fails the test that created it. Generation 0
@@ -166,7 +168,7 @@ def pytest_collection_modifyitems(config, items):
     """Stand the ``viewer`` marker down where there is no viewer.
 
     The viewer is dev-only: ``thread_archive._web`` and its built bundle are
-    excluded from the wheel (docs/web-viewer.md), so `web`, `watch --web`, and
+    excluded from the wheel (docs/public/web-viewer.md), so `web`, `watch --web`, and
     the setup wizard's browser step exist in a checkout and not in an install.
     This suite runs both ways — from the source tree, and against the installed
     wheel in the Docker install lane — and the marked tests describe behaviour

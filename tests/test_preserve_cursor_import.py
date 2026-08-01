@@ -1,7 +1,7 @@
 """Drop-site regressions for the Cursor DB importer: no provider record may be
 silently skipped/dropped/truncated on import (thread's "capture EVERYTHING").
 
-Covers the drop-sites guarded in ``importers/cursor.py``:
+Covers the drop-sites guarded in ``_importers/cursor.py``:
 1. An unknown bubble type must not collapse to a bare ``{"role": role}`` —
    that drops the bubble's content/thinking/tool_call/raw. It must be preserved
    as a shared ``message`` event carrying all of it.

@@ -24,7 +24,7 @@ from sqlalchemy import text as sa_text
 
 from thread_archive._retrieval import embed, vectors
 from thread_archive._retrieval.model_slot import ModelSlot
-from thread_archive._store import get_session, init_db
+from thread_archive._store import current_archive, get_session, init_db
 from thread_archive._store._base import use_engine
 
 from .helpers import import_cc_session
@@ -572,6 +572,62 @@ def test_a_cache_hit_tells_the_probe_it_happened(monkeypatch) -> None:
     assert hit.embed_cached is True
 
 
+def test_a_deferred_model_says_so_rather_than_leaving_it_inferred(monkeypatch) -> None:
+    """The model half of the deferral fork. A warming server sits the vector arm out
+    until its model is resident, and that ``None`` reaches the caller looking exactly
+    like models-off or a cached load failure. The flag is set where the reason is
+    known — and the search is *not* cold, because no load was paid."""
+    from thread_archive._retrieval import _probe
+    from thread_archive._retrieval.model_slot import set_defer_construction
+
+    _models_on(monkeypatch)
+    loads: list[int] = []
+
+    def _load():
+        loads.append(1)
+        return _ScriptedModel(width=2)
+
+    e = embed.Embedder(load=_load)
+    set_defer_construction(True)
+    try:
+        with _probe.install() as deferred:
+            assert e.embed_query("racing the warm") is None
+        assert deferred.embed_deferred is True
+        assert deferred.as_record()["embed_deferred"] is True
+        assert not loads, "a deferring request path constructed the model"
+        # Not the cold-model tail: nothing was loaded, so nothing was paid for.
+        assert deferred.cold is False
+        assert "cold" not in deferred.as_record()
+
+        # Warming is what the policy defers *to* — once it lands the arm rejoins and
+        # the flag stops being set, since it names a window rather than a config.
+        assert e.warm() is True
+        with _probe.install() as rejoined:
+            assert e.embed_query("racing the warm") is not None
+        assert rejoined.embed_deferred is False
+        assert "embed_deferred" not in rejoined.as_record()
+    finally:
+        set_defer_construction(False)
+
+
+def test_a_lexical_only_install_is_not_a_deferral(monkeypatch) -> None:
+    """The flag has to separate "wait a few seconds" from "this install has no vector
+    arm at all" — the two degrade identically at the call site and want opposite
+    responses, which is the whole reason for stating the reason."""
+    from thread_archive._retrieval import _probe
+    from thread_archive._retrieval.model_slot import set_defer_construction
+
+    monkeypatch.setenv("THREAD_ARCHIVE_EMBED", "off")
+    e = embed.Embedder(load=lambda: pytest.fail("model load attempted"))
+    set_defer_construction(True)
+    try:
+        with _probe.install() as probe:
+            assert e.embed_query("anything") is None
+        assert probe.embed_deferred is False, "an off switch read as a warm window"
+    finally:
+        set_defer_construction(False)
+
+
 def test_the_query_cache_hands_out_copies(monkeypatch) -> None:
     """The vector travels into arithmetic the caller owns. A shared list would let
     one caller's in-place normalize poison the entry for every later query."""
@@ -821,8 +877,9 @@ def test_matrix_refresh_picks_up_writes(archive_home) -> None:
 
 def _wait_for_refresh(key, timeout: float = 10.0) -> None:
     """Block until the single-flight background matrix refresh for ``key`` clears."""
+    marker = vectors._inflight_marker(current_archive(), key)
     deadline = time.monotonic() + timeout
-    while key in vectors._MATRIX_REFRESHING and time.monotonic() < deadline:
+    while marker in vectors._MATRIX_REFRESHING and time.monotonic() < deadline:
         time.sleep(0.01)
 
 
@@ -840,7 +897,7 @@ def test_load_matrix_background_refresh_past_cooldown(archive_home) -> None:
     vectors.index_vectors([(2, "user", _unit((1, 1.0)))])
     # Age the last-checked stamp (plain write to test-owned state) so the next load
     # treats the cooldown as elapsed and schedules the real refresh thread.
-    vectors._matrix_checked_at[key] = 0.0
+    current_archive().cache(vectors._CHECKED_SLOT)[key] = 0.0
     vectors._load_matrix(("user",))  # serves stale, kicks the background refresh
     _wait_for_refresh(key)
     ids2, *_ = vectors._load_matrix(("user",))
@@ -860,13 +917,14 @@ def test_refresh_matrix_async_single_flight_suppresses_duplicate(archive_home) -
     vectors._load_matrix(("user",))  # cache holds the 1-row matrix
     vectors.index_vectors([(2, "user", _unit((1, 1.0)))])
 
-    vectors._MATRIX_REFRESHING.add(key)  # a rebuild is (nominally) already in flight
+    marker = vectors._inflight_marker(current_archive(), key)
+    vectors._MATRIX_REFRESHING.add(marker)  # a rebuild is (nominally) already in flight
     try:
         vectors._refresh_matrix_async(key, ("user",))  # suppressed — no rebuild
         ids, *_ = vectors._load_matrix(("user",))
         assert len(ids) == 1  # still stale: the guard blocked the rebuild
     finally:
-        vectors._MATRIX_REFRESHING.discard(key)
+        vectors._MATRIX_REFRESHING.discard(marker)
 
     vectors._refresh_matrix_async(key, ("user",))  # guard clear → runs for real
     _wait_for_refresh(key)
@@ -1226,7 +1284,7 @@ def test_ensure_index_migrates_prechunk_table(archive_home) -> None:
 def test_load_matrix_returns_cached_on_hit(archive_home) -> None:
     init_db()
     vectors.ensure_index()
-    vectors._MATRIX_CACHE.clear()
+    current_archive().cache(vectors._MATRIX_SLOT).clear()
     vectors.index_vectors([(1, "user", _unit((0, 1.0)))])
     first = vectors._load_matrix(("user",))
     second = vectors._load_matrix(("user",))  # unchanged token → cache hit

@@ -41,7 +41,7 @@ from ._state import (
     get_import_state,
     get_import_states,
     get_thread_by_source,
-    last_import_epoch_ms,
+    store_write_settled,
     upsert_import_state,
 )
 
@@ -273,10 +273,7 @@ def _run_cursor(session, composer_id, composer_data, bubbles) -> CursorImportRes
 
 
 def _cursor_composer_unchanged(import_state: Optional[ImportState], composer_data: dict[str, Any]) -> bool:
-    if not (import_state and import_state.last_import_at):
-        return False
-    last_updated_ms = composer_data.get("lastUpdatedAt", 0)
-    return last_updated_ms <= last_import_epoch_ms(import_state)
+    return store_write_settled(import_state, composer_data.get("lastUpdatedAt", 0))
 
 
 def _cursor_stale_composers(composers: dict[str, dict[str, Any]]) -> set[str]:

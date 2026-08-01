@@ -82,7 +82,7 @@ def _fsync_dir(d: Path) -> None:
 # ── manifest (shard depth + last-checkpoint watermark) ───────────────────────
 
 # The on-disk truth format version, recorded as ``version`` in manifest.json and
-# specified in docs/format.md. Bump only for a change an existing reader would
+# specified in docs/public/format.md. Bump only for a change an existing reader would
 # misinterpret (record shapes, file layout, sharding semantics) — additive
 # optional fields don't count. Code that meets a *newer* version must refuse
 # the archive rather than guess (see :func:`_read_manifest`).

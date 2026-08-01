@@ -1,14 +1,14 @@
 """Capture-everything regression tests for the OpenCode importer.
 
-The archive must never silently drop a provider record on import. These cover the
-five drop-sites that were fixed in ``importers/opencode.py``:
+The archive must never silently drop a provider record on import. Covers the five
+drop-sites guarded in ``_importers/opencode.py``:
 
-1. non-user/assistant messages (were ``continue``-skipped),
-2. non-text user parts — files/attachments (were filtered out),
-3. unknown assistant part types (were ``seg=None``-dropped),
-4. malformed message/part JSON (were swallowed by ``except: continue``),
-5. an abandoned/unsettled assistant turn (the settled-prefix ``break`` stranded it
-   and everything after it forever — now staleness-gated).
+1. a non-user/assistant message must not be ``continue``-skipped,
+2. a non-text user part — files/attachments — must not be filtered out,
+3. an unknown assistant part type must not collapse to ``seg=None`` and vanish,
+4. malformed message/part JSON must not be swallowed by ``except: continue``,
+5. an abandoned/unsettled assistant turn must not strand itself and everything
+   after it behind the settled-prefix ``break`` — staleness gates the cutoff.
 
 Follows the DB-scanner pattern from ``tests/test_importer_providers.py``.
 """

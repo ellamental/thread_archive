@@ -59,23 +59,29 @@ logger = logging.getLogger(__name__)
 #: thread summaries), because a query-time exclusion is a filter every caller can
 #: drop while the index keeps paying to store and embed what it hides.
 #:
-#: Defined here rather than at the agent surface because two callers must agree on
-#: it: the surface, and :func:`warm_models` — the vector matrix caches per
-#: content-type scope, so a warm pass primed against a different scope leaves the
-#: first real query to build a matrix inside the request.
+#: Defined here rather than at the agent surface because every caller must agree on
+#: it: the surface, :func:`warm_models`, and :func:`_keepalive_touch` — the vector
+#: matrix caches per content-type scope, so a warm or keepalive pass primed against
+#: a different scope leaves the first real query to build a matrix inside the
+#: request.
 DEFAULT_CONTENT_TYPES: Optional[list[str]] = None
 
 
 def _enrich_thread_titles(hits: list[EventHit], *, session: Optional[Session] = None) -> None:
-    """Fill ``thread_title`` on hits from the threads table (one query)."""
+    """Fill ``thread_title`` and ``thread_source`` on hits from the threads
+    table (one query)."""
     if not hits:
         return
     ids = {h["thread_id"] for h in hits}
     with use_session(session) as s:
-        rows = s.execute(select(Thread.id, Thread.title, Thread.name).where(Thread.id.in_(ids))).all()
-    titles = {tid: (title or name) for tid, title, name in rows}
+        rows = s.execute(
+            select(Thread.id, Thread.title, Thread.name, Thread.source).where(Thread.id.in_(ids))
+        ).all()
+    meta = {tid: ((title or name), source) for tid, title, name, source in rows}
     for h in hits:
-        h["thread_title"] = titles.get(h["thread_id"])
+        title, source = meta.get(h["thread_id"], (None, None))
+        h["thread_title"] = title
+        h["thread_source"] = source
 
 
 def _rrf_merge(result_lists: list[list[EventHit]], limit: int, k: int = 60) -> list[EventHit]:
@@ -125,8 +131,8 @@ def _apply_coherence(ranked: list[EventHit], gamma: float | None = None) -> list
     """Community-coherence re-rank at thread granularity (fail-soft).
 
     Reorders the ranked hit list so threads follow :func:`embed_graph.coherence_order`
-    — the eval-proven boost for threads whose corpus-graph community carries more
-    of the pool's top mass. Hits within a thread keep their relative order. A
+    — a small boost for threads whose corpus-graph community carries more of the
+    pool's top mass. Hits within a thread keep their relative order. A
     no-op when coherence is off, the graph isn't built yet (the background
     refresh will have it soon), or anything fails. ``gamma`` overrides the env
     knob (tests inject)."""
@@ -301,11 +307,27 @@ def warm_models(embedder=None) -> None:
                     logger.debug("warm_models: a model stage failed to preload", exc_info=True)
                 stage_ms[name + "_ms"] = (perf_counter() - _t) * 1000.0
 
-            # Run one throwaway search end to end: it loads the vector matrix and runs a first
-            # cross-encoder inference, both of which cache process-globally for the real queries.
-            # Scoped to :data:`DEFAULT_CONTENT_TYPES` so the matrix this primes is keyed the
-            # same as the real queries reuse (the matrix cache is keyed by content-type scope;
-            # a mismatched scope would prime a matrix the real query never touches).
+            # Assemble the KNN matrix synchronously, as its own stage. Under deferred
+            # construction the request path never builds it (:func:`.vectors._load_matrix`
+            # kicks a background refresh and serves lexical-only), so the warm pass is
+            # what pays the build — explicitly, rather than as a side effect buried in
+            # the priming search's time. Scoped to :data:`DEFAULT_CONTENT_TYPES` so the
+            # entry this primes is keyed the same as the real queries reuse (the matrix
+            # cache is keyed by content-type scope; a mismatched scope would prime a
+            # matrix the real query never touches).
+            _t = perf_counter()
+            try:
+                from . import vectors as _vectors
+
+                _vectors.prime_matrix(DEFAULT_CONTENT_TYPES)
+            except Exception:  # noqa: BLE001 — warming is best-effort
+                failed.append("matrix")
+                logger.debug("warm_models: matrix prime skipped", exc_info=True)
+            stage_ms["matrix_ms"] = (perf_counter() - _t) * 1000.0
+
+            # Run one throwaway search end to end: it fills the remaining
+            # process-global caches the first real query reuses (FTS pages, the
+            # hydration path) and serves the primed matrix rather than building one.
             _t = perf_counter()
             try:
                 from .. import _api as api
@@ -345,14 +367,13 @@ def warm_models(embedder=None) -> None:
     # while it ran, so the peak is only known once it is over.
     context.update(_contention.peak_inflight(span))
     try:
-        from .._tools import _served_by
         from . import usage as _usage
 
         _usage.record_warm(
             duration_ms=(perf_counter() - started) * 1000.0,
             stages=stage_ms,
             failed=failed,
-            surface=_served_by(),
+            surface=_usage.served_by(),
             context=context,
         )
     except Exception:  # noqa: BLE001 — telemetry is advisory; warming stays fail-soft
@@ -367,8 +388,8 @@ def start_warm_models() -> threading.Thread:
     the request path so the models are resident by the time queries arrive. The
     deferred-construction policy (:func:`.model_slot.set_defer_construction`) covers the
     window before that lands: a query racing the warm serves lexical-only and fast
-    instead of blocking on a load it would otherwise start itself, and the vector /
-    re-rank arms rejoin the moment the models are resident. Without it the first query
+    instead of blocking on a load it would otherwise start itself, and the vector arm
+    rejoins the moment the model and its matrix are resident. Without it the first query
     still waits out the whole load and warming has only moved which thread pays.
 
     Indexing is unaffected: the embed cohost loads its model through
@@ -767,7 +788,7 @@ def search(
     than a chronological sort of bm25's favourites. ``output='count'``
     returns the whole match pool unranked (the renderer tallies per-thread). With a
     structural shape (browse / startswith / oldest / count) the semantic arm and the
-    cross-encoder sit out. ``context_lines`` (default 2; 0 = the raw FTS snippet)
+    ranker sit out. ``context_lines`` (default 2; 0 = the raw FTS snippet)
     attaches a numbered window around each hit's match; ``context_events`` (``N`` /
     ``b:a`` / ``b:a:types``) attaches the neighbouring events. Both enrich the
     ``agents`` controls agent-run threads (``thread_type='system'`` — subagent /
@@ -796,35 +817,39 @@ def search(
     opt-in; see :func:`.fts.search_events`.
 
     ``page`` (1-based) walks the result set. Every page is a slice of ONE
-    ordering: nothing that shapes the order — the pool depth, the cross-encoder's
-    head — is allowed to depend on which page was asked for, because the
+    ordering: nothing that shapes the order — the pool depth, the coherence
+    re-rank's head — is allowed to depend on which page was asked for, because the
     coherence re-rank scores a thread's community against the pool's mass, so a
     pool that grew per page would hand each page a differently-ordered list and a
     walk would repeat rows while skipping others.
 
     The returned :class:`._types.Results` carries the match set's size beside the
-    page. For the thread-granular list shapes that size is **exact** and every
-    matched thread is reachable by paging (``exhaustive``): membership comes from
-    :func:`.fts.matched_threads` rather than from the pool, so a thread ranked
-    past the pool boundary is enumerated rather than silently dropped. Ranked
-    order still leads — the threads the pool reached, in the order it ranked
-    them — and the remainder follows by recency, which is the only ordering
-    available for threads no ranking pass ever scored."""
+    page. A pool that came back short of its depth held the whole match set, so
+    that size is **exact** and every match is reachable by paging
+    (``exhaustive``). A saturated pool ranked a cut: its size comes from
+    :func:`.fts.count_matches` instead — capped, so it can be a floor — and
+    ``pages`` still divides only what the pool can hand back, because advertising
+    pages past the pool's reach would return empty ones."""
     p = params or _DEFAULT_PARAMS
     # Stage-timing probe (fail-soft, None when nobody installed one). The embed
     # arm's cold bit is sampled at entry: an available-but-unloaded embedder means
     # this query pays the tens-of-seconds load inside the request — the cold-model
-    # tail the usage ledger exists to name. The cross-encoder's bit is NOT sampled
-    # here, because "available and not loaded" is its permanent resting state
-    # whenever re-rank is off; it is set at the re-rank itself, where a load would
-    # actually be paid (see :meth:`_probe.SearchProbe`).
+    # tail the usage ledger exists to name (see :meth:`_probe.SearchProbe`).
+    #
+    # Except under the deferred-construction policy, where an unloaded model is
+    # precisely the query that pays *nothing*: it sits the arm out and serves
+    # lexical-only (``embed_deferred``). Sampling it as cold there would label the
+    # fast degraded searches as the cold-model tail — inverting the one flag the
+    # cold-band analysis is built on (``search_lab/latency_replay.py``).
     probe = _probe.current()
     if probe is not None:
         from . import embed as _embed_cold
+        from .model_slot import defer_construction
 
-        probe.embed_cold = _embed_cold.is_available() and not _embed_cold.is_loaded()
-    since_r = resolve_relative_date(since) if since else None
-    until_r = resolve_relative_date(until) if until else None
+        probe.embed_cold = (_embed_cold.is_available() and not _embed_cold.is_loaded()
+                            and not defer_construction())
+    since_r = resolve_relative_date(since, strict=True, param="since") if since else None
+    until_r = resolve_relative_date(until, strict=True, param="until") if until else None
 
     if agents is not None and agents not in ("exclude", "include", "only"):
         raise ValueError("agents must be 'exclude', 'include', or 'only'")
@@ -948,8 +973,8 @@ def search(
         ranked = _rank.rank_search_results(fused, terms, len(fused), params=p)
         _probe.record("rank_ms", _t_rank)
         # Community-coherence re-rank from the corpus-native embedding graph
-        # (default on — measured recall lift at every depth on the log-mined
-        # protocol; see embed_graph).
+        # (default on — a light mid-list orderer; see embed_graph for the signal
+        # and what its harness can and cannot show).
         from . import embed as _embed
 
         # Coherence is a semantic-arm refinement built from event_vectors; with

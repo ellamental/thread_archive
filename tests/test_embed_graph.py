@@ -117,10 +117,11 @@ def test_concurrent_builders_coalesce_onto_one_build(archive_home) -> None:
     import threading
 
     from thread_archive._retrieval.vectors import _validity_token
-    from thread_archive._store import get_engine, get_session
+    from thread_archive._store import current_archive, get_session
 
     _seed(archive_home)
-    key = id(get_engine())
+    arch = current_archive()
+    key = arch.token
     with get_session() as s:
         token = _validity_token(s)
 
@@ -132,7 +133,9 @@ def test_concurrent_builders_coalesce_onto_one_build(archive_home) -> None:
         t.start()
         t.join(timeout=0.5)
         assert t.is_alive(), "a second builder must queue, not build in parallel"
-        winner = embed_graph._build_graph(key, token, embed_graph.KNN, embed_graph.MIN_SIM)
+        winner = embed_graph._build_graph(
+            arch.cache(embed_graph._SLOT), token, embed_graph.KNN, embed_graph.MIN_SIM
+        )
     t.join(timeout=30)
 
     assert not t.is_alive()

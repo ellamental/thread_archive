@@ -19,10 +19,13 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ..provider import Provider
 from .builtins import builtin_providers
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +177,29 @@ def session_id_separators(
     return tuple(sorted({sep for p in known.values() for sep in p.session_id_separators}))
 
 
+def resolve_session_ref(
+    s: "Session", ref: str, *, source: Optional[str] = None
+) -> Optional[str]:
+    """The thread id a provider session id refers to, or None.
+
+    The registry half of the resolution the store implements: this reads the
+    declared ``source_id`` shapes, :func:`~.._store.resolve_session_source_id`
+    runs the ``Thread.source_id`` ∪ ``ImportState`` union over them. Every
+    surface that resolves a session id — the MCP reader's ``resolve_thread_ref``
+    and the viewer's ``resolve_archive_link`` — enters here, which is what stops
+    them answering differently for the same uuid.
+
+    The split is layering: the store is the lowest layer and cannot read the
+    registry, while the registry builds every provider's watcher and importer,
+    both of which import the store.
+    """
+    from .._store import resolve_session_source_id
+
+    return resolve_session_source_id(
+        s, ref, separators=session_id_separators(source), source=source
+    )
+
+
 __all__ = [
     "registry",
     "reset",
@@ -184,5 +210,6 @@ __all__ = [
     "export_specs",
     "render_policy",
     "session_id_separators",
+    "resolve_session_ref",
     "builtin_providers",
 ]

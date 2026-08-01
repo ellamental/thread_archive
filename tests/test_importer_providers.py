@@ -3,6 +3,14 @@ each, and prove repeated import is idempotent.
 
 Line-stream providers (Codex, Grok, Antigravity) take a single JSONL file; the
 SQLite scanners (Cursor, OpenCode) take a DB of many sessions.
+
+The re-import half runs through the shipped conformance helper
+(:func:`thread_archive.provider.testing.assert_reimport_adds_nothing`) rather
+than counting rows here: it is the assertion a plugin author is handed, so
+driving archive's own providers through it is what keeps it honest — and it
+carries the watermark check with it, which a per-file count never did. What stays
+written out per provider is what only that provider can say: the title it derives,
+the metadata it keeps, what its result object reports.
 """
 
 from __future__ import annotations
@@ -20,6 +28,7 @@ from thread_archive._importers import (
     import_opencode_db,
 )
 from thread_archive._store import Event, Thread, get_session, init_db
+from thread_archive.provider.testing import assert_reimport_adds_nothing
 
 
 def _event_count() -> int:
@@ -52,16 +61,14 @@ def test_codex_import_and_idempotent(archive_home) -> None:
     f = archive_home / "codex.jsonl"
     _write_jsonl(f, CODEX)
 
-    r = import_codex_session_incremental(f, "codex-sess")
-    assert r.is_new_thread and r.events_created > 0
-    n = _event_count()
+    first, second = assert_reimport_adds_nothing(
+        lambda: import_codex_session_incremental(f, "codex-sess"), source="codex"
+    )
+    assert first.is_new_thread and first.events_created > 0
+    assert second.events_created == 0
     thread = _thread_for("codex")
     assert thread.source_metadata == {"cwd": "/proj"}
     assert thread.title == "what is 2+2"
-
-    r2 = import_codex_session_incremental(f, "codex-sess")
-    assert r2.events_created == 0
-    assert _event_count() == n
 
 
 # Codex >= 0.144 drops `model` from session_meta and names the serving model per
@@ -153,14 +160,12 @@ def test_antigravity_import_and_idempotent(archive_home) -> None:
     f = archive_home / "transcript.jsonl"
     _write_jsonl(f, ANTIGRAVITY)
 
-    r = import_antigravity_session_incremental(f, "ag-conv")
-    assert r.is_new_thread and r.events_created > 0
-    n = _event_count()
+    first, second = assert_reimport_adds_nothing(
+        lambda: import_antigravity_session_incremental(f, "ag-conv"), source="antigravity"
+    )
+    assert first.is_new_thread and first.events_created > 0
+    assert second.events_created == 0
     assert _thread_for("antigravity").title == "fix the bug"
-
-    r2 = import_antigravity_session_incremental(f, "ag-conv")
-    assert r2.events_created == 0
-    assert _event_count() == n
 
 
 # ── Grok ────────────────────────────────────────────────────────────────────
@@ -178,15 +183,13 @@ def test_grok_import_and_idempotent(archive_home) -> None:
     f = session_dir / "chat_history.jsonl"
     _write_jsonl(f, GROK)
 
-    r = import_grok_session_incremental(f, "grok-sess")
-    assert r.is_new_thread and r.events_created > 0
-    n = _event_count()
+    first, second = assert_reimport_adds_nothing(
+        lambda: import_grok_session_incremental(f, "grok-sess"), source="grok"
+    )
+    assert first.is_new_thread and first.events_created > 0
+    assert second.events_created == 0
     thread = _thread_for("grok")
     assert thread.title == "hello grok"
-
-    r2 = import_grok_session_incremental(f, "grok-sess")
-    assert r2.events_created == 0
-    assert _event_count() == n
 
 
 # ── Cursor (SQLite scanner) ─────────────────────────────────────────────────
@@ -215,17 +218,12 @@ def test_cursor_db_scan_and_idempotent(archive_home) -> None:
     db = archive_home / "state.vscdb"
     _make_cursor_db(db)
 
-    scan = import_cursor_db(db)
-    assert scan.processed == 1
-    assert scan.imported == 1
+    scan, scan2 = assert_reimport_adds_nothing(lambda: import_cursor_db(db), source="cursor")
+    assert (scan.processed, scan.imported) == (1, 1)
     assert scan.events_created > 0
-    n = _event_count()
+    assert scan2.imported == 0  # lastUpdatedAt < last_import → skipped
     thread = _thread_for("cursor")
     assert thread.title == "My Cursor Chat"
-
-    scan2 = import_cursor_db(db)
-    assert scan2.imported == 0  # lastUpdatedAt < last_import → skipped
-    assert _event_count() == n
 
 
 def test_cursor_full_reimport_does_not_restack_null_dedup_key(archive_home) -> None:
@@ -343,14 +341,9 @@ def test_opencode_db_scan_and_idempotent(archive_home) -> None:
     db = archive_home / "opencode.db"
     _make_opencode_db(db)
 
-    scan = import_opencode_db(db)
-    assert scan.processed == 1
-    assert scan.imported == 1
+    scan, scan2 = assert_reimport_adds_nothing(lambda: import_opencode_db(db), source="opencode")
+    assert (scan.processed, scan.imported) == (1, 1)
     assert scan.events_created > 0
-    n = _event_count()
+    assert scan2.imported == 0  # time_updated < last_import → skipped
     thread = _thread_for("opencode")
     assert thread.title == "My OpenCode Session"
-
-    scan2 = import_opencode_db(db)
-    assert scan2.imported == 0  # time_updated < last_import → skipped
-    assert _event_count() == n

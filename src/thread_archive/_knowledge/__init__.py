@@ -1,4 +1,4 @@
-"""Storage mechanics for the truth format's extension region (docs/format.md).
+"""Storage mechanics for the truth format's extension region (docs/public/format.md).
 
 An external knowledge layer keeps a topic graph over this archive. Its records
 live in the truth directory so they are backed up, verified and restored with

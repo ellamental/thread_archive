@@ -1,7 +1,7 @@
 """Per-search stage-timing probe — opt-in, fail-soft, zero-cost when unused.
 
 A search's work splits across a few stages: the lexical FTS arm, the semantic
-vector arm, and the cross-encoder re-rank. The usage ledger records the *total*
+vector arm, and the shaping of the pool they fill. The usage ledger records the *total*
 latency already; this probe lets it also record where that time went, without
 :func:`thread_archive._retrieval.search` growing a second return value or the
 timing points caring whether anyone is listening.
@@ -20,7 +20,7 @@ so a search that nobody is measuring is never slowed. A context variable (not a
 thread-local) so the slot is correct whether the surface runs sync or on an event
 loop, and an inner search can't see an outer's probe by accident.
 
-**Arm totals are not an attribution.** The three arm buckets each cover work with
+**Arm totals are not an attribution.** Both arm buckets cover work with
 unrelated cost models, and the vector arm is the worst offender: one
 ``semantic_ms`` covers embedding the query (a model inference, or a tens-of-seconds
 cold load), the scope-mask query that can put millions of event ids in play, an
@@ -39,22 +39,19 @@ can't tell them apart, so it reports :data:`FTS_SUBSTAGES` and ``fts_passes``
 beside it: whether the index itself was slow, or whether the fallback ladder walked
 all the way down to the scan.
 
-``set_ms`` is the fourth stage and the odd one out: the exact-set scan
-(:func:`~.fts.matched_threads` / :func:`~.fts.count_matches`) that answers *how
-many* rather than *which*. It rides no arm — it runs beside them, whenever a
-saturated pool means the rows alone cannot say how big the answer was — and its
-cost scales with the match list rather than with the pool, so a search whose
-latency moved into this bucket moved there for a different reason than any of the
-three above.
+``set_ms`` is the third stage and the odd one out: the exact-set scan
+(:func:`~.fts.count_matches`) that answers *how many* rather than *which*. It rides
+no arm — it runs beside them, whenever a saturated pool means the rows alone cannot
+say how big the answer was — and its cost scales with the match list rather than
+with the pool, so a search whose latency moved into this bucket moved there for a
+different reason than either arm above.
 
 That stage is memoized, and a duration alone cannot see the memo working: the same
 ``set_ms`` is a cheap answer on a small corpus and a broken memo on a large one.
-:data:`SET_OUTCOMES` counts what the stage actually did — a full scan, a bounded
-delta over rows appended since the memoized answer, or a hand-back of that answer
-unchanged — three costs that differ by orders of magnitude and are otherwise
-indistinguishable in a total. Counters rather than one state because a search can
-run the stage twice (the thread tally and the saturated-pool count) and they need
-not agree.
+:data:`SET_OUTCOMES` counts what the stage actually did — a full scan against a
+hand-back of the memoized answer — costs that differ by orders of magnitude and are
+otherwise indistinguishable in a total. Counters rather than one state, so a record
+stays readable however many set queries a call ran.
 
 Everything above measures how the pool was *found*. :data:`SHAPE_SUBSTAGES`
 measures what happens to it afterwards — ranking, the coherence pass, the
@@ -96,20 +93,23 @@ FTS_SUBSTAGES = ("match_ms", "scan_ms", "rescan_ms", "build_ms")
 
 #: The post-pool half of a search, in the order it runs. ``rank_ms`` is the weighted
 #: lexical ranker, which runs over the *whole* pool rather than just the cut, since
-#: the pool is what a walk pages over; ``coherence_ms`` the corpus-graph head re-order; ``group_ms`` the
-#: anchor collapse; ``extend_ms`` a saturated pool's exact-set count
-#: (and so the outer bound on ``set_ms``); ``enrich_ms`` the per-hit
+#: the pool is what a walk pages over; ``coherence_ms`` the corpus-graph head
+#: re-order; ``group_ms`` the anchor collapse; ``extend_ms`` a saturated pool's
+#: exact-set count (and so the outer bound on ``set_ms``); ``enrich_ms`` the per-hit
 #: thread columns, titles, and context windows. Sequential, so unlike the arms these
 #: sum — to whatever a search spent after its pool was fused.
 SHAPE_SUBSTAGES = ("rank_ms", "coherence_ms", "group_ms", "extend_ms", "enrich_ms")
 
 #: What the memoized exact-set stage did, tallied per set query. ``set_scans`` is a
-#: full resolve of the match set; ``set_deltas`` a scan bounded to the rows appended
-#: since a memoized answer, folded into it; ``set_hits`` an answer handed back
-#: because the index had not moved. The three differ by orders of magnitude on a
-#: real corpus — measured here, ~850 ms against ~19 ms against ~1 ms — so the split
-#: is what says whether a slow ``set_ms`` is a large corpus or a memo that ingest is
-#: defeating.
+#: full resolve of the match set; ``set_hits`` an answer handed back because the
+#: index had not moved. The two differ by orders of magnitude on a real corpus —
+#: measured here, ~850 ms against ~1 ms — so the split is what says whether a slow
+#: ``set_ms`` is a large corpus or a memo that ingest is defeating.
+#:
+#: ``set_deltas`` — a scan bounded to the rows appended since a memoized answer,
+#: folded into it (~19 ms) — is :func:`~.fts.matched_threads`' outcome alone. The
+#: served path calls only :func:`~.fts.count_matches`, whose ``n_threads`` DISTINCT
+#: cannot be carried across a delta, so it stays zero on a search row.
 SET_OUTCOMES = ("set_scans", "set_deltas", "set_hits")
 
 
@@ -124,13 +124,23 @@ class SearchProbe:
 
     ``embed_cold`` is sampled at entry — the vector arm runs on every
     non-structural query, so an unloaded embedder there means this search pays the
-    load. ``embed_cached`` is its opposite end: the query vector came back from the
+    load. It is about a load *paid*, not a model merely absent, so a process that
+    defers construction never sets it: there the unloaded model is the reason the
+    arm sits out, which ``embed_deferred`` states instead.
+    ``embed_cached`` is the load's opposite end: the query vector came back from the
     embedder's cache, which is why ``embed_ms`` can be ~0 on an arm that ran.
+
+    ``embed_deferred`` and ``matrix_deferred`` are the two ways a deferring process
+    serves lexical-only — the model was not resident yet, or the matrix was cold —
+    and they are the fork's two prongs rather than one bit, because they resolve on
+    different clocks (a model load against a pack build) and a search meets the
+    first before it can reach the second.
     """
 
     __slots__ = (
         "fts_ms", "semantic_ms", "set_ms", "pool_size",
-        "embed_cold", "embed_cached", "matrix_built", "fts_passes",
+        "embed_cold", "embed_cached", "embed_deferred",
+        "matrix_built", "matrix_deferred", "fts_passes",
         *SEMANTIC_SUBSTAGES, *FTS_SUBSTAGES, *SHAPE_SUBSTAGES, *SET_OUTCOMES,
     )
 
@@ -141,7 +151,9 @@ class SearchProbe:
         self.pool_size = 0
         self.embed_cold = False
         self.embed_cached = False
+        self.embed_deferred = False
         self.matrix_built = False
+        self.matrix_deferred = False
         self.fts_passes = 0
         for name in (*SEMANTIC_SUBSTAGES, *FTS_SUBSTAGES, *SHAPE_SUBSTAGES):
             setattr(self, name, 0.0)
@@ -204,6 +216,17 @@ class SearchProbe:
                 rec[name] = round(getattr(self, name), 1)
         if self.matrix_built:
             rec["matrix_built"] = True
+        # The two sides of the deferral fork, in the order a search meets them: the
+        # model was not resident, or the matrix was cold, in a process that leaves
+        # construction to the warm pass. Either sits the vector arm out and serves
+        # lexical-only. Stated rather than left to be inferred from a silent arm —
+        # a degraded result set is otherwise indistinguishable from a whole one,
+        # and it is the ranking, not the latency, that the caller is short of.
+        # Present-only, like the cold bits.
+        if self.embed_deferred:
+            rec["embed_deferred"] = True
+        if self.matrix_deferred:
+            rec["matrix_deferred"] = True
         if self.cold:
             rec["cold"] = True
             if self.embed_cold:

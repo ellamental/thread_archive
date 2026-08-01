@@ -1,7 +1,7 @@
 """Drop-site regressions for the bulk export importer (claude.ai / xAI): no
 provider record may be silently skipped/dropped/truncated on import.
 
-Covers the drop-sites guarded in ``importers/exports.py``:
+Covers the drop-sites guarded in ``_importers/exports.py``:
 3. An xAI/Grok response with no ``message`` text must not be dropped
    (``continue``) — that loses image/attachment/generated-media and tool-only
    turns. It must be preserved with its full raw.

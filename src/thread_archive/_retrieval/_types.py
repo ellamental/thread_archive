@@ -6,6 +6,16 @@ The event hit is the one record every retrieval stage passes along — built by
 ``format.format_results``. Typing it here lets the checker carry the shape
 across those modules instead of prose alone.
 
+What the checker cannot carry is *when* each annotation appears, and that is
+where this record's failure mode lives: the ranker reads every stage annotation
+with a zero default (``result.get("_rrf", 0.0)``) and the renderer reads every
+display field with an ``or`` fallback, so a stage that stops annotating flattens
+one term of the score, or blanks one column, without raising anywhere. Splitting
+this into a type per stage would not catch it either — the stages mutate one dict
+in place, so each seam would need a ``cast``, which asserts rather than checks.
+``tests/test_hit_stage_contract.py`` is what holds it: it drives the real
+pipeline and asserts what each stage left behind.
+
 :class:`Results` is the list of those hits plus what a *page* of them needs to
 describe itself — how many matched in total, which page this is. It subclasses
 ``list`` so every existing caller, test, and eval that treats a search result as
@@ -96,11 +106,10 @@ class Pool(list):
 class Results(list):
     """A page of hits, and the facts that make it a *page* rather than an answer.
 
-    Search returns a cut, and for most of this pipeline's life the cut was the
-    only thing a caller saw: ten rows, with nothing to distinguish "these are all
-    of them" from "these are ten of nine hundred". That ambiguity is what makes a
-    ranked search unusable as an enumeration — not the ordering of the tail, but
-    that the tail is invisible. These fields close it.
+    Search returns a cut, and a cut on its own is ambiguous: ten rows read
+    identically whether they are all of them or ten of nine hundred. That
+    ambiguity is what makes a ranked search unusable as an enumeration — not the
+    ordering of the tail, but that the tail is invisible. These fields close it.
 
     - ``total`` / ``total_threads`` — the size of the match **set**, not of this
       page. ``None`` where the shape can't know it cheaply.
@@ -108,13 +117,15 @@ class Results(list):
       :data:`~.fts.SET_SCAN_CAP` (render them as ``N+``, never as ``N``).
     - ``page`` / ``pages`` — where this page sits, and how many there are.
       ``pages`` is ``None`` when ``total`` is.
-    - ``exhaustive`` — every matched thread is reachable by paging. True only for
-      the shapes resolved from the exact set (see ``fts.matched_threads``) rather
-      than cut from the candidate pool.
+    - ``exhaustive`` — every match is reachable by paging. True only where the
+      whole match set is in hand: a candidate pool that came back short of its
+      depth, or a browse that counted its own population. A saturated pool ranked
+      a cut, so it reads False and ``total`` is what the set scan found rather
+      than what paging can reach.
 
     A plain ``list`` subclass on purpose: slicing, iteration, ``len``, and
-    equality all behave as before, so nothing downstream needs to know this type
-    exists to keep working. Attributes are read with ``getattr(hits, 'total',
+    equality all behave exactly as a list's do, so nothing downstream needs to
+    know this type exists to keep working. Attributes are read with ``getattr(hits, 'total',
     None)`` by the renderer, which also handles the plain lists that ``rank`` and
     the test helpers construct.
     """

@@ -1,20 +1,25 @@
-"""The internal coordination layer for thread-archive.
+"""Whole-archive operations, composed for the surfaces that drive them.
 
-Private, like every underscore-prefixed module — the CLI, the MCP servers, and
-the web viewer are built on top of these functions; nothing outside the package
-may import them. Each call
-opens the archive — resolves the home, ensures its directories, pins it for the
-process, and initializes the SQLite engine + schema — then dispatches into the
-store / importers / search / truth / watch / ops layers. Internal imports are
-lazy so ``import thread_archive`` stays light and pulls in no server backends.
+Private, like every underscore-prefixed module — nothing outside the package may
+import it. Each function here is one *operation on an archive*: search it, import
+into it, reindex it, back it up. The composition is what earns the module — a call
+opens the archive (:mod:`._lifecycle`, re-exported below), then dispatches into
+the store / importers / search / truth / watch / ops layers, so a caller that
+wants a whole operation gets the setup with it. Internal imports are lazy so
+``import thread_archive`` stays light and pulls in no server backends.
 
-The backup kit (``backup`` / ``restore_drill`` / ``verify`` / ``nightly``)
-is implemented in :mod:`._ops` and re-exported here, so this module stays the
-single coordination surface every caller goes through.
+This is a composition layer, **not a chokepoint**: the CLI, the MCP servers and
+the web viewer call these functions where an operation matches, and reach past
+them into the layers directly where one does not — the CLI alone does both, and
+freely. Nothing enforces routing through here and nothing is meant to; treat it
+as the place a multi-layer operation is assembled once instead of at each caller,
+and expect the layers to have other callers.
 
-One archive per process: ``open_archive`` pins ``$THREAD_ARCHIVE_HOME`` so the
-engine (index.db), the truth log (truth/), and search all resolve to the same
-home. To switch archives, call :func:`close` first.
+The backup kit (``backup`` / ``restore_drill`` / ``verify`` / ``nightly``) is
+implemented in :mod:`._ops` and re-exported here, so a caller that already holds
+this module can drive a whole operational pass from it.
+
+One archive per process — see :mod:`._lifecycle` for what opening pins.
 """
 
 from __future__ import annotations
@@ -23,12 +28,16 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from ._config import ENV_HOME, ArchivePaths, resolve_paths
+from ._config import resolve_paths
 
 if TYPE_CHECKING:
     from ._retrieval._types import EventHit
 
 # The backup kit, re-exported (see docstring).
+# Opening and closing live a layer down (:mod:`._lifecycle`), where their
+# dependencies are; re-exported here because every caller that composes a whole
+# operation out of this module opens the archive first.
+from ._lifecycle import close, open_archive  # noqa: F401
 from ._ops.backup import backup, list_generations, restore, restore_drill  # noqa: F401
 from ._ops.coverage import check_coverage  # noqa: F401
 from ._ops.health import pipeline_verdict, read_health  # noqa: F401
@@ -43,54 +52,6 @@ def _set_watch_process_active(active: bool) -> None:
     """Mark this process as the persistent watch loop for status consumers."""
     global _WATCH_PROCESS_ACTIVE
     _WATCH_PROCESS_ACTIVE = active
-
-
-def open_archive(home: Optional[str] = None) -> ArchivePaths:
-    """Open (and initialize) the archive at ``home`` (env / default if None).
-
-    Switching homes within a process repoints everything atomically: the engine is
-    rebuilt (``init_engine``) and the JSONL truth-log's cached append handles are
-    dropped, so a second ``open_archive`` to a different home can't leave SQLite
-    writing one store while JSONL appends resolve to another.
-    """
-    paths = resolve_paths(home).ensure()
-    target = paths.sqlalchemy_url
-    from ._store import active_dsn, init_db, init_engine, reconnect_if_swapped
-
-    if active_dsn() is not None and active_dsn() != target:
-        from ._truth import reset_handles
-
-        reset_handles()  # stale handles point at the previous home's files
-    # Pin the home so engine + truth + search resolve consistently for the process.
-    os.environ[ENV_HOME] = str(paths.home)
-    try:
-        init_engine(target)  # rebuilds when the DSN changed
-        # Read-path convergence: long-lived processes (an MCP server, the web
-        # app) pass through here on every call, so a reindex's index.db swap is
-        # picked up on the next call. Writers get the authoritative check on
-        # ingest-lock *acquire* (see _truth.shared_ingest_lock) — this one runs
-        # before any blocking wait and can go stale during it.
-        reconnect_if_swapped()
-        init_db()
-    except Exception:
-        # A failed first connection (corrupt index, permissions, failed PRAGMA)
-        # must not leave its partially initialized pool pinned globally. Apart
-        # from leaking the DB-API connection, a later call would keep retrying
-        # through the poisoned engine instead of starting from a clean binding.
-        from ._store import close_engine
-
-        close_engine()
-        raise
-    return paths
-
-
-def close() -> None:
-    """Dispose the engine so a different archive can be opened."""
-    from ._store import close_engine
-    from ._truth import reset_handles
-
-    reset_handles()
-    close_engine()
 
 
 def search(
@@ -266,14 +227,13 @@ def read_thread(
     ``thread_id`` is the archive's thread id or a provider **session id**
     (the uuid/source_id a tool knows the conversation by). ``mode`` picks the view —
     ``user`` (default), ``chat``, ``full``, ``last`` (final assistant text only), or
-    ``ends`` (first + last ``context_turns`` turns) —
-    and the read is turn-paginated +
-    size-budgeted (``max_chars``, default ~48k). ``tool_results`` (default off) adds
+    ``ends`` (first + last ``context_turns`` turns) — and the read is turn-paginated
+    + size-budgeted (``max_chars``, default ~48k). ``tool_results`` (default off) adds
     tool output under each call in ``full``. ``summary`` swaps in a summary view:
     ``True``/``'toc'`` = compact TOC, ``'short'`` / ``'indexed'`` = the stored thread
     summaries, ``'files'`` = the files this session touched (the code axis, read
-    backwards from :func:`search`'s ``path`` scope). ``around_event`` opens a search-result event with
-    ``context_turns`` turns of surrounding context; see
+    backwards from :func:`search`'s ``path`` scope). ``around_event`` opens a
+    search-result event with ``context_turns`` turns of surrounding context; see
     :func:`thread_archive._retrieval.read_thread` for the full contract."""
     open_archive(home)
     from ._retrieval import read_thread as _read
@@ -359,7 +319,6 @@ def reindex(*, home: Optional[str] = None, vectors: bool = False, salvage: bool 
 
 def migrate(*, home: Optional[str] = None, dry_run: bool = False) -> dict:
     """Migrate older truth to the current format, then rebuild and verify it."""
-    from ._config import resolve_paths
     from ._truth.migrate_v2 import migrate as _migrate
 
     result = _migrate(resolve_paths(home).home, dry_run=dry_run)

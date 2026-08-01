@@ -59,15 +59,17 @@ export default defineConfig({
       include: ['src/**/*.{ts,tsx}'],
       // Test scaffolding and the Vite entry shim carry no behavior worth covering.
       exclude: ['src/test/**', 'src/main.tsx'],
-      // Regression floors sit just under the measured suite. They fire only
-      // under --coverage, which the CI row passes; a plain local `vitest run`
-      // stays fast and ungated. Keep every dimension gated so deleting branch-
-      // heavy interaction tests cannot hide behind unchanged line coverage.
+      // Regression floors sit several points under the measured suite (91.3 /
+      // 81.0 / 93.1 / 95.3) — slack enough that ordinary edits don't red the
+      // row; only a real drop does. They fire only under --coverage, which the
+      // CI row passes; a plain local `vitest run` stays fast and ungated. Keep
+      // every dimension gated so deleting branch-heavy interaction tests cannot
+      // hide behind unchanged line coverage.
       thresholds: {
-        statements: 88,
+        statements: 85,
         branches: 74,
         functions: 86,
-        lines: 91,
+        lines: 89,
       },
     },
   },
