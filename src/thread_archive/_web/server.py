@@ -223,6 +223,23 @@ def _serve_file(p: Path, *, headers: Optional[dict] = None) -> Response:
     return 200, ctype, p.read_bytes(), headers or {}
 
 
+def _bundled_asset(root: Path, rel: str) -> Optional[Path]:
+    """The file the built bundle publishes at ``rel``, or ``None``.
+
+    A lookup in an index of what the bundle actually holds, rather than joining
+    the request onto ``root`` and then arguing about where the result landed:
+    the path served comes out of the walk, so a climb — encoded or not — cannot
+    name a file the build did not emit. The request string is only ever a key.
+
+    The index is built per request. It is a handful of files, and a frontend
+    rebuild has to be live on the next reload rather than at the next restart
+    of the process hosting this.
+    """
+    return {
+        p.relative_to(root).as_posix(): p for p in root.rglob("*") if p.is_file()
+    }.get(rel)
+
+
 #: Stamped into the served shell when the operator has asked for the dev-panel
 #: link. The panels are a different app on a different server; this tag is the
 #: whole difference between a rail that offers a way over to them and one that
@@ -1269,21 +1286,15 @@ def route(
 
     # ---- a real static asset from the built bundle (assets/*.js|css, favicon…) ----
     rel = path.lstrip("/")
-    if rel:
-        candidate = (STATIC_DIR / rel).resolve()
-        # Containment spelled as an equality-or-ancestor test, not
-        # `is_relative_to`: the two decide identically, but CodeQL's
-        # path-injection query models this form as a sanitizer and the other
-        # not at all, so the terser spelling reds the scan on a request path
-        # that is already checked.
-        if (candidate == STATIC_DIR or STATIC_DIR in candidate.parents) and candidate.is_file():
-            # Vite emits content-hashed filenames under assets/ — a changed file
-            # gets a new URL, so the browser may cache these forever.
-            cache = (
-                {"Cache-Control": "public, max-age=31536000, immutable"}
-                if rel.startswith("assets/") else None
-            )
-            return _serve_file(candidate, headers=cache)
+    asset = _bundled_asset(STATIC_DIR, rel) if rel else None
+    if asset is not None:
+        # Vite emits content-hashed filenames under assets/ — a changed file
+        # gets a new URL, so the browser may cache these forever.
+        cache = (
+            {"Cache-Control": "public, max-age=31536000, immutable"}
+            if rel.startswith("assets/") else None
+        )
+        return _serve_file(asset, headers=cache)
 
     # ---- SPA fallback: every other path renders the app shell (client routing) ----
     return _serve_shell()

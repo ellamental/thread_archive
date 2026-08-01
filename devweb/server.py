@@ -31,6 +31,7 @@ from thread_archive._web.server import (
     _NONLOCAL_OPTIN,
     _SECURITY_HEADERS,
     Response,
+    _bundled_asset,
     _first,
     _host_allowed,
     _int,
@@ -161,16 +162,13 @@ def route(method: str, path: str, params: dict) -> Response:
 
     # A real static asset from the built bundle (assets/*.js|css, favicon…).
     rel = path.lstrip("/")
-    if rel:
-        candidate = (STATIC_DIR / rel).resolve()
-        # Equality-or-ancestor rather than `is_relative_to` — same decision, but
-        # CodeQL's path-injection query recognizes this form as a sanitizer.
-        if (candidate == STATIC_DIR or STATIC_DIR in candidate.parents) and candidate.is_file():
-            # Vite emits content-hashed filenames under assets/, so those are
-            # immutable; anything else must be revalidated.
-            headers = ({"Cache-Control": "public, max-age=31536000, immutable"}
-                       if rel.startswith("assets/") else None)
-            return _serve_file(candidate, headers=headers)
+    asset = _bundled_asset(STATIC_DIR, rel) if rel else None
+    if asset is not None:
+        # Vite emits content-hashed filenames under assets/, so those are
+        # immutable; anything else must be revalidated.
+        headers = ({"Cache-Control": "public, max-age=31536000, immutable"}
+                   if rel.startswith("assets/") else None)
+        return _serve_file(asset, headers=headers)
 
     # Anything else is a client route (/retrieval, /telemetry, /lab, /lab/run/:id).
     return _serve_shell()

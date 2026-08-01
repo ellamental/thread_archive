@@ -776,10 +776,45 @@ def test_built_assets_served(archive_home):
 
 
 def test_path_traversal_blocked(archive_home):
-    # a climbing path must not escape static/ — falls through to the SPA shell, not /etc
-    status, ctype, body, _ = route("GET", "/../../etc/passwd", {})
-    assert status == 200 and ctype.startswith("text/html")
-    assert b"root:" not in body
+    # No request may name a file the build didn't emit. Every shape below falls
+    # through to the SPA shell — a client route the app will 404 on itself —
+    # rather than reading off disk. The encoded forms matter because the router
+    # sees the raw path: they are not climbs at all here, just names no asset has.
+    for path in (
+        "/../../etc/passwd",
+        "/%2e%2e/%2e%2e/etc/passwd",
+        "/..%2f..%2fetc%2fpasswd",
+        "//etc/passwd",
+        "/assets/../../server.py",
+        "/../server.py",
+    ):
+        status, ctype, body, _ = route("GET", path, {})
+        assert status == 200 and ctype.startswith("text/html"), path
+        assert b"root:" not in body, path
+        assert b"def route(" not in body, path
+
+
+def test_bundled_asset_resolves_only_what_the_bundle_holds(tmp_path):
+    """The lookup answers with files the walk found, and with nothing else — a
+    request is a key into the bundle, never a path joined onto its root."""
+    from thread_archive._web.server import _bundled_asset
+
+    root = tmp_path / "static"
+    (root / "assets").mkdir(parents=True)
+    (root / "index.html").write_text("shell", encoding="utf-8")
+    (root / "assets" / "index-abc123.js").write_text("//js", encoding="utf-8")
+    (tmp_path / "secret.txt").write_text("not in the bundle", encoding="utf-8")
+
+    assert _bundled_asset(root, "index.html") == root / "index.html"
+    assert _bundled_asset(root, "assets/index-abc123.js") == root / "assets/index-abc123.js"
+    for miss in ("../secret.txt", "assets/../../secret.txt", "/etc/passwd",
+                 "assets", "", "nope.js"):
+        assert _bundled_asset(root, miss) is None, miss
+
+    # A rebuild lands new hashed filenames under a server that is already up:
+    # they resolve on the next request, with no restart.
+    (root / "assets" / "index-def456.js").write_text("//js2", encoding="utf-8")
+    assert _bundled_asset(root, "assets/index-def456.js") is not None
 
 
 def test_spa_routes_serve_index(archive_home):

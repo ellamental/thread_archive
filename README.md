@@ -6,6 +6,8 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-black)](https://github.com/ellamental/thread_archive)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/ellamental/thread_archive/blob/main/LICENSE)
 
+A note from the human in the loop: This app is an experiment to see if vibe coding can produce something robust. If that makes you not trust the project, welcome to the club! I have over 10 years of professional dev experience, but I'll be honest, I haven't read any of the code. Nevertheless I get a lot of benefit from the functionality, and we have pretty good tests, so 🤷🏻‍♀️ (review the project yourself, or ask your AI).
+
 **A local-first archive for the AI agents that work on your machine — built by
 Claude Code, for Claude Code.** Every session your agent harnesses record lands
 in one durable, append-only archive you own, on your own disk — and your agents

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Both servers resolve a static request by looking it up in an index of what the built bundle holds, rather than
+  joining the request onto the bundle root and then checking where the result landed. The old form decided the
+  same cases — a climb resolved outside `static/` was refused — but it decided them *after* building the path,
+  which is a shape that has to be read carefully to be believed, and CodeQL's path-injection query reported it as
+  six open alerts across `_web/server.py` and `devweb/server.py` (the request reached `Path.resolve`, `is_file`,
+  and `read_bytes`). Now the request string is only ever a dictionary key: the path served comes out of the walk,
+  so nothing the build didn't emit can be named, encoded or not. The index is rebuilt per request — it is three
+  files, and a frontend rebuild has to be live on the next reload rather than at the next restart.
+
 - `match='substring'` honors `OR` and `|` as a union of alternative substrings. It used to strip the operators and
   scan for the whole query as ONE literal, so `"git=" OR "git axis" OR "git scope"` searched for the substring
   `git= git axis git scope` — which occurs nowhere, and a nothing-matches pattern is the scan's worst case: no
