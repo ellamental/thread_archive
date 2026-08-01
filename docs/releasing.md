@@ -245,9 +245,12 @@ Release X.Y.Z: compress changelog, bump version
 
 Push, set the PR's title to `Release X.Y.Z` and its body to the version's
 changelog section, and mark it ready for review. Ready-for-review asserts
-three greens, all on the branch as it now stands: the preflight (§2), the
-PR's own GitHub CI and CodeQL runs, and an rc whose Publish `verify` job
-passed, with nothing but the §3 release commit on top of it. The diff is
+four greens, all on the branch as it now stands: the preflight (§2), the
+PR's own GitHub CI and CodeQL runs, the Bench lane (`bench.yml` — the
+search-quality gate run off-box, against the packs and the checked-in
+baseline; it runs on every PR to `main`, from the PR head's workflow file),
+and an rc whose Publish `verify` job passed, with nothing but the §3
+release commit on top of it. The diff is
 everything since the last release.
 
 The operator merges it (merge commit). That merge is the ship — everything

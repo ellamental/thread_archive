@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The off-box quality gate runs on every release PR (pre-merge, from the PR head's workflow file), not only on the
+  weekly schedule; a release ships with the portability proof green instead of discovering it after.
+
 ## 0.0.13 — 2026-08-01
 
 - The quality gate runs off this box: bench corpora and built homes ship as content-hashed release assets on the
