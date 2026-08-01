@@ -687,43 +687,47 @@ def cmd_watch(args: argparse.Namespace) -> int:
     # engine) so there's a persistent URL — WAL lets the web reader run concurrent
     # with the watcher's writes (see store._base).
     httpd = None
-    # getattr, not attribute access: --web is registered only where the viewer
-    # exists, so on an install the flag — and the attribute — is simply absent.
-    if getattr(args, "web", False):
-        from . import _tools
-        from ._retrieval import start_keepalive, start_warm_models
-        from ._web import serve_in_thread
-
-        httpd = serve_in_thread(host=args.web_host, port=args.web_port)
-        logging.getLogger("thread_archive._watcher").info(
-            "cohosting web viewer on http://%s:%s", args.web_host, args.web_port
-        )
-        # Warm the model stack for the viewer's searches, exactly as the shared MCP
-        # server does for its clients. Nobody typing into the search box knows a model
-        # is loading, so the tens-of-seconds cold load reads as a broken product on the
-        # first search anyone ever runs — where warm search is sub-second at the
-        # median, so the archive makes its worst impression on the one query that
-        # forms it, by an order of magnitude it never repeats. Only
-        # the cohosting process warms: the watcher's own indexing loads the embedder
-        # when it has work, and a headless watcher answers no queries.
-        #
-        # Claimed before the warm starts, so the restart this pass records is
-        # counted against the viewer rather than against whichever service a
-        # reader happened to be looking at.
-        _tools.set_default_surface("web")
-        start_warm_models()
-        # And hold the pages down afterwards. The viewer idles far longer between
-        # searches than the MCP server does, so it is the likelier of the two to be
-        # evicted and pay the fault-in on exactly the query that forms someone's
-        # impression of the product.
-        start_keepalive()
-
-    available = [w.source_name for w in watcher.available()]
-    logging.getLogger("thread_archive._watcher").info(
-        "watching %d sources %s every %ss (maintenance every %.0fs)",
-        len(available), available, args.interval, watcher.maintenance_interval,
-    )
+    # The interrupt handling starts here, not at the loop: startup — the
+    # viewer's bind, the model warm — can be seconds, and an operator's ^C
+    # landing in it deserves the same "stopped." and the same close as one
+    # landing in the loop, not a traceback over a socket left bound.
     try:
+        # getattr, not attribute access: --web is registered only where the viewer
+        # exists, so on an install the flag — and the attribute — is simply absent.
+        if getattr(args, "web", False):
+            from . import _tools
+            from ._retrieval import start_keepalive, start_warm_models
+            from ._web import serve_in_thread
+
+            httpd = serve_in_thread(host=args.web_host, port=args.web_port)
+            logging.getLogger("thread_archive._watcher").info(
+                "cohosting web viewer on http://%s:%s", args.web_host, args.web_port
+            )
+            # Warm the model stack for the viewer's searches, exactly as the shared MCP
+            # server does for its clients. Nobody typing into the search box knows a model
+            # is loading, so the tens-of-seconds cold load reads as a broken product on the
+            # first search anyone ever runs — where warm search is sub-second at the
+            # median, so the archive makes its worst impression on the one query that
+            # forms it, by an order of magnitude it never repeats. Only
+            # the cohosting process warms: the watcher's own indexing loads the embedder
+            # when it has work, and a headless watcher answers no queries.
+            #
+            # Claimed before the warm starts, so the restart this pass records is
+            # counted against the viewer rather than against whichever service a
+            # reader happened to be looking at.
+            _tools.set_default_surface("web")
+            start_warm_models()
+            # And hold the pages down afterwards. The viewer idles far longer between
+            # searches than the MCP server does, so it is the likelier of the two to be
+            # evicted and pay the fault-in on exactly the query that forms someone's
+            # impression of the product.
+            start_keepalive()
+
+        available = [w.source_name for w in watcher.available()]
+        logging.getLogger("thread_archive._watcher").info(
+            "watching %d sources %s every %ss (maintenance every %.0fs)",
+            len(available), available, args.interval, watcher.maintenance_interval,
+        )
         # The cohosted status endpoint runs before a new daemon can finish its
         # first potentially long provider sweep. Mark this process as the
         # persistent capture owner so the trust center can distinguish
