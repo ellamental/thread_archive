@@ -1,0 +1,91 @@
+{
+ "repo": "ellamental/thread-archive-bench-data",
+ "release": "packs-1",
+ "packs": {
+  "dataset-scifact": {
+   "asset": "dataset-scifact.tar.gz",
+   "sha256": "af9502b80b9aa377d90f249b556d9db164a43905f02d3a47fa77ec1ccedb4e92",
+   "bytes": 2812672,
+   "files": 3
+  },
+  "dataset-nfcorpus": {
+   "asset": "dataset-nfcorpus.tar.gz",
+   "sha256": "fde5e3be89e610447034e0c197bf5fb3a15054297c27b8ae80fbe359b4f374fe",
+   "bytes": 2097763,
+   "files": 3
+  },
+  "dataset-locomo": {
+   "asset": "dataset-locomo.tar.gz",
+   "sha256": "20eabd3d57662a4f8454d1075c7bf2ef0adc04fbc91a64f188cb3ba019d1b142",
+   "bytes": 632673,
+   "files": 1
+  },
+  "dataset-longmemeval": {
+   "asset": "dataset-longmemeval.tar.gz",
+   "sha256": "10aed04d77e1f96e32286425a2ece377efc73fad8916c6f270669d938df65125",
+   "bytes": 77800820,
+   "files": 1
+  },
+  "dataset-beam": {
+   "asset": "dataset-beam.tar.gz",
+   "sha256": "768ecb687c8621181ae8179aa8725445e95c183e05a72cf1dc4d3f69b1eb966d",
+   "bytes": 4775464,
+   "files": 1
+  },
+  "dataset-perltqa": {
+   "asset": "dataset-perltqa.tar.gz",
+   "sha256": "71c9d50f7c85e3e00f4d18c529d3167476133db434d72bfd40cee7350244a4f2",
+   "bytes": 3479950,
+   "files": 2
+  },
+  "dataset-cdr": {
+   "asset": "dataset-cdr.tar.gz",
+   "sha256": "7ac37145d45e0bcfff3beea72360d2f3f1577449b73115470514664bdafdb20c",
+   "bytes": 7639453,
+   "files": 3
+  },
+  "home-scifact": {
+   "asset": "home-scifact.tar.gz",
+   "sha256": "ee2238a69996e8faa816cbe79e2c579309a17eed37e9ed5b0d06fc9e50165b8c",
+   "bytes": 79080358,
+   "files": 5203
+  },
+  "home-nfcorpus": {
+   "asset": "home-nfcorpus.tar.gz",
+   "sha256": "841bc8141d112bca2d15281ddef27d8d71839f6643ebfa610b7e4523dc75408e",
+   "bytes": 52454221,
+   "files": 3615
+  },
+  "home-locomo": {
+   "asset": "home-locomo.tar.gz",
+   "sha256": "a8a4daf373caf352d3652addb19599bb9cd1c4ffa211f19aa533892501a55b2c",
+   "bytes": 77865735,
+   "files": 12042
+  },
+  "home-longmemeval": {
+   "asset": "home-longmemeval.tar.gz",
+   "sha256": "d3ecfc074761af7da255751e74e2eaf754973e10a20d4fddde658b26d35ba03a",
+   "bytes": 61399069,
+   "files": 27042
+  },
+  "home-beam": {
+   "asset": "home-beam.tar.gz",
+   "sha256": "18cf6def7474c3696924dfe59534ddaa1f6f30b2c7f8063a8afa85819cbdbd9a",
+   "bytes": 125257616,
+   "files": 12084
+  },
+  "home-perltqa": {
+   "asset": "home-perltqa.tar.gz",
+   "sha256": "88ecf76381608f214fabf625bb6501e9767914469974f1e87b5665f8032ffa97",
+   "bytes": 97673910,
+   "files": 7420
+  },
+  "home-cdr": {
+   "asset": "home-cdr.tar.gz",
+   "sha256": "c9b9b93037f870a23d80f1441414aff4c44a4141ebea765c3c4c2c9498ff9f68",
+   "bytes": 182773687,
+   "files": 9168
+  }
+ },
+ "accepted_at": "2026-08-01T04:41:20+00:00"
+}

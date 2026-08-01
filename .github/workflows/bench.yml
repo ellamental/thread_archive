@@ -1,0 +1,94 @@
+# The search-quality gate, off this box: restore the content-addressed bench
+# packs (pinned corpora + built, embedded eval homes) from the private
+# thread-archive-bench-data release, then run the same quick-tier gate a release
+# preflight runs. What a run pays for is query embedding on CPU — minutes — not
+# the day of ingest+embed a cold corpus build costs; everything else arrives as
+# the exact bytes the checked-in manifest (search_lab/bench-packs.json) accepts.
+#
+# This lane is the portability proof for the quality bar: evidence that the
+# accepted baseline is reproducible away from the maintainer's machine. It is
+# scheduled + dispatchable rather than per-push, and it gates no merge — the
+# release gate proper still runs from the preflight (docs/releasing.md). If
+# cross-platform float differences ever trip the gate's case-width tolerance,
+# that is a finding about the baseline's portability, not noise to suppress;
+# widen the affected row's tolerance explicitly in quality-baseline.json.
+#
+# Needs one secret: BENCH_DATA_TOKEN, a fine-grained PAT with contents:read on
+# ellamental/thread-archive-bench-data (the packs repo is private — it holds
+# research-dataset text whose public redistribution rights are unreviewed).
+
+name: Bench
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly. The packs and baseline only move when someone accepts new ones, so
+    # the cadence just has to notice drift within a week, not within a push.
+    - cron: "17 9 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      # Forks and clones without the secret get a named failure here, not a
+      # confusing download error three steps later.
+      - name: Check for the packs token
+        run: |
+          if [ -z "${{ secrets.BENCH_DATA_TOKEN }}" ]; then
+            echo "BENCH_DATA_TOKEN is not set; this lane needs read access to" \
+                 "the private thread-archive-bench-data repo." >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # torch first from the CPU index: the default resolve pulls the CUDA build
+      # (~2.5 GB of wheels for GPUs no runner has); the CPU wheel is a tenth of
+      # that. Then the package with the model arms ([embeddings] covers
+      # sentence-transformers + leiden) and the dev group (pyarrow — the beam
+      # rows read parquet).
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[embeddings]" --group dev
+
+      # The extracted packs (~2.5 GB) keyed by the manifest: a run after an
+      # unchanged manifest restores the tree and `packs pull` verifies stamps
+      # and downloads nothing.
+      - name: Cache bench packs
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/thread-evals
+          key: bench-packs-${{ hashFiles('search_lab/bench-packs.json') }}
+
+      # The embedding model (~0.5 GB from Hugging Face), keyed per model name in
+      # the code; bump the key if the model arm ever changes models.
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-nomic-embed-text-v1.5
+
+      - name: Restore packs
+        env:
+          GH_TOKEN: ${{ secrets.BENCH_DATA_TOKEN }}
+        run: python -m search_lab packs pull
+
+      # The corpora the packs restored are the bytes the pins accept — verified
+      # here the same way a local harness verifies before it scores.
+      - name: Verify dataset pins
+        run: python -m search_lab pins
+
+      - name: Run the quality gate (quick tier)
+        run: python -m search_lab gate --run --quick
