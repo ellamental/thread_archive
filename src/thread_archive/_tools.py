@@ -453,7 +453,9 @@ def thread_search(
     search described above: it matches whole words, so ``p4`` finds ``p4`` and not
     ``mp4``. ``'substring'`` matches raw text anywhere inside a word — ``p4`` then
     also finds ``mp4``, ``p400``, ``gcp4`` — which no index can do, so it pays a
-    full-table scan (seconds on a large archive) and runs no fallback tiers. Reach
+    full-table scan (seconds on a large archive) and runs no fallback tiers.
+    ``OR`` and ``|`` separate alternative substrings (``"foo=" OR "foo axis"``
+    matches rows containing either literal). Reach
     for it when enumerating every occurrence of an identifier, a fragment, or a
     string that lives inside longer words; leave it alone otherwise.
     """

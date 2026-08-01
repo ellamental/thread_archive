@@ -237,6 +237,43 @@ def test_substring_totals_are_exact_and_pageable(archive_home) -> None:
     assert len(set(walked)) == 8
 
 
+def test_substring_or_unions_alternatives(archive_home) -> None:
+    """``OR`` / ``|`` separate alternative substrings rather than folding into
+    one literal that occurs nowhere — the fold was both the wrong answer and the
+    scan's worst case (a nothing-matches pattern has no LIMIT to stop at, so the
+    LIKE reads the whole corpus to return zero)."""
+    _seed_within_token(archive_home)
+    rows = search('"mp4" OR "p4 rollout"', match="substring")
+    assert len({r["thread_id"] for r in rows}) == 2
+    rows = search("mp4 | p4 rollout", match="substring")
+    assert len({r["thread_id"] for r in rows}) == 2
+
+
+def test_substring_or_set_agrees_with_the_pool(archive_home) -> None:
+    """The exact-set tally resolves the same union predicate the pool matched —
+    a set that answered the single-literal question would disagree with every
+    page it is supposed to describe."""
+    _seed_within_token(archive_home)
+    tallies, capped = matched_threads('"mp4" OR "p4 rollout"', match_mode="substring")
+    assert capped is False
+    assert len(tallies) == 2
+    n_events, n_threads, capped = count_matches(
+        '"mp4" OR "p4 rollout"', match_mode="substring", content_types=["user"]
+    )
+    assert (n_threads, capped) == (2, False)
+
+
+def test_substring_terms_split_on_or_and_pipe() -> None:
+    from thread_archive._retrieval.fts import _substring_terms
+
+    assert _substring_terms('"git=" OR "git axis" OR "git scope"') == [
+        "git=", "git axis", "git scope"]
+    assert _substring_terms("mp4 | p400") == ["mp4", "p400"]
+    assert _substring_terms("plain old text") == ["plain old text"]
+    assert _substring_terms("dup OR dup") == ["dup"]
+    assert _substring_terms("trailing OR") == ["trailing"]
+
+
 def test_an_unknown_match_mode_is_rejected(archive_home) -> None:
     import pytest
 

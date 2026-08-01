@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `match='substring'` honors `OR` and `|` as a union of alternative substrings. It used to strip the operators and
+  scan for the whole query as ONE literal, so `"git=" OR "git axis" OR "git scope"` searched for the substring
+  `git= git axis git scope` — which occurs nowhere, and a nothing-matches pattern is the scan's worst case: no
+  LIMIT can stop it, so it read all ~3.6M rows (~8.7 s), paid the exact-set window on top (~4 s), and returned
+  zero lexical hits (the ledger's one scan-tail row since the set-memo fix, 2026-07-30). The pool pass and the
+  exact-set predicate build the union from one shared helper so the tally keeps describing the pool.
+
 - The retrieval surface is ratcheted across every door it has. `thread_search`'s parameter list was written out in
   six places by hand, and only one leg of that — the wire descriptions — was checked; the others could drift in
   silence, and had. `tests/meta/test_retrieval_surface.py` now derives all of it from the tool's own signature:

@@ -174,7 +174,14 @@ the server's.
   queries; bounded by design (they are the honest full answer), unbounded in
   feel. The other tail source alongside contention — if it ever needs work,
   the shapes are early-results-with-continuation, a scan budget, or term
-  planning that keeps more queries off the scan path.
+  planning that keeps more queries off the scan path. The one recorded served
+  instance of this tail turned out to be a semantics bug, since fixed:
+  `match='substring'` stripped `OR`/`|` and scanned for the whole query as one
+  literal, and a nothing-matches literal is the scan's worst case (no LIMIT
+  ever stops it — full corpus walked twice, pool + exact set, for zero hits).
+  Substring mode now unions the alternatives, so a matching-anything OR query
+  terminates at its LIMIT instead. The honest-broad-scan tail proper (a rare
+  substring that genuinely isn't there) remains open and by-design.
 - **Contention is real and recorded, not fixed** — and it is now the
   first-order tail source: the worst warm-server rows (e.g. a 40 s search with
   6.4 s of *warm* embed time) are a busy box, not a cold anything. Test

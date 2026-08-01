@@ -311,6 +311,44 @@ def _like_substring(term: str) -> str:
     return "%" + _escape_like(term) + "%"
 
 
+def _substring_terms(query: str) -> list[str]:
+    """The literal substrings a substring-mode query asks for, as a union.
+
+    ``OR`` (outside quotes) and ``|`` both separate alternatives, mirroring the
+    token modes. This is load-bearing for latency as much as semantics: folding
+    the operators into one literal (which is what merely stripping them does)
+    makes a pattern that occurs nowhere, and a nothing-matches substring is the
+    scan's worst case — no LIMIT can stop a walk that never finds a row, so the
+    LIKE reads the whole corpus to return nothing. Each alternative is cleaned
+    like the single-term form; order preserved, deduped."""
+    out: list[str] = []
+    for part in (query or "").split("|"):
+        groups: list[list[str]] = [[]]
+        for tok in re.findall(r'"[^"]*"|\S+', part):
+            if tok == "OR":
+                groups.append([])
+            else:
+                groups[-1].append(tok)
+        for g in groups:
+            term = _clean_query_text(" ".join(g))
+            if term and term not in out:
+                out.append(term)
+    return out
+
+
+def _substring_predicate(terms: list[str]) -> tuple[str, dict]:
+    """The WHERE fragment + params matching any of ``terms`` as an infix LIKE.
+
+    The one builder for substring mode's predicate, shared by the candidate-pool
+    pass and the exact-set queries — built twice, the two could drift, and the
+    set is what a paginated caller trusts to describe the pool's matches."""
+    params = {"sub" + str(i): _like_substring(t) for i, t in enumerate(terms)}
+    frag = " OR ".join(
+        "content LIKE :sub" + str(i) + " ESCAPE '\\'" for i in range(len(terms))
+    )
+    return ("(" + frag + ")" if len(terms) > 1 else frag), params
+
+
 def _in_clause(column: str, values: list, prefix: str, params: dict, negate: bool) -> str:
     names = []
     for i, v in enumerate(values):
@@ -370,7 +408,8 @@ class _Pass:
 #: indexed FTS5 MATCH — the shipped behavior, and what every query mode in
 #: :func:`~._classify.classify_query` builds on. ``substring`` is the uncapped
 #: infix LIKE: it finds ``p4`` inside ``mp4`` and ``p400``, which no MATCH can
-#: see, and pays a full-table scan for it (see :func:`search_events`).
+#: see, and pays a full-table scan for it (see :func:`search_events`). ``OR`` and
+#: ``|`` separate alternative substrings (:func:`_substring_terms`).
 MATCH_MODES = ("token", "substring")
 
 
@@ -477,10 +516,11 @@ def _primary_predicate(
     if startswith is not None:
         return "content LIKE :sw ESCAPE '\\'", {"sw": _like_prefix(startswith)}, True
     if match_mode == "substring":
-        clean = _clean_query_text(query)
-        if not clean:
+        terms = _substring_terms(query)
+        if not terms:
             return None
-        return "content LIKE :sub ESCAPE '\\'", {"sub": _like_substring(clean)}, True
+        where, params = _substring_predicate(terms)
+        return where, params, True
     mode, _ = classify_query(query)
     if mode == "or":
         terms = [t for t in (_clean_query_text(t) for t in (query or "").split("|")) if t]
@@ -556,7 +596,8 @@ def search_events(
     would have to be silently truncated.
 
     ``match_mode='substring'`` replaces the whole mode ladder above with ONE
-    uncapped infix LIKE over the cleaned query text. It is the only way to reach
+    uncapped infix LIKE over the cleaned query text — a union of alternatives
+    when the query separates them with ``OR`` or ``|``. It is the only way to reach
     a within-token match the index cannot see (``p4`` inside ``mp4``), and the
     only path that lifts :data:`_LIKE_SCAN_CAP`: the cap is a latency backstop on
     a scan the caller did not ask for, and an explicit ``match='substring'`` is
@@ -588,18 +629,19 @@ def search_events(
                             order="occurred_at DESC", use_match=False))
     elif match_mode == "substring":
         # One uncapped scan, no ladder behind it: an explicit substring ask has
-        # exactly one right answer set, and a fallback tier could only widen it
+        # exactly one right answer set (``OR`` / ``|`` alternatives included —
+        # see :func:`_substring_terms`), and a fallback tier could only widen it
         # past what the caller asked for.
-        clean = _clean_query_text(query)
-        if not clean:
+        terms = _substring_terms(query)
+        if not terms:
             return []
+        sub_where, sub_params = _substring_predicate(terms)
         # Ordered by rowid, not occurred_at: the scan already has to visit every
         # row, and ``occurred_at`` is UNINDEXED, so sorting by it means materializing
         # and sorting the whole match list (measured ~14s where the scan alone is
         # ~1s). The FTS rowid is append-ordered, so DESC walks the index backwards
         # for the same newest-first intent at no cost.
-        passes.append(_Pass("content LIKE :sub ESCAPE '\\'", {"sub": _like_substring(clean)},
-                            order="rowid DESC", use_match=False))
+        passes.append(_Pass(sub_where, sub_params, order="rowid DESC", use_match=False))
     elif mode == "or":
         terms = [_clean_query_text(t) for t in (query or "").split("|")]
         terms = [t for t in terms if t]
