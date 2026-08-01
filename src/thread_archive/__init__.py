@@ -47,6 +47,6 @@ from __future__ import annotations
 # CLI + the truth format + the provider plugin API + the web viewer's URLs
 # only; everything else is free to change without notice.
 # Don't bump past 0.0.x as part of release mechanics.
-__version__ = "0.0.12rc1"
+__version__ = "0.0.12"
 
 __all__ = ["__version__"]
