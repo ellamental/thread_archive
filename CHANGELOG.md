@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.13 — 2026-08-01
+
 - The quality gate runs off this box: bench corpora and built homes ship as content-hashed release assets on the
   private thread-archive-bench-data repo (`python -m search_lab packs`; hashes of record in `bench-packs.json`), and a
   scheduled GitHub lane (`bench.yml`) restores them and runs `gate --run --quick` paying only for CPU query embedding.
