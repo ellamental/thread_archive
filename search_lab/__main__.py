@@ -10,6 +10,9 @@ rather than a single instrument, and are worth invoking by name:
 * ``pins`` — check the corpora themselves against the bytes they were accepted
   on, which is what makes a number comparable to an older one at all
   (:mod:`search_lab.dataset_pins`).
+* ``packs`` — move those corpora and the built homes between machines as
+  content-hashed release assets, so the gate can run off this box
+  (:mod:`search_lab.bench_packs`).
 
 Every other harness stays a script (``python search_lab/retrieval_eval.py``),
 which is how they are documented and how they are run: one instrument, its own
@@ -20,7 +23,7 @@ from __future__ import annotations
 
 import sys
 
-COMMANDS = ("benchmark", "gate", "pins")
+COMMANDS = ("benchmark", "gate", "pins", "packs")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -42,6 +45,10 @@ def main(argv: list[str] | None = None) -> int:
         from search_lab import dataset_pins
 
         return dataset_pins.main(rest)
+    if command == "packs":
+        from search_lab import bench_packs
+
+        return bench_packs.main(rest)
     print(f"unknown command {command!r}; expected one of {', '.join(COMMANDS)}",
           file=sys.stderr)
     return 1

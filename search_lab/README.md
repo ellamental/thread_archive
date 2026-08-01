@@ -84,7 +84,10 @@ describes the corpus asked for), `snapshot.py` (freeze a corpus — also a comma
 `python search_lab/snapshot.py <dir>`), `speed.py` (the latency measurement core), `run_meta.py` (the commit and
 configuration every ledger stamps its rows with), `bench_runs.py` (the run
 ledger), `dataset_pins.py` (what each corpus *is*, as a content hash — see "The
-corpora are pinned"), `retrieval_report.py` (the latency series off the ledgers,
+corpora are pinned"), `bench_packs.py` (those corpora and the built homes as
+content-hashed release assets, so another machine can run the gate —
+`python -m search_lab packs`, and the `.github/workflows/bench.yml` lane is its
+consumer), `retrieval_report.py` (the latency series off the ledgers,
 `python search_lab/retrieval_report.py`), and `inventory.py` (what is on this box
 — which rows can run and which corpora are built; `python search_lab/inventory.py`,
 and devweb's `/lab` panel). The harnesses reach them by bare sibling import
