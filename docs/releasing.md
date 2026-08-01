@@ -16,8 +16,10 @@ how they see one exists); a clone gets it when someone checks the tag out.
 That is a delay, not a safety net: the release is offered to every install
 the moment the publish lands, and the preflight below is the only gate
 between a bad release and the first operator who reaches for it. This
-machine's clone runs ahead of consumers, so a bad release should hurt here
-first.
+machine's clone runs `dev`, which carries everything a release carries, so a
+*logic* bug should hurt here first — but a *delivery* bug (packaging, the
+publish machinery) cannot hurt here at all, which is what the mandatory rc
+lane below exists to catch.
 
 The version's single source of truth is `__version__` in
 `src/thread_archive/__init__.py`; pyproject declares `version` dynamic and
@@ -65,9 +67,23 @@ optional hygiene. The standing requirements:
   method `merge` alone — the merge-commit rule above is enforced, not
   remembered. Empty bypass list, deliberately: nothing skips the PR path,
   because the merge is the ship.
+- Required status checks on that `main` ruleset: every CI job, the Bench
+  `gate`, the `install` lane, and `release-shape` (`release-pr.yml`, which
+  holds §4's shape contract — version bumped past every released tag,
+  changelog compressed, PR titled, a green rc exactly one commit back) —
+  plus CodeQL results via the code-scanning rule. This is what makes §4's
+  greens unmergeable-when-red rather than remembered. Non-strict,
+  deliberately: release branches never contain `main`'s tip (its merge
+  commits exist only on `main`), so the "require branches to be up to date"
+  flavor would fight the branch topology itself.
 - A branch ruleset on `dev`: collaborators go through a PR with one
   approval; the repository admin bypasses, which is what lets the operator —
   and the agents pushing as the operator — land work directly.
+
+`scripts/audit_release_settings.py` reads all of this over `gh api` and holds
+it against this section. Settings drift is invisible from the repo, and the
+audit — a §2 preflight step — is the only thing that looks; what no API
+exposes (2FA, the PyPI Trusted Publishing tuple) it names as manual.
 
 ## 1. Cut the release branch
 
@@ -75,24 +91,20 @@ The primary checkout stays on `dev` — the daemons run from it and other work
 continues there — so the release branch gets its own worktree:
 
 ```bash
-git worktree add "$HOME/dev/archive-rc" -b release/X.Y.Z dev
-cd ~/dev/archive-rc
-python3 -m venv .venv
-.venv/bin/pip install --upgrade pip   # `--group` is PEP 735; needs pip >= 25.1
-.venv/bin/pip install -e ".[embeddings,leiden]" --group dev
-(cd frontend && npm ci)
-(cd devweb/frontend && npm ci)   # thread-ci sweeps this worktree; devweb has rows too
-git push -u origin release/X.Y.Z
+scripts/release_cut.sh X.Y.Z
 ```
 
-Both `npm ci`s are load-bearing: the local CI sweeper runs `ci.toml` against
-whatever tree the commit landed in, so a worktree missing either
-`node_modules` reds that app's typecheck/test/e2e rows for a setup reason and
-buries whatever the sweep was supposed to tell you.
+One command: the worktree at `~/dev/archive-rc` on a fresh `release/X.Y.Z`
+cut from `dev`, its venv (editable install with the dev group), both
+frontends' `npm ci`, the branch pushed, and the draft PR opened. Both `npm
+ci`s are load-bearing: the local CI sweeper runs `ci.toml` against whatever
+tree the commit landed in, so a worktree missing either `node_modules` reds
+that app's typecheck/test/e2e rows for a setup reason and buries whatever the
+sweep was supposed to tell you.
 
-Push at the cut so GitHub CI starts running the branch, and open the PR to
-`main` immediately as a draft — it is the release's workbench: CI fills in,
-the diff is the whole release, the body will become the changelog section.
+The push at the cut is what starts GitHub CI on the branch, and the draft PR
+is the release's workbench: CI fills in, the diff is the whole release, the
+body will become the changelog section.
 
 Everything that follows happens in the worktree, on `release/X.Y.Z`. The cut
 is frozen: `dev` landing more work does not move it, which is what buys the
@@ -107,6 +119,9 @@ back-merge reconciles the duplicate.)
 All in the worktree:
 
 - Full suite green: `.venv/bin/pytest tests/`.
+- The worktree's thread-ci sweep green. GitHub CI mirrors most of the local
+  bar on the branch, but the sweep is the whole of it — `retrieval-gate` runs
+  only here, because only this machine has the live archive it reads.
 - The package lane green: `.venv/bin/pytest -m package --no-cov
   tests/test_package_artifact.py` — builds the wheel + sdist with
   `python -m build`, proves their contents, installs the wheel into a clean
@@ -114,8 +129,12 @@ All in the worktree:
   the gate that proves a fresh-clone install actually works (files present,
   console scripts wired), rather than only the long-lived editable install.
 - GitHub CI green on `release/X.Y.Z` (ruff, mypy, coverage floor, the pytest
-  suite on the 3.12 floor and 3.14, frontend checks, and the same package
-  lane).
+  suite across the interpreter matrix, frontend and devweb checks, and the
+  same package lane).
+- The GitHub-side hardening intact: `.venv/bin/python
+  scripts/audit_release_settings.py` — the §0 requirements, read live over
+  `gh api`. Seconds, and the only check that would notice a ruleset quietly
+  loosened.
 - The corpora unmoved: `python -m search_lab pins`. Content hashes of the files
   each harness reads, against the accepted ones in
   `search_lab/dataset-pins.json`. None of the upstreams offer an immutable
@@ -253,6 +272,14 @@ and an rc whose Publish `verify` job passed, with nothing but the §3
 release commit on top of it. The diff is
 everything since the last release.
 
+Little of this rides on memory: `release-shape` (`release-pr.yml`) holds the
+shape half mechanically — the version outranks every released tag, the
+changelog section exists within its limits, the title matches, the rc sits
+exactly one commit back with a green Publish — and the `main` ruleset's
+required status checks refuse the merge while it, CI, CodeQL, Bench, or the
+install lane is red. Ready-for-review is still the assertion; the machinery
+is what makes a false assertion unmergeable.
+
 The operator merges it (merge commit). That merge is the ship — everything
 after this section is follow-through, not gate.
 
@@ -269,9 +296,15 @@ settings on pypi.org). A tag pushed by hand takes the identical publish
 path — that is the manual route, for a release shipped without the PR
 machinery.
 
-Watch the runs. A publish failure means the tag exists but PyPI lags it, and
-the fix is a fixed vX.Y.(Z+1), since PyPI refuses re-uploads of a once-seen
-version even after deletion.
+Watch the runs as a command, not an intention — `gh run watch` on the
+Release run, then on the Publish run its tag fires — so the release's
+executor blocks until both conclude. A publish failure leaves the tag
+without its upload, and which fix applies depends on what PyPI saw: a run
+that died before anything uploaded (the OIDC handshake, a runner death)
+burns nothing — re-run the failed Publish run and it ships the same
+artifacts. Once any file of the version reached PyPI, the number is burned —
+PyPI never accepts a re-upload of a once-seen file, even after deletion —
+and the fix is a fixed vX.Y.(Z+1).
 
 ## 6. Verify from the outside
 
@@ -296,36 +329,32 @@ self-update path), runs the entry points, and checks the installed
 
 ## 7. Back-merge, roll the local deployment, clean up
 
-Merge the release branch into `dev` — from the primary checkout, which sits
-on `dev`:
+One command — it acts on the primary checkout, which sits on `dev`:
 
 ```bash
-git merge --no-ff release/X.Y.Z -m "Merge release/X.Y.Z back into dev"
-git push origin dev
+scripts/release_finish.sh X.Y.Z
 ```
 
-Conflicts arise only where `dev` diverged from a stabilization fix while the
-release was in flight — resolve them here, once. This step is load-bearing
-(see the branch rules above): it is what keeps the next release's merge to
-`main` clean.
+It verifies the tag actually landed (finishing before the Release run
+completes would tear down a branch a re-run might still need), back-merges
+`release/X.Y.Z` into `dev` and pushes, fetches the new tag into this clone —
+`status` output and bug reports correlate against tags, and a fetch is the
+only way one arrives — refreshes the editable install's metadata, restarts
+the service agents, and retires the worktree and the branch on both sides.
+
+Back-merge conflicts arise only where `dev` diverged from a stabilization
+fix while the release was in flight — resolve them here, once. The
+back-merge is load-bearing (see the branch rules above): it is what keeps
+the next release's merge to `main` clean.
 
 The daemons on this machine run from the primary checkout's editable install
-on `dev`, so the back-merge landing *is* the deployment — with two
-follow-throughs:
-
-- If dependencies or entry points changed, re-run `.venv/bin/pip install -e .`
-  (editable installs pick up code automatically, not metadata).
-- Restart whatever loaded the old code: `thread-archive service restart` for
-  the watcher/backup agents; MCP clients pick up the new server on their next
-  session.
-
-Then retire the branch:
-
-```bash
-git worktree remove ~/dev/archive-rc
-git branch -d release/X.Y.Z
-git push origin :release/X.Y.Z   # unless GitHub already deleted it on merge
-```
+on `dev`, so the back-merge landing *is* the deployment — the script's
+reinstall and `thread-archive service restart` are the follow-through
+(editable installs pick up code automatically, but not dependency or
+entry-point changes, and nothing reloads a daemon but a restart). MCP
+clients pick up the new server on their next session. The script refuses to
+remove a worktree that still carries uncommitted tracked changes — that is
+unmerged work, not build residue.
 
 ## A red check on main is fixed through the rc flow — never by probing with finals
 

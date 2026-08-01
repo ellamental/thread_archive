@@ -2,8 +2,24 @@
 
 ## Unreleased
 
+- CI runs on macOS as well as Linux — a mac lane for the pytest bar and its coverage floor, and a mac wheel-install
+  lane. The darwin half of the service/ops surface (launchd, `_ops` machine/nightly, watcher paths) and the mypy pass
+  that resolves `sys.platform` to darwin were proven only on the maintainer's own box; the runners are free on a public
+  repo, so the second platform costs wall clock and nothing else.
 - The off-box quality gate runs on every release PR (pre-merge, from the PR head's workflow file), not only on the
   weekly schedule; a release ships with the portability proof green instead of discovering it after.
+- The §4 release contract is machinery: `release-pr.yml` (the `release-shape` check) proves version, changelog,
+  title, and a green rc one commit back on every PR to main; release.yml fails loudly when main moves without a
+  version bump instead of green no-op'ing; §0 grows required status checks and a CodeQL rule, with
+  `scripts/audit_release_settings.py` reading the live rulesets against the documented bar from the §2 preflight.
+- CI closes its off-box coverage gaps: a devweb lane (typecheck, vitest, e2e), the serial suite as its own job,
+  3.13 on the interpreter matrix (every advertised classifier now runs), and the Docker from-nothing install proof
+  on release PRs, where its cost buys a pre-ship guarantee.
+- The credentialed workflows (publish, release, release-pr) pin their actions by commit SHA — no moving tag in the
+  path of the deploy key or the OIDC grant — with dependabot (targeting dev) keeping the pins fresh.
+- §1 and §7 of the release process are scripts (`release_cut.sh`, `release_finish.sh`): the follow-through steps
+  history shows slipping — the tag fetch, branch retirement — ride the command instead of memory. §5 distinguishes
+  a re-runnable publish failure (nothing uploaded) from a burned version (any file seen).
 
 ## 0.0.13 — 2026-08-01
 

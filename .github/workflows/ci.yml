@@ -2,6 +2,11 @@
 # "confirm green"): ruff + mypy + the pytest suite with its coverage floor,
 # plus the frontend typecheck/tests and the wheel/sdist release lane.
 #
+# Both supported platforms run: Linux carries the interpreter matrix and the
+# real-systemd lane, macOS the darwin half of the service/ops surface and its own
+# clean-venv install. Standard GitHub-hosted runners — macOS included — are free
+# for public repositories, so that second platform costs nothing but wall clock.
+#
 # The one ci.toml row deliberately absent is retrieval-gate: it scores search
 # quality against the maintainer's live archive, which no runner has. It stays
 # a local gate (see ci.toml).
@@ -35,15 +40,29 @@ concurrency:
 
 jobs:
   # The Python bar: ruff + mypy + the pytest suite with its coverage floor. Run
-  # on both ends of the supported range (requires-python >=3.12): the floor,
-  # which catches an accidental newer-language feature, and 3.14, the interpreter
-  # this project's own machine runs.
+  # across the supported series (requires-python >=3.12): the floor catches an
+  # accidental newer-language feature, 3.14 is the interpreter this project's
+  # own machine runs, and 3.13 sits between so every version the classifiers
+  # advertise is a version the suite has actually run on.
+  #
+  # macOS is a supported target (the classifiers say so), and a pile of code only
+  # ever executes there: the launchd service backend, the darwin branches in
+  # _ops/machine.py and _ops/nightly.py, the watcher's platform paths. It gets one
+  # lane, at the interpreter this project runs — the version axis is a
+  # language-level question that the Linux lanes already answer at both ends.
+  # mypy on that lane is not a duplicate either: it resolves `sys.platform` to the
+  # host it runs on, so the darwin-only code the Linux lanes discard as
+  # unreachable is type-checked only here (and the systemd side only there).
   python:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.14"]
+        os: [ubuntu-latest]
+        python-version: ["3.12", "3.13", "3.14"]
+        include:
+          - os: macos-latest
+            python-version: "3.14"
     steps:
       - uses: actions/checkout@v4
 
@@ -80,6 +99,31 @@ jobs:
 
       - name: Coverage floors
         run: python scripts/coverage_gate.py coverage.json
+
+  # The same suite in one process — the only job that can see cross-file state
+  # leaks. Parallel workers make a dirty-global read a coin flip; serial is the
+  # worst case made deterministic: every file, one process, in collection
+  # order. It is also what `-n auto` resolves to on a one-core box, so a red
+  # here is a real failure of a real run. (ci.toml's pytest-serial row is the
+  # local twin; this keeps the check alive for trees this box never sweeps.)
+  python-serial:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --group dev
+
+      - name: Pytest, one process
+        run: pytest -q --tb=short -p no:cacheprovider -n 0 --no-cov
 
   # The Linux service backend, exercised against a REAL user systemd — the one
   # thing the unit suite can't prove (the ubuntu-latest runner is a full VM with
@@ -155,12 +199,54 @@ jobs:
       - name: Browser tests
         run: npx playwright test
 
+  # The dev panels (devweb/): the second, smaller app, served by `python -m
+  # devweb`. It ships in nothing, so there is no committed-build row — what has
+  # to hold is that it compiles and its views work, and these lanes are the only
+  # off-box thing that would notice them rotting. Same shape as the viewer's
+  # job: types, component behavior, then real-browser coverage on its own
+  # preview port, mocked at the network boundary (the bench's real run ledger
+  # is never read).
+  devweb:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: devweb/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: devweb/frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npx vitest run
+
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser tests
+        run: npm run e2e
+
   # The release lane: build the wheel + sdist, prove their contents, install the
   # wheel into a clean venv, and run the real CLI lifecycle from it. Slow enough
   # to be deselected from the default pytest run (pyproject addopts), so it's its
-  # own job.
+  # own job. Both platforms: this is the install a user actually performs, and the
+  # wheel being pure Python doesn't make the venv, the console scripts, or the
+  # first-run CLI lifecycle platform-free.
   package:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -179,3 +265,20 @@ jobs:
         run: >
           pytest -q --tb=short -p no:cacheprovider
           -m package --no-cov tests/test_package_artifact.py
+
+  # The from-nothing install proof (tests/install/): clean-container pip
+  # install, the full unit suite in isolation, then import-every-provider →
+  # reindex → search e2e. Locally it is commit-triggered (the ci.toml row);
+  # here it runs on exactly the PRs that ship — every PR to main is a release
+  # PR — because it is far too slow for every dev push and exactly right as a
+  # pre-ship gate. The runner's docker daemon is already up, so the script's
+  # colima fallback never fires.
+  install:
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: From-nothing install proof
+        run: tests/install/run_install_test.sh

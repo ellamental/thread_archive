@@ -1,0 +1,138 @@
+# The release-shape gate: every PR to main is a release PR (docs/releasing.md),
+# and §4's ready-for-review contract has a mechanical half — the version is a
+# plain X.Y.Z newer than every released tag, the changelog is compressed for it,
+# the PR is titled for it, and the commit under the release commit is an rc whose
+# Publish run went green. This workflow checks exactly that, so a release that
+# forgot its bump, its changelog, or its rc is unmergeable rather than a green
+# silence. The judgment half of §4 — whether the release *should* ship — stays
+# with the operator; nothing here reads code.
+#
+# Like bench.yml, pull_request runs use the PR head's workflow file, so a
+# release that changes this gate gates on the changed gate.
+#
+# `edited` is in the trigger list because the PR title is one of the checks — a
+# title fix must re-run it, and GitHub doesn't re-trigger on title edits under
+# the default types.
+
+name: Release shape
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  actions: read # the rc check reads publish.yml's run conclusions
+
+concurrency:
+  group: release-shape-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-shape:
+    runs-on: ubuntu-latest
+    steps:
+      # The PR head itself, not GitHub's synthetic merge commit: HEAD must be
+      # the §3 release commit and HEAD~1 the rc, and the merge commit would put
+      # main's tip in between. fetch-depth: 0 brings all tags, which the
+      # version and rc checks compare against.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      # Same read as release.yml's, same reason: a plain X.Y.Z or a loud no.
+      - name: Read the version
+        id: version
+        run: |
+          v=$(python3 -c "
+          import re, pathlib, sys
+          text = pathlib.Path('src/thread_archive/__init__.py').read_text()
+          m = re.search(r'^__version__ = \"(\d+\.\d+\.\d+)\"\$', text, re.M)
+          if not m:
+              sys.exit('__version__ must be a plain X.Y.Z release string')
+          print(m.group(1))
+          ")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      # The forgotten-bump guard, pre-merge: the version must outrank every
+      # final tag that exists. (release.yml has the post-merge half — a tag
+      # that already exists elsewhere fails the push.)
+      - name: Version outranks every released tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "v$VERSION is already tagged — the release commit forgot the version bump." >&2
+            exit 1
+          fi
+          newest=$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1) || true
+          if [ -n "$newest" ] && [ "$(printf '%s\n%s\n' "${newest#v}" "$VERSION" | sort -V | tail -1)" != "$VERSION" ]; then
+            echo "__version__ is $VERSION but $newest is already released." >&2
+            exit 1
+          fi
+
+      # §3's compression, held to its own rules: a `## X.Y.Z` section directly
+      # under a fresh empty `## Unreleased`, at most 10 non-blank body lines,
+      # none over 120 characters. This is also release.yml's changelog read
+      # moved before the merge — the tag message needs this section to exist.
+      - name: Changelog is compressed for this version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 - "$VERSION" <<'PY'
+          import re, pathlib, sys
+          version = sys.argv[1]
+          text = pathlib.Path("CHANGELOG.md").read_text()
+          m = re.search(r"^## Unreleased\n(.*?)(?=^## )", text, re.M | re.S)
+          if m is None:
+              sys.exit("CHANGELOG.md must open with an `## Unreleased` section above the versions")
+          if m.group(1).strip():
+              sys.exit("`## Unreleased` must be empty at release — compress its entries into the version section (§3)")
+          s = re.search(rf"^## {re.escape(version)} — \d{{4}}-\d{{2}}-\d{{2}}\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+          if s is None:
+              sys.exit(f"CHANGELOG.md has no `## {version} — YYYY-MM-DD` section")
+          lines = [ln for ln in s.group(1).splitlines() if ln.strip()]
+          if len(lines) > 10:
+              sys.exit(f"the {version} section has {len(lines)} body lines; the hard maximum is 10 (§3)")
+          long = [ln for ln in lines if len(ln) > 120]
+          if long:
+              sys.exit(f"{len(long)} line(s) in the {version} section exceed 120 characters (§3)")
+          PY
+
+      - name: PR title names the release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if [ "$TITLE" != "Release $VERSION" ]; then
+            echo "PR title is '$TITLE'; §4 wants 'Release $VERSION'." >&2
+            exit 1
+          fi
+
+      # "An rc whose Publish verify passed, with nothing but the §3 release
+      # commit on top of it" — so HEAD~1 must carry a vX.Y.ZrcN tag, and that
+      # tag's Publish run must have concluded green. Anything else on the
+      # branch after the rc makes HEAD~1 untagged, which is exactly the rule.
+      - name: A green rc sits one commit back
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rc_sha=$(git rev-parse HEAD~1)
+          rc_tag=$(git tag --points-at "$rc_sha" | grep -E "^v${VERSION}rc[0-9]+$" | sort -V | tail -1) || true
+          if [ -z "$rc_tag" ]; then
+            echo "HEAD~1 ($rc_sha) carries no v${VERSION}rcN tag — every release publishes at least one rc," \
+                 "and only the §3 release commit may sit on top of it." >&2
+            exit 1
+          fi
+          conclusion=$(gh api "repos/$REPOSITORY/actions/workflows/publish.yml/runs?per_page=100" \
+            --jq ".workflow_runs[] | select(.head_branch == \"$rc_tag\") | .conclusion" | head -1)
+          if [ "$conclusion" != "success" ]; then
+            echo "Publish for $rc_tag concluded '${conclusion:-never ran}' — the rc must go green end to end" \
+                 "before the final is at stake." >&2
+            exit 1
+          fi
+          echo "rc $rc_tag at $rc_sha: Publish green."

@@ -31,7 +31,11 @@ jobs:
   tag:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Pinned by SHA, like every action in the workflows that hold release
+      # credentials: a moving tag in the path of the deploy key is a supply
+      # chain the §0 hardening otherwise leaves open. Dependabot keeps the pins
+      # fresh (.github/dependabot.yml).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Anchored to a plain X.Y.Z, and it fails rather than tags something else.
       # Deliberately excludes pre-release strings: release candidates are
@@ -66,9 +70,23 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           tag="v$VERSION"
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
-            echo "Tag $tag already exists; nothing to do."
-            exit 0
+          # An existing tag is fine only when it points at this very commit —
+          # that is a workflow re-run, and idempotence is what lets one be
+          # re-run safely. Pointing anywhere else means a merge landed on main
+          # without a version bump: the release would otherwise ship nothing
+          # under an all-green Actions page, so fail loudly instead.
+          existing=$(git ls-remote origin "refs/tags/$tag^{}" | cut -f1)
+          if [ -z "$existing" ]; then
+            existing=$(git ls-remote origin "refs/tags/$tag" | cut -f1)
+          fi
+          if [ -n "$existing" ]; then
+            if [ "$existing" = "$GITHUB_SHA" ]; then
+              echo "Tag $tag already points at this commit; nothing to do."
+              exit 0
+            fi
+            echo "Tag $tag already exists at $existing but this push is $GITHUB_SHA —" \
+                 "a release merge landed without a version bump." >&2
+            exit 1
           fi
           # Tag message: subject line + that version's CHANGELOG section,
           # verbatim. A missing section fails the release loudly — the tag
