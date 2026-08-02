@@ -19,6 +19,7 @@ Complements ``test_launchd.py`` (pure-dict plist shape) and
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import os
@@ -238,7 +239,17 @@ class FakeWatcher(SourceWatcher):
 
 
 def _args(*argv: str):
-    return wizard.build_parser().parse_args(list(argv))
+    """The namespace `thread-archive setup` hands the flow (see cli.build_parser)."""
+    p = argparse.ArgumentParser()
+    p.add_argument("command", nargs="?", choices=["setup", "status"], default=None)
+    p.add_argument("-y", "--yes", action="store_true")
+    p.add_argument("--home", default=None)
+    p.add_argument("--skip-import", action="store_true")
+    p.add_argument("--skip-watcher", action="store_true")
+    p.add_argument("--skip-backup", action="store_true")
+    p.add_argument("--backup-dest", default=None)
+    p.add_argument("--skip-mcp", action="store_true")
+    return p.parse_args(list(argv))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1068,8 +1079,8 @@ def test_setup_completed_false_when_status_raises(archive_home) -> None:
     assert wizard._setup_completed(_args("--home", str(archive_home))) is False
 
 
-def test_main_setup_command_dispatches_to_run_setup(archive_home, capsys) -> None:
-    # main(["setup"]) with no TTY and no --yes lands on the guidance path of
-    # run_setup — exercises the explicit `setup` dispatch without scanning.
-    assert wizard.main(["setup"]) == 0
+def test_setup_without_a_tty_lands_on_guidance(archive_home, capsys) -> None:
+    # run_setup with no TTY and no --yes lands on the guidance path, without
+    # scanning.
+    assert wizard.run_setup(_args("setup")) == 0
     assert "Nothing was imported" in capsys.readouterr().out

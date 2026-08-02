@@ -103,13 +103,6 @@ class Watcher:
         self._passes = 0
         self._source_totals: dict[str, dict[str, int]] = {}
         self._heartbeat_recorded_at: Optional[float] = None
-        # Pass wall time: the last one and the worst one since start. The worst is
-        # kept because the heartbeat is throttled to one write per 5 minutes — a
-        # last-pass-only number samples whichever pass happened to be running at
-        # write time and would miss the slow ones entirely.
-        self._pass_ms: Optional[float] = None
-        self._pass_ms_max: float = 0.0
-        self._lag_s: Optional[float] = None
         # The quiet half of the loop, accumulated between rollup rows: passes that
         # imported nothing, what they cost, and how many targets they looked at.
         # See :func:`.ingest_log.record_idle` for why this is a window rather than
@@ -175,7 +168,7 @@ class Watcher:
 
             ingest_log.record_pass(
                 source, home=resolve_paths().home, probe=probe, pass_ms=pass_ms,
-                result=r, lag_s=self._lag_s,
+                result=r,
             )
         except Exception:  # noqa: BLE001 — advisory; the loop must survive
             logger.debug("watch: could not record ingest pass", exc_info=True)
@@ -268,41 +261,6 @@ class Watcher:
         t["ms"] = int(t.get("ms", 0) + ms)
         t["import_ms"] = int(t.get("import_ms", 0) + import_ms)
 
-    def _sample_lag(self) -> None:
-        """Sample ingest lag: how far behind real time the newest ingested event is.
-
-        Freshness is the ingest side's latency — an archive that indexes an hour late
-        is slow in the way that matters to an agent asking about the conversation it
-        just had, and no counter here can see it. Read off the last row the store
-        wrote (primary-key ordered, so it costs an index seek, not a scan of millions
-        of rows) and compared to now.
-
-        Only sampled on a pass that actually imported: on a quiet loop the newest
-        event simply ages, which is the machine being idle, not ingest falling behind.
-        A bulk backfill of old conversations inflates it for the same reason — the
-        number is the age of what was last written, and it is honest about being that.
-        Fail-soft; a lag sample must never take the poll loop down."""
-        try:
-            from datetime import datetime, timezone
-
-            from sqlalchemy import text as sa_text
-
-            from .._store import get_session
-
-            with get_session() as s:
-                newest = s.execute(
-                    sa_text("SELECT occurred_at FROM events ORDER BY id DESC LIMIT 1")
-                ).scalar()
-            if not newest:
-                return
-            if isinstance(newest, str):
-                newest = datetime.fromisoformat(newest)
-            if newest.tzinfo is None:
-                newest = newest.replace(tzinfo=timezone.utc)
-            self._lag_s = round((datetime.now(timezone.utc) - newest).total_seconds(), 1)
-        except Exception:  # noqa: BLE001 — advisory; the loop must survive
-            logger.debug("watch: could not sample ingest lag", exc_info=True)
-
     def _record_pass(self) -> None:
         """Surface ingest liveness into ``health.json`` (``watch_pass_last``),
         throttled like :meth:`_record_errors`. Errors already get recorded, but
@@ -314,10 +272,7 @@ class Watcher:
         ``events`` stay flat is a parser gone blind, and one whose ``ms`` climbs while
         its counts stay flat is the loop paying for nothing.
 
-        The pass timings (``pass_ms``, ``pass_ms_max``) and ``lag_s`` carry the
-        loop's own latency: how long a sweep takes, how bad the worst has been, and
-        how far behind real time the newest ingested event is. Fail-soft: advisory,
-        must never take the poll loop down."""
+        Fail-soft: advisory, must never take the poll loop down."""
         # Clear-on-green: watch_errors_last is a failure-only record — nothing
         # retires it, so a prior run's error (it persists across restarts) keeps
         # painting `thread-archive status` red under a heartbeat that says the daemon
@@ -351,11 +306,6 @@ class Watcher:
                     if any(t.values())
                 },
             }
-            if self._pass_ms is not None:
-                rec["pass_ms"] = round(self._pass_ms, 1)
-                rec["pass_ms_max"] = round(self._pass_ms_max, 1)
-            if self._lag_s is not None:
-                rec["lag_s"] = self._lag_s
             record_health("watch_pass_last", rec)
             self._heartbeat_recorded_at = now
         except Exception:  # noqa: BLE001 — advisory; the loop must survive
@@ -409,15 +359,12 @@ class Watcher:
             worked = worked or bool(probe.ran)
             total = total + r
 
-        self._pass_ms = (time.monotonic() - pass_started) * 1000.0
-        self._pass_ms_max = max(self._pass_ms_max, self._pass_ms)
+        pass_ms = (time.monotonic() - pass_started) * 1000.0
         # The same test :meth:`_record_ingest` applies per source, at the pass
         # level: a pass where no source ran an import is one this ledger would
         # otherwise be silent about, and its cost is the loop's floor.
         if not worked:
-            self._record_idle(self._pass_ms, total.sources_checked)
-        if total.events_created > 0:
-            self._sample_lag()
+            self._record_idle(pass_ms, total.sources_checked)
         self._passes += 1
         self._record_pass()
         if total.errors:
@@ -458,7 +405,7 @@ class Watcher:
         *not* the cross-thread overlay snapshots — conversation ingest never changes
         those, so the live path leaves them untouched.
 
-        Timed into ``health.json`` (``watch_maintain_last``), split across its two
+        Timed into the ingest ledger (see :mod:`.ingest_log`), split across its two
         halves. "Cheap" is a property this work has to keep earning: both the manifest
         snapshot and the rebalance sweep scale with the archive rather than with what
         just arrived, which is the shape that turns into a quadratic term as the
@@ -509,16 +456,6 @@ class Watcher:
             **checkpoint_split,
         }
         try:
-            from .._ops.health import record_health
-
-            record_health("watch_maintain_last", {
-                **{k: round(v, 1) for k, v in timings.items()},
-                "code_backfilling": folded.get("done") is False,
-                "counts": {k: v for k, v in counts.items() if isinstance(v, int)},
-            })
-        except Exception:  # noqa: BLE001 — advisory; the loop must survive
-            logger.debug("watch: could not record maintenance timing", exc_info=True)
-        try:
             from .._config import resolve_paths
             from . import ingest_log
 
@@ -563,10 +500,10 @@ class Watcher:
         ``embed_batch``). Returns the count embedded — 0 when caught up or when the
         embed backend isn't installed.
 
-        The pass reports itself into ``health.json`` (``watch_embed_last``). This is
+        The pass reports itself into the ingest ledger. This is
         the semantic half of ingest freshness, and it fails silently in a way the
         lexical half does not: if this drain falls behind, every other signal stays
-        green — the poll loop is healthy, ``lag_s`` is low, searches return hits —
+        green — the poll loop is healthy, searches return hits —
         and the only symptom is that the *right* hit is missing from the vector arm
         because the conversation was never embedded. A drain that has stopped and one
         that has caught up both embed zero docs per pass; only the pending count
@@ -584,7 +521,7 @@ class Watcher:
         return n
 
     def _record_embed(self, embedded: int, elapsed_ms: float, phase) -> None:
-        """Surface one embed-cohost pass into ``health.json``. Fail-soft: advisory,
+        """Append one embed-cohost pass to the ingest ledger. Fail-soft: advisory,
         must never take the loop down.
 
         ``pending`` is what the pass found still missing a vector, capped by
@@ -593,27 +530,6 @@ class Watcher:
         behind rather than caught up. The ``select`` / ``model_load`` / ``encode`` /
         ``write`` split rides along from the drain's own sub-timings, so a slow pass
         says which of the four it was."""
-        try:
-            rec: dict = {
-                "embedded": embedded,
-                "ms": round(elapsed_ms, 1),
-                "pending": phase.total or 0,
-            }
-            if phase.total and phase.total >= self.embed_batch:
-                rec["capped"] = True
-            rec.update(phase.detail_ms())
-            chunks = phase.counts.get("chunks_pending")
-            if chunks:
-                rec["chunks_pending"] = chunks
-            age = self._newest_vector_age_s()
-            if age is not None:
-                rec["newest_vector_age_s"] = age
-
-            from .._ops.health import record_health
-
-            record_health("watch_embed_last", rec)
-        except Exception:  # noqa: BLE001 — advisory; the loop must survive
-            logger.debug("watch: could not record embed pass", exc_info=True)
         try:
             from .._config import resolve_paths
             from . import ingest_log
@@ -628,37 +544,6 @@ class Watcher:
             )
         except Exception:  # noqa: BLE001 — advisory; the loop must survive
             logger.debug("watch: could not record embed drain", exc_info=True)
-
-    def _newest_vector_age_s(self) -> Optional[float]:
-        """How old the newest embedded event is — the vector arm's freshness.
-
-        An index seek, not a scan: ``event_id`` leads ``event_vectors``' primary key.
-        Structurally an over-estimate, and honestly so: only the user/text/title/
-        summary pools are embedded, so a trailing run of tool events (which never get
-        vectors) ages this number without anything being behind. It is a ceiling on
-        vector staleness, which is the direction that matters."""
-        try:
-            from datetime import datetime, timezone
-
-            from sqlalchemy import text as sa_text
-
-            from .._store import get_session
-
-            with get_session() as s:
-                newest = s.execute(sa_text(
-                    "SELECT e.occurred_at FROM events e WHERE e.id = "
-                    "(SELECT max(event_id) FROM event_vectors)"
-                )).scalar()
-            if not newest:
-                return None
-            if isinstance(newest, str):
-                newest = datetime.fromisoformat(newest)
-            if newest.tzinfo is None:
-                newest = newest.replace(tzinfo=timezone.utc)
-            return round((datetime.now(timezone.utc) - newest).total_seconds(), 1)
-        except Exception:  # noqa: BLE001 — advisory
-            logger.debug("watch: could not sample vector freshness", exc_info=True)
-            return None
 
     def run(self) -> None:
         """Loop forever (until :meth:`stop`): poll every ``interval`` seconds, and run

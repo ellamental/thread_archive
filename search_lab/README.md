@@ -236,6 +236,18 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   a code slowdown look identical to it. The usage telemetry
   (`retrieval-usage.jsonl`, read by `retrieval_report.py`) is the standing warning
   system; this is the instrument you point at a deliberate change.
+- **`perf_trend.py`** (`python -m search_lab perf`) — what a recorded bench pass
+  cost in wall clock, made comparable across machines. Reads each row's
+  `elapsed_s` off the run ledger, times two synthetic hardware calibrators (a
+  pinned-shape BLAS matvec for the vector arm, a pinned FTS5 scan for the
+  lexical arm — hardware probes deliberately outside the code under test, so a
+  real regression cannot normalize itself away), and emits one JSON blob with
+  raw and calibrator-normalized numbers plus the machine facts. The Bench
+  workflow uploads one per CI run as a `perf-trend-*` artifact; accumulated,
+  those are the series that says what cross-runner variance actually is —
+  which is the prerequisite for ever putting a band on it. Non-gating by
+  design, and for the same reason latency is not gated locally: a verdict on
+  uncharacterized hardware would be a verdict about the runner pool.
 - **`beir_eval.py`** / **`cdr_eval.py`** / **`mtrag_eval.py`** /
   **`haystack_eval.py`** / **`perltqa_eval.py`** — the external
   yardsticks: the real pipeline over public benchmarks, beside their published

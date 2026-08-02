@@ -16,7 +16,6 @@ import json
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any, Callable, Dict, List, Literal, Optional, TypedDict, Union
 
 # =============================================================================
@@ -196,13 +195,6 @@ ContentBlock = Union[
 # =============================================================================
 # Field Mapping Infrastructure
 # =============================================================================
-
-
-class ValidationSeverity(str, Enum):
-    """Severity level for validation issues."""
-
-    error = "error"  # Fatal - import should abort
-    warning = "warning"  # Non-fatal - import continues with warning
 
 
 @dataclass

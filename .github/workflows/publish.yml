@@ -77,13 +77,16 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
 
   # Proves the *published* artifact, not the built one: install the version
-  # PyPI now serves into a fresh interpreter, the way an operator would, and
-  # run the real entry point. The deep behavioral checks are the package lane,
-  # which ran on this same commit — but none of that touched what PyPI serves,
-  # and this job is the only automated thing that does. It runs for rc and
-  # final tags alike; a green run on the rc is the license to proceed toward
-  # the final (docs/releasing.md). It cannot gate the upload — that already
-  # happened — so a failure here means yank and ship the next version.
+  # PyPI now serves into a fresh interpreter, the way an operator would, run the
+  # real entry points, then drive a full ingest lifecycle on it. The package
+  # lane proves a locally built wheel against locally resolved dependencies;
+  # what reaches an operator is this artifact under a resolve done fresh from
+  # the index, and this job is the only automated thing that touches it. Entry
+  # points alone would not notice a resolve that installs cleanly and then
+  # cannot import a provider or answer a query. It runs for rc and final tags
+  # alike; a green run on the rc is the license to proceed toward the final
+  # (docs/releasing.md). It cannot gate the upload — that already happened —
+  # so a failure here means yank and ship the next version.
   verify:
     needs: publish
     runs-on: ubuntu-latest
@@ -115,3 +118,39 @@ jobs:
             echo "installed version $installed does not match tag $v"
             exit 1
           fi
+
+      # The lifecycle harness (tests/install/) travels in no wheel, so it comes
+      # from the tagged tree — the harness only; the code under test stays the
+      # wheel PyPI just served, which the guard below holds mechanically. The
+      # checkout is safe in this job: it inherits the workflow's read-only
+      # token, and the OIDC grant lives in `publish` alone.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # This job is worth having only if the package it exercises is the
+      # published one, and that rests on the src/ layout making a shadowing
+      # import impossible — a property of the tree, not a thing anything checks.
+      # Check it, so a future layout change fails here instead of quietly
+      # turning the lane into a second test of the checkout.
+      - name: The package under test is the installed wheel
+        run: |
+          python - <<'PY'
+          import pathlib, sys, sysconfig
+          import thread_archive
+          pkg = pathlib.Path(thread_archive.__file__).resolve()
+          site = pathlib.Path(sysconfig.get_paths()["purelib"]).resolve()
+          if site not in pkg.parents:
+              sys.exit(f"thread_archive resolves to {pkg}, not the installed wheel under {site}")
+          print(f"under test: {pkg}")
+          PY
+
+      # The real lifecycle on the published artifact: a corpus for every
+      # provider, imported through each provider's own importer, the index
+      # rebuilt from the JSONL truth, and every provider's marker searched back
+      # out. Seconds, and the only place the published wheel does real work
+      # against dependencies resolved fresh from the index — the `package` lane
+      # and the Docker install lane both prove a locally built wheel against
+      # locally resolved ones, which is a different artifact and a different
+      # resolve. Base install only: the check imports nothing outside the
+      # stdlib and thread_archive itself.
+      - name: Real ingest lifecycle on the published wheel
+        run: python tests/install/e2e_check.py

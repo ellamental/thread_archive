@@ -34,7 +34,7 @@ def test_help_runs(capsys: pytest.CaptureFixture[str]) -> None:
     # Sectioned, with each group's actions inline — the map, not a flat column.
     for section in ("retrieval:", "ingest:", "upkeep:", "this machine:"):
         assert section in out, section
-    assert "rebuild · migrate · embed · verify · repair" in out
+    assert "rebuild · migrate · embed · substring · verify · repair" in out
     # The legacy spellings resolve but are advertised nowhere.
     assert "reindex" not in out
 
@@ -321,14 +321,14 @@ def test_daemon_backup_install_dispatches(monkeypatch, capsys) -> None:
 
     seen = {}
     monkeypatch.setattr(
-        _service, "install_backup",
-        lambda dest, home=None, **kw: seen.update(dest=dest, home=home, **kw)
+        _service, "install_agent",
+        lambda agent, home=None, **kw: seen.update(agent=agent, home=home, **kw)
         or "/plist/com.thread-archive.backup.plist",
     )
     rc = main(["daemon", "install", "--backup", "--dest", "/Volumes/Backup/arc",
                "--at", "02:30", "--home", "/h"])
     assert rc == 0
-    assert seen == {"dest": "/Volumes/Backup/arc", "home": "/h",
+    assert seen == {"agent": "backup", "dest": "/Volumes/Backup/arc", "home": "/h",
                     "hour": 2, "minute": 30, "notify_url": None}
     assert "nightly at 02:30" in capsys.readouterr().out
 

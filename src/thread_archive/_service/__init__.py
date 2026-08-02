@@ -42,18 +42,8 @@ __all__ = [
     "service_kind",
     "label",
     "entry_path",
-    "install_watcher",
-    "uninstall_watcher",
-    "restart_watcher",
-    "watcher_status",
-    "install_mcp",
-    "uninstall_mcp",
-    "restart_mcp",
-    "mcp_status",
-    "install_backup",
-    "uninstall_backup",
-    "restart_backup",
-    "backup_status",
+    "install_agent",
+    "agent_status",
     "agent_installed",
     "agent_loaded",
     "agent_home",
@@ -87,75 +77,31 @@ def _log_dir(home: Optional[str]) -> Path:
     return resolve_paths(home).home / "logs"
 
 
-def install_watcher(
-    home: Optional[str] = None, *, web: bool = True, web_port: int = 8787
-) -> Path:
-    entry = entry_path("thread-archive")
-    spec = watcher_spec(entry, _log_dir(home), home=home, web=web, web_port=web_port)
-    return active_backend().install(spec)
+#: How each agent's manifest is built: the console script it runs, and the spec
+#: builder that shapes it. Installation is the only op where the three differ —
+#: every other verb takes the agent's name and nothing else — so this table plus
+#: a builder in :mod:`.spec` is the whole of adding one.
+_SPEC_BUILDERS = {
+    "watcher": ("thread-archive", watcher_spec),
+    "mcp": ("archive-mcp", mcp_spec),
+    "backup": ("thread-archive", backup_spec),
+}
 
 
-def uninstall_watcher() -> None:
-    active_backend().uninstall("watcher")
+def install_agent(agent: str, home: Optional[str] = None, **options) -> Path:
+    """Schedule one agent by logical name; returns the manifest the backend wrote.
 
-
-def restart_watcher() -> None:
-    active_backend().restart("watcher")
-
-
-def watcher_status() -> str:
-    return active_backend().status("watcher")
-
-
-def install_mcp(
-    home: Optional[str] = None,
-    *,
-    host: str = MCP_DEFAULT_HOST,
-    port: int = MCP_DEFAULT_PORT,
-    ingest: bool = False,
-) -> Path:
-    entry = entry_path("archive-mcp")
-    spec = mcp_spec(entry, _log_dir(home), home=home, host=host, port=port, ingest=ingest)
-    return active_backend().install(spec)
-
-
-def uninstall_mcp() -> None:
-    active_backend().uninstall("mcp")
-
-
-def restart_mcp() -> None:
-    active_backend().restart("mcp")
-
-
-def mcp_status() -> str:
-    return active_backend().status("mcp")
-
-
-def install_backup(
-    dest: str,
-    home: Optional[str] = None,
-    *,
-    hour: int = 4,
-    minute: int = 0,
-    notify_url: Optional[str] = None,
-) -> Path:
-    entry = entry_path("thread-archive")
-    spec = backup_spec(
-        entry, _log_dir(home), dest, home=home, hour=hour, minute=minute, notify_url=notify_url
+    ``options`` are that agent's own spec knobs (``web``/``web_port`` for the
+    watcher, ``host``/``port``/``ingest`` for MCP, ``dest``/``hour``/``minute``/
+    ``notify_url`` for the backup) — see :mod:`.spec` for each builder's defaults."""
+    entry_name, build = _SPEC_BUILDERS[agent]
+    return active_backend().install(
+        build(entry_path(entry_name), _log_dir(home), home=home, **options)
     )
-    return active_backend().install(spec)
 
 
-def uninstall_backup() -> None:
-    active_backend().uninstall("backup")
-
-
-def restart_backup() -> None:
-    active_backend().restart("backup")
-
-
-def backup_status() -> str:
-    return active_backend().status("backup")
+def agent_status(agent: str) -> str:
+    return active_backend().status(agent)
 
 
 def agent_installed(agent: str) -> bool:
@@ -175,8 +121,6 @@ def restart_agent(agent: str) -> None:
 
 
 def uninstall_agent(agent: str) -> None:
-    """Unschedule one agent by logical name — the whole-footprint counterpart to
-    the per-agent verbs above, for a caller sweeping the set."""
     active_backend().uninstall(agent)
 
 

@@ -35,8 +35,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .. import __version__
 from .._config import load_config, resolve_paths, save_config, source_enabled
+from .._fmt import size as _fmt_bytes
 from .._viewer import viewer_available
 from .machine import Machine
 
@@ -77,15 +77,6 @@ def _followers() -> list:
 
 
 # ── small formatting helpers ─────────────────────────────────────────────────
-
-
-def _fmt_bytes(n: int) -> str:
-    x = float(n)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if x < 1024 or unit == "TB":
-            return f"{x:.0f} {unit}" if unit == "B" else f"{x:.1f} {unit}"
-        x /= 1024
-    return f"{x:.1f} TB"  # pragma: no cover — unreachable
 
 
 def _fmt_when(mtime: Optional[float]) -> str:
@@ -625,12 +616,10 @@ def print_status(args: argparse.Namespace, *, machine: Optional[Machine] = None)
     # What it costs to keep, split so the number is answerable: an archive is
     # mostly not its conversations, and the biggest part of it is usually the
     # projection `thread-archive index rebuild` can rebuild.
-    from .._ops.disk import format_bytes as _bytes
-
     disk = api.disk_usage(home=args.home)
-    _say(f"  disk:     {_bytes(disk['total_bytes'])} — "
-         f"{_bytes(disk['kinds']['truth'])} conversations, "
-         f"{_bytes(disk['rebuildable_bytes'])} rebuildable index")
+    _say(f"  disk:     {_fmt_bytes(disk['total_bytes'])} — "
+         f"{_fmt_bytes(disk['kinds']['truth'])} conversations, "
+         f"{_fmt_bytes(disk['rebuildable_bytes'])} rebuildable index")
     if machine.can_schedule:
         _say(f"  watcher:  {'running' if machine.watcher_running(args.home) else 'not running — `thread-archive setup` offers it'}")
     disabled = sorted(
@@ -690,37 +679,3 @@ def _setup_completed(args: argparse.Namespace) -> bool:
         return False
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="thread-archive setup",
-        description="Set up and check the local AI-conversation archive — the flow "
-                    "behind `thread-archive setup` (first-run setup, then the status view).",
-        epilog="Operator verbs (backup, verify, reindex, …) are `thread_archive` subcommands.",
-    )
-    parser.add_argument("command", nargs="?", choices=["setup", "status"], default=None,
-                        help="force setup or status (default: setup on first run, status after)")
-    parser.add_argument("-y", "--yes", action="store_true",
-                        help="accept every default; never prompt (agent/script mode)")
-    parser.add_argument("--home", default=None,
-                        help="archive home dir (default: $THREAD_ARCHIVE_HOME or ~/.thread/archive)")
-    parser.add_argument("--skip-import", action="store_true", help="setup: don't import now")
-    parser.add_argument("--skip-watcher", action="store_true", help="setup: don't offer the watcher")
-    parser.add_argument("--skip-backup", action="store_true", help="setup: don't offer nightly backup")
-    parser.add_argument("--backup-dest", default=None, metavar="PATH",
-                        help="setup: schedule nightly backups to PATH without prompting")
-    parser.add_argument("--skip-mcp", action="store_true", help="setup: don't offer MCP wiring")
-    parser.add_argument("--version", action="version", version=f"thread-archive {__version__}")
-    return parser
-
-
-def main(argv: Optional[list[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
-    if args.command == "status":
-        return print_status(args)
-    if args.command == "setup":
-        return run_setup(args)
-    return print_status(args) if _setup_completed(args) else run_setup(args)
-
-
-if __name__ == "__main__":
-    sys.exit(main())

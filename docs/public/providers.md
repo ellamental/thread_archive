@@ -54,10 +54,10 @@ $ thread-archive source list
 myharness  on   My Harness  (line-stream)
 ```
 
-*Which* environment that is depends on how archive was installed: a clone's own
-`.venv/bin/pip`, the venv you ran `pip install thread-archive` in, or — for a
-tool-managed install, which owns an environment you don't activate — the tool's
-injection verb (`uv tool install thread-archive --with myharness-archive`,
+*Which* environment that is depends on how archive was installed: the venv you
+ran `pip install thread-archive` in, or — for a tool-managed install, which owns
+an environment you don't activate — the tool's injection verb
+(`uv tool install thread-archive --with myharness-archive`,
 `pipx inject thread-archive myharness-archive`).
 
 The watcher daemon runs from that same environment, so an entry point registered
@@ -360,9 +360,8 @@ Patches carry a `patch` block in their `config.json` entry
 (`built_against`, `pinned`, lifecycle stamps). They are **temporary by
 default**: `thread-archive self-update` to a newer core disables any unpinned
 patch (the release is the proper fix's vehicle; if the drift persists, the
-coverage notice re-fires and the fix re-runs against the new core). A clone
-moved by hand retires nothing — there the notice loop is all of it. `--pin` opts a
-patch out of retirement; `patch-log.jsonl` in the archive home is the audit
+coverage notice re-fires and the fix re-runs against the new core). `--pin` opts
+a patch out of retirement; `patch-log.jsonl` in the archive home is the audit
 trail of every transition. A hand-installed plugin without a `patch` block is
 never touched by retirement.
 

@@ -67,7 +67,7 @@ CLI_TREE = {
     "watch": set(),
     "source": {"list", "import", "import-account", "mirror", "coverage", "loads",
                "ingest", "fix", "recheck"},
-    "index": {"rebuild", "migrate", "embed", "verify", "repair"},
+    "index": {"rebuild", "migrate", "embed", "verify", "repair", "substring"},
     "backup": {"run", "nightly", "drill", "restore"},
     "status": set(),
     "docs": set(),

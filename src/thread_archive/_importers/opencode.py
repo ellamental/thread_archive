@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -42,7 +41,7 @@ from thread_archive._thread_import.timestamps import parse_timestamp
 from .._store import ImportState, get_session
 from . import _probe
 from ._events import assemble_events
-from ._result import DbScanResult
+from ._result import DbScanResult, DbUnitImportResult
 from ._state import (
     create_thread,
     get_import_state,
@@ -52,13 +51,6 @@ from ._state import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class OpenCodeImportResult:
-    events_created: int
-    thread_id: str
-    is_new_thread: bool
 
 
 def import_opencode_db(db_path) -> DbScanResult:
@@ -160,7 +152,7 @@ def import_opencode_from_payload(
     messages: list[tuple[str, dict[str, Any]]],
     parts_by_message: dict[str, list[dict[str, Any]]],
     session=None,
-) -> OpenCodeImportResult:
+) -> DbUnitImportResult:
     """Import one OpenCode session (atomic per-session transaction when no session)."""
     _probe.count("items")
     if session is not None:
@@ -172,23 +164,23 @@ def import_opencode_from_payload(
         return result
 
 
-def _run_opencode(session, session_id, session_data, messages, parts_by_message) -> OpenCodeImportResult:
+def _run_opencode(session, session_id, session_data, messages, parts_by_message) -> DbUnitImportResult:
     source_id = session_id
     import_state = get_import_state(session, "opencode", source_id)
 
     if _opencode_session_unchanged(import_state, session_data):
-        return OpenCodeImportResult(0, (import_state.thread_id or "") if import_state else "", False)
+        return DbUnitImportResult(0, (import_state.thread_id or "") if import_state else "", False)
 
     norm = _build_opencode_messages(messages, parts_by_message, session_data=session_data)
     if not norm:
-        return OpenCodeImportResult(0, "", False)
+        return DbUnitImportResult(0, "", False)
 
     thread_id, is_new_thread = _opencode_resolve_thread(session, import_state, session_id, source_id, session_data)
 
     start_index = import_state.last_line_count if import_state else 0
     new_messages = norm[start_index:]
     if not new_messages:
-        return OpenCodeImportResult(0, thread_id, is_new_thread)
+        return DbUnitImportResult(0, thread_id, is_new_thread)
 
     base_ts = _parse_opencode_timestamp(session_data.get("time_created")) or datetime.now(timezone.utc)
     normalized = [_opencode_to_normalized(m) for m in new_messages]
@@ -209,7 +201,7 @@ def _run_opencode(session, session_id, session_data, messages, parts_by_message)
         last_file_size=0,
         last_message_uuid=norm[-1].get("id") if norm else None,
     )
-    return OpenCodeImportResult(events_created, thread_id, is_new_thread)
+    return DbUnitImportResult(events_created, thread_id, is_new_thread)
 
 
 def _opencode_session_unchanged(import_state: Optional[ImportState], session_data: dict[str, Any]) -> bool:

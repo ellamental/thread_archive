@@ -34,7 +34,6 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -45,7 +44,7 @@ from thread_archive._thread_import.timestamps import parse_timestamp_iso
 from .._store import get_session
 from . import _probe
 from ._events import assemble_events, log_parse_validation, preserve_unmodeled_fields
-from ._result import DbScanResult
+from ._result import DbScanResult, DbUnitImportResult
 from ._state import (
     adopt_if_unwatermarked,
     create_thread,
@@ -99,13 +98,6 @@ _NON_CONVERSATION_TYPES = ("uploads",)
 # the archive (importing them would inject fabricated "science you did" threads). The
 # user's real frames live under their own ``proj_<hash>`` ids and import normally.
 _SEEDED_PROJECT_IDS = ("proj_example",)
-
-
-@dataclass
-class ClaudeScienceImportResult:
-    events_created: int
-    thread_id: str
-    is_new_thread: bool
 
 
 def _synthesize_line(frame_id: str, idx: int, msg: dict, model: Optional[str], base_ms: int) -> Optional[dict]:
@@ -264,7 +256,7 @@ def _run_frame(
     message_rows: list,
     parser: ClaudeCodeParser,
     builder: DefaultEventBuilder,
-) -> ClaudeScienceImportResult:
+) -> DbUnitImportResult:
     frame_id = frame["id"]
     source_id = f"{org_uuid}:{frame_id}"
     import_state = get_import_state(session, SOURCE, source_id)
@@ -272,7 +264,7 @@ def _run_frame(
     total = len(message_rows)
     start = import_state.last_line_count if import_state else 0
     if import_state and start >= total:
-        return ClaudeScienceImportResult(0, import_state.thread_id or "", False)
+        return DbUnitImportResult(0, import_state.thread_id or "", False)
 
     base_ms = int(frame.get("created_at") or 0)
     model = frame.get("model")
@@ -311,7 +303,7 @@ def _run_frame(
         session, source=SOURCE, source_id=source_id,
         thread_id=thread_id, total_lines=total, file_size=0,
     ):
-        return ClaudeScienceImportResult(0, thread_id or "", False)
+        return DbUnitImportResult(0, thread_id or "", False)
 
     is_new_thread = False
     if thread_id is None:
@@ -349,7 +341,7 @@ def _run_frame(
         last_file_size=0,
         last_message_uuid=last_uuid,
     )
-    return ClaudeScienceImportResult(events_created, thread_id or "", is_new_thread)
+    return DbUnitImportResult(events_created, thread_id or "", is_new_thread)
 
 
 def import_claude_science_frame(
@@ -360,7 +352,7 @@ def import_claude_science_frame(
     builder: Optional[DefaultEventBuilder] = None,
     *,
     session=None,
-) -> ClaudeScienceImportResult:
+) -> DbUnitImportResult:
     """Import one frame's transcript (atomic per-frame transaction when no session)."""
     parser = parser or ClaudeCodeParser()
     builder = builder or DefaultEventBuilder()

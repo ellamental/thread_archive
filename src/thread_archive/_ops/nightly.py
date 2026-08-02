@@ -16,10 +16,25 @@ from .health import elapsed_s, read_health, record_health, stamp_heartbeat
 from .source_mirror import mirror_sources
 from .verify import verify
 
-# Age gates for the escalated verify tiers `nightly` folds in on top of its
-# nightly backup + shallow verify + restore drill.
+# Age gates for the tiers `nightly` folds in on top of its nightly backup +
+# shallow verify.
 _DEEP_EVERY_DAYS = 7
 _HASHES_EVERY_DAYS = 30
+
+# The restore drill's gate. It is the one stage whose cost scales with the whole
+# corpus — a full index rebuild from the mirror, already the large majority of the
+# night's wall clock — so at some size a nightly drill stops fitting the window it
+# has to finish inside. Weekly is the same gate the deep verify rides, and it is
+# an age gate rather than a weekday: a machine that was off on the due day drills
+# on its next nightly, not the following week.
+#
+# A *failed* drill still re-runs the next night, because `_health_is_due` treats
+# a not-ok record as due. That keeps what made the drill nightly in the first
+# place — the restore path is code, and a regression in it must surface the next
+# morning rather than up to a week later — while a healthy drill stops paying for
+# that daily. It also keeps the stage's 14-day tolerance window (see
+# `_ops.health._STAGE_GRACE_DAYS`) meaningful: a green drill lands twice inside it.
+_DRILL_EVERY_DAYS = 7
 
 
 def _health_is_due(key: str, every_days: float) -> bool:
@@ -111,10 +126,14 @@ def nightly(
       than ``_DEEP_EVERY_DAYS``, or failed; ``--hashes`` likewise on
       ``_HASHES_EVERY_DAYS``. A machine that was off on the scheduled day runs
       the escalated pass on its next nightly instead of a month later.
-    - **The drill is nightly.** The restore path is code and the code changes
-      daily; a restore-path regression must surface the next morning, not up
-      to a month later. Roughly an hour of nice'd 4 a.m. work at current size,
-      the drill's full index rebuild dominating it.
+    - **The drill is weekly, on the same kind of gate** (``_DRILL_EVERY_DAYS``),
+      and nightly again for as long as it is failing — a not-ok health record
+      reads as due. So a restore-path regression still surfaces the next
+      morning and keeps surfacing, while a healthy restore path stops costing
+      the night. It is the stage whose cost tracks the whole corpus (a full
+      index rebuild from the mirror, the large majority of the night's wall
+      clock), and the one that would otherwise grow the night past its window.
+      ``--no-drill`` withholds it entirely.
     - **Failure notifies** (``notify_url``, lab's ``/api/notify`` shape) with
       the failed stage names. The "never ran at all" case is the monitor's to
       catch, from the staleness of the health.json records this writes.
@@ -164,7 +183,10 @@ def nightly(
 
     deep_due = _health_is_due("verify_deep_last", _DEEP_EVERY_DAYS)
     hashes_due = _health_is_due("verify_hashes_last", _HASHES_EVERY_DAYS)
-    result["escalations"] = {"deep": deep_due, "hashes": hashes_due}
+    # ``drill`` is the caller's permission (``--no-drill`` withholds it); the age
+    # gate decides whether tonight is the night. Both must say yes.
+    drill_due = drill and _health_is_due("restore_drill_last", _DRILL_EVERY_DAYS)
+    result["escalations"] = {"deep": deep_due, "hashes": hashes_due, "drill": drill_due}
     _t = time.monotonic()
     try:
         v = verify(
@@ -184,7 +206,7 @@ def nightly(
     if not verify_ok:
         failed.append("verify")
 
-    if drill:
+    if drill_due:
         _t = time.monotonic()
         try:
             d = restore_drill(dest, home=home)
@@ -222,7 +244,7 @@ def nightly(
         "failed_stages": failed,
         "deep": deep_due,
         "hashes": hashes_due,
-        "drill": drill,
+        "drill": drill_due,
         # The night's total and where it went. The pipeline runs unattended in a
         # window that has to end before the machine is used, and it is the one
         # operation here whose cost is the sum of five others — so a total that

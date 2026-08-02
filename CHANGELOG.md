@@ -2,6 +2,83 @@
 
 ## Unreleased
 
+- The nightly restore drill goes weekly, on the same age gate the deep verify rides
+  (`_DRILL_EVERY_DAYS = 7`) — and stays nightly for as long as it is failing, because `_health_is_due`
+  reads a not-ok record as due. That keeps the property that made it nightly (the restore path is code;
+  a regression in it surfaces the next morning and keeps surfacing) while a healthy restore path stops
+  spending the night on it. The drill is the one stage whose cost tracks the whole corpus — a full index
+  rebuild from the mirror, 66 of the night's 80 minutes — so it is what would have grown the window past
+  the morning. Age-gated rather than calendar-gated: a machine that was off on the due day drills on its
+  next nightly. `--no-drill` still withholds the stage outright, and `backup drill` still forces one.
+  A skipped night reports `escalations.drill = False` and carries no `drill` result — absent, not failed.
+
+- Substring search rides an index. A second external-content FTS5 over the same `events_fts` shadow, tokenized
+  into trigrams (`event_substr`), turns an infix `LIKE` from a pass over the corpus into a rowid prefilter the
+  escaped `LIKE` then verifies. Measured over 120k docs: a substring that matches nothing — the scan's worst
+  case, since no `LIMIT` can stop a walk that never finds a row — goes 36ms → 0.1ms, and ordinary identifier
+  queries 30–40x. The prefilter carries no `ESCAPE` clause (one turns fts5's LIKE optimization off outright), so
+  `%` and `_` degrade there from literals to wildcards — a strictly wider candidate set, which is what keeps the
+  pair exact; a hypothesis property asserts the two forms agree on every query. Costs ~1GB on a 0.36GB corpus.
+- The prefilter is taken only where it pays, decided per query against the index rather than from the term's
+  text. It rides on a rowid subquery, which is materialized before the outer `LIMIT` can stop — so for a term
+  matching a large slice of the corpus it forfeits the early-out that makes the plain scan bearable and then
+  adds a per-candidate verify, measured 2.9x *slower* for a term in 7% of the corpus. A bounded probe (2000
+  candidates) settles it: `thread_id` and `session` take the scan, `getattr` and `SET_EXAMINE_CAP` the index,
+  and the probe costs ~8% of the scan it declines against a few ms on the 30–60x it buys. Selectivity is not
+  readable from the query — `SET_EXAMINE_CAP` and `thread_id` are the same shape and differ ten-thousandfold in
+  what they match. Terms with no 3-character literal run (`p4`) never reach the probe.
+- An indexed substring set is no longer bounded by `SET_EXAMINE_CAP`. The window exists to stop a *scanning*
+  predicate from costing more as the corpus grows, and a prefiltered substring query does not scan — so its
+  counts and thread enumerations stay exact instead of degrading to a floor over the newest 2M rowids. That
+  bound was the nearer of the two: the shadow's rowid high-water mark was at 1.27M of it.
+- `thread-archive index substring` builds the trigram index from the shadow already on disk — the targeted heal
+  for an archive predating it, where `index rebuild` would re-derive the whole shadow from the events. One
+  transaction, so ingest waits rather than interleaving a row into the shadow that the index would never see.
+  `verify` reports the index's row count and whether it is complete, deliberately outside `ok`: an archive
+  without it has lost no data and no correctness, only the index, and retrieval probes for it and falls back.
+- The sync triggers are replaced when their stored body differs from the one the module defines, rather than
+  only when absent. A trigger that predates a change to the set still fires, so a presence check would pass it
+  while it mirrored a shadow write to only some of the indexes.
+
+- The Bench workflow keeps what each pass cost: a non-gating `perf-trend-*` artifact per CI run
+  (`python -m search_lab perf`) carrying every row's wall clock off the run ledger, normalized by two synthetic
+  hardware calibrators (BLAS matvec for the vector arm, FTS5 scan for the lexical) so numbers from different
+  runners compare. Measured across two same-day runners the machine-speed factor was ~14% with arm-shaped
+  residue — the artifact series is how the real variance envelope gets characterized before any band is set.
+
+- PyPI is the only supported install. `git+<repo-url>@vX.Y.Z` stops being a distribution channel and the manual
+  drops its from-source install: a checkout is a development environment — the maintainer's or a fork's — and its
+  recipe lives in `CONTRIBUTING.md`, while `scope.md` states the policy beside the other deliberate limits.
+  `pip`, `uv tool` and `pipx` resolve the same wheel from the same index, and self-update still refuses a checkout.
+
+- The Publish `verify` job proves the published wheel *works*, not just that it starts: after the entry-point smoke it
+  checks out the tagged tree for `tests/install/e2e_check.py` and runs a real lifecycle on the installed artifact —
+  a corpus for every provider, imported through each provider's own importer, the index rebuilt from the JSONL truth,
+  every marker searched back out. Seconds, and it covers the one surface nothing else did: the published artifact
+  under dependencies resolved fresh from the index (the `package` and install lanes both build and resolve locally).
+  A guard asserts `thread_archive` resolves under site-packages, so the lane can never quietly re-test the checkout.
+  This is what the mandatory rc's `verify` has always claimed to establish; until now it established two `--help`s.
+
+- The import-parsing layer sheds dead surface. `thread_archive.provider.parse` no longer re-exports
+  `normalize_tool_name` (its module — with `TOOL_NAME_MAP`, `FILE_TOOLS`, `PROVIDER_PATH_FIELDS` — had no callers
+  and is gone), `parsers` no longer re-exports a `ValidationSeverity` that duplicated the live one in
+  `parsers.validators.base`, and `BaseValidator` drops two override hooks nothing overrode. The three DB
+  scanners' identical per-unit result dataclasses collapse into one `DbUnitImportResult` in `_importers._result`.
+
+- The watcher stops writing telemetry nothing read. `health.json` loses `watch_embed_last` and
+  `watch_maintain_last` entirely, and `watch_pass_last` loses `pass_ms`/`pass_ms_max`/`lag_s`; the embed and
+  maintenance passes still record into the ingest ledger, which keeps a series rather than only the last pass.
+  The two probe queries those numbers cost per pass (newest event, newest embedded event) are gone with them.
+  `watch_pass_last`'s liveness and per-source counters — the keys `status` and the capture audit read — are
+  unchanged.
+
+- Service management is one API by agent name. `_service` drops twelve per-agent wrappers for
+  `install_agent`/`agent_status` beside the existing `restart_agent`/`uninstall_agent`/`agent_installed`, with a
+  spec-builder table as the only place the three agents differ; `daemon install/uninstall/restart/status` runs
+  one path instead of three copies. The setup wizard's dead standalone `main`/`build_parser` entry point goes
+  (the CLI's `setup` verb is the only way in), the restore and restore-drill reports become one renderer, and
+  the operator-facing byte formatter lives once in `_fmt.size`.
+
 ## 0.0.14 — 2026-08-01
 
 - CI proves both platforms: macOS lanes for the pytest bar and the wheel install, beside the Linux matrix now

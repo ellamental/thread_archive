@@ -86,13 +86,13 @@ def test_the_set_outcomes_ride_along_only_when_the_stage_ran() -> None:
     probe.set_scans = 1
     rec = probe.as_record()
     assert rec["set_ms"] == 850.0 and rec["set_scans"] == 1
-    assert "set_deltas" not in rec and "set_hits" not in rec
+    assert "set_hits" not in rec
 
 
 def test_set_outcomes_tally_because_one_search_can_resolve_two_sets() -> None:
-    """The thread tally and the saturated-pool count are two set queries under one
-    probe, and they need not agree — one can be handed a memoized answer while the
-    other scans. Counters, so the record says both happened."""
+    """One search can resolve more than one set query under a single probe, and they
+    need not agree — one can be handed a memoized answer while the other scans.
+    Counters, so the record says both happened."""
     with _probe.install() as probe:
         _probe.bump("set_hits")
         _probe.bump("set_scans")

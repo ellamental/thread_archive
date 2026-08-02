@@ -9,12 +9,36 @@ Not the only age formatter in the package, and deliberately so:
 on ("just now", "12m ago", "never"), while this one is the fractional-hours form
 the CLI's status tables read in. They are different answers to different
 questions; collapsing them would change what one of the two surfaces prints.
+
+The same holds for the two byte formatters that stay private to their callers:
+``cli._fmt_bytes`` renders *decimal* units (a ledger's retained bytes, stated the
+way a disk vendor states them) and ``_retrieval.read._fmt_bytes`` renders a
+whole-number KB inside a one-line binary marker, degrading to an empty string
+rather than a mark. :func:`size` is the binary, operator-facing one everything
+else shares.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Optional
+
+
+def size(n: Optional[int]) -> str:
+    """Bytes as an operator reads them — a small number and a unit that keeps it
+    small. Binary units, matching what ``du`` reports for the same directory.
+
+    Past ``GB`` the number keeps growing rather than inventing a unit: a size that
+    big is a fault to look at, not a figure to make comfortable. ``"?"`` for an
+    absent size, so a table cell that has no answer says so."""
+    if n is None:
+        return "?"
+    value = float(n)
+    for unit in ("B", "KB", "MB"):
+        if abs(value) < 1024.0:
+            return f"{int(value)} B" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{value:.1f} GB"
 
 
 def age(iso: Optional[str]) -> str:

@@ -749,84 +749,73 @@ def cmd_watch(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_daemon(args: argparse.Namespace) -> int:
-    from . import _service
+def _daemon_install_plan(args: argparse.Namespace, agent: str):
+    """One agent's install: its spec options, and what the operator is told after.
 
-    if args.mcp:
+    The only part of the service lifecycle that is per-agent — uninstall, restart
+    and status take a name and nothing else. Returns ``(options, lines)``, or
+    ``None`` when the request can't be served (already reported)."""
+    if agent == "mcp":
         # The shared MCP server: one always-on streamable-HTTP server all clients
         # connect to (point each client's MCP config at the URL below), instead of
         # a per-client stdio subprocess each loading its own retrieval model.
-        if args.action == "install":
-            path = _service.install_mcp(
-                args.home,
-                host=args.http_host,
-                port=args.http_port,
-                ingest=args.mcp_ingest,
-            )
-            print(f"installed {_service.label('mcp')} ({path})")
-            print(f"shared MCP server: http://{args.http_host}:{args.http_port}/mcp")
-            print(
+        return (
+            {"host": args.http_host, "port": args.http_port, "ingest": args.mcp_ingest},
+            [
+                f"shared MCP server: http://{args.http_host}:{args.http_port}/mcp",
                 "catch-up ingest: "
-                + ("enabled (explicit --mcp-ingest opt-in)" if args.mcp_ingest else "disabled")
-            )
-            print("point every client's MCP config at that URL "
-                  '(type "http") instead of the archive-mcp stdio command.')
-        elif args.action == "uninstall":
-            _service.uninstall_mcp()
-            print(f"uninstalled {_service.label('mcp')}")
-        elif args.action == "restart":
-            _service.restart_mcp()
-            print(f"restarted {_service.label('mcp')}")
-        else:  # status
-            print(_service.mcp_status())
-        return 0
-
-    if args.backup:
+                + ("enabled (explicit --mcp-ingest opt-in)" if args.mcp_ingest else "disabled"),
+                "point every client's MCP config at that URL "
+                '(type "http") instead of the archive-mcp stdio command.',
+            ],
+        )
+    if agent == "backup":
         # The scheduled backup pipeline (backup → verify → restore drill) as a
         # scheduled service — the productized form of what host/ wires by hand.
         # install needs --dest (a directory the scheduler can reach unattended).
-        if args.action == "install":
-            if not args.dest:
-                print(
-                    "thread-archive service install --backup needs --dest <path>",
-                    file=sys.stderr,
-                )
-                return 2
-            hour, minute = _parse_hhmm(args.at or "04:00")
-            path = _service.install_backup(
-                args.dest, args.home, hour=hour, minute=minute,
-                notify_url=args.notify_url,
-            )
-            print(f"installed {_service.label('backup')} ({path})")
+        if not args.dest:
             print(
-                f"nightly at {hour:02d}:{minute:02d} → {args.dest}: "
-                "backup, verify, restore drill."
+                "thread-archive service install --backup needs --dest <path>",
+                file=sys.stderr,
             )
-        elif args.action == "uninstall":
-            _service.uninstall_backup()
-            print(f"uninstalled {_service.label('backup')}")
-        elif args.action == "restart":
-            _service.restart_backup()
-            print(f"restarted {_service.label('backup')}")
-        else:  # status
-            print(_service.backup_status())
-        return 0
+            return None
+        hour, minute = _parse_hhmm(args.at or "04:00")
+        return (
+            {"dest": args.dest, "hour": hour, "minute": minute,
+             "notify_url": args.notify_url},
+            [f"nightly at {hour:02d}:{minute:02d} → {args.dest}: "
+             "backup, verify, restore drill."],
+        )
+    lines = [
+        "the watcher is always-on (starts at login); `thread-archive service status` to check,",
+        "`thread-archive service restart` to apply a code edit.",
+    ]
+    if args.web:
+        lines.append(f"web viewer: http://127.0.0.1:{args.web_port}")
+    return {"web": args.web, "web_port": args.web_port}, lines
 
+
+def cmd_daemon(args: argparse.Namespace) -> int:
+    from . import _service
+
+    agent = "mcp" if args.mcp else "backup" if args.backup else "watcher"
     if args.action == "install":
-        path = _service.install_watcher(args.home, web=args.web, web_port=args.web_port)
-        print(f"installed {_service.label('watcher')} ({path})")
-        print("the watcher is always-on (starts at login); `thread-archive service status` to check,")
-        print("`thread-archive service restart` to apply a code edit.")
-        if args.web:
-            print(f"web viewer: http://127.0.0.1:{args.web_port}")
+        plan = _daemon_install_plan(args, agent)
+        if plan is None:
+            return 2
+        options, lines = plan
+        path = _service.install_agent(agent, args.home, **options)
+        print(f"installed {_service.label(agent)} ({path})")
+        for line in lines:
+            print(line)
     elif args.action == "uninstall":
-        _service.uninstall_watcher()
-        print(f"uninstalled {_service.label('watcher')}")
+        _service.uninstall_agent(agent)
+        print(f"uninstalled {_service.label(agent)}")
     elif args.action == "restart":
-        _service.restart_watcher()
-        print(f"restarted {_service.label('watcher')}")
+        _service.restart_agent(agent)
+        print(f"restarted {_service.label(agent)}")
     else:  # status
-        print(_service.watcher_status())
+        print(_service.agent_status(agent))
     return 0
 
 
@@ -925,6 +914,23 @@ def cmd_reindex(args: argparse.Namespace) -> int:
     for name, n in counts.items():
         print(f"  {name:16} {n:>9}")
     print("done")
+    return 0
+
+
+def cmd_index_substring(args: argparse.Namespace) -> int:
+    from ._lifecycle import open_archive
+    from ._retrieval.fts import build_substr_index
+
+    _self_throttle()  # retokenizing the corpus is background work
+    open_archive(args.home)
+    print("building the trigram substring index (ingest waits while it runs)")
+    started = time.monotonic()
+    try:
+        count = build_substr_index()
+    except (OSError, RuntimeError) as e:
+        print(f"substring index build failed: {e}", file=sys.stderr)
+        return 1
+    print(f"  indexed {count} documents in {_fmt_duration(time.monotonic() - started)}")
     return 0
 
 
@@ -1342,9 +1348,16 @@ def cmd_restore_drill(args: argparse.Namespace) -> int:
     )
 
 
-def report_restore_drill(res: dict) -> int:
-    """Print the operator report for an ``_api.restore_drill`` result; return its exit code."""
-    if "error" in res:
+def _report_rebuild(res: dict, *, drill: bool, to: Optional[str] = None) -> int:
+    """Print the operator report for a rebuild-from-mirror result; return its exit code.
+
+    One result shape, two readings. A *drill* rebuilds into a throwaway home to
+    prove the mirror is restorable, so it reports coverage against the live
+    archive and names the home it kept; a *restore* rebuilds the home someone will
+    actually use, so it reports what the bundle installed and where a damaged
+    predecessor was set aside. ``to`` is that home — the result describes the
+    rebuild, not where it landed."""
+    if drill and "error" in res:
         print(f"FAILED: {res['error']}")
     if "mirror" in res:
         m = res["mirror"]
@@ -1354,23 +1367,23 @@ def report_restore_drill(res: dict) -> int:
         )
     if "rebuilt" in res:
         r = res["rebuilt"]
-        print(
-            f"rebuilt: threads={r['threads']} events={r['events']} fts={r.get('fts')} "
-            f"coverage={res.get('coverage', 0):.4f} of live"
-        )
-    if "smoke" in res:
-        sm = res["smoke"]
+        line = f"rebuilt: threads={r['threads']} events={r['events']} fts={r.get('fts')}"
+        if drill:
+            line += f" coverage={res.get('coverage', 0):.4f} of live"
+        print(line)
+    sm = res.get("smoke")
+    if sm:
         if sm.get("skipped"):
             print(f"smoke:  skipped ({sm['skipped']})")
         else:
             print(
                 f"smoke:  read={'ok' if sm.get('read_ok') else 'FAILED'} "
                 f"search={'ok' if sm.get('search_ok') else 'FAILED'}"
-                + (f" (token {sm['token']!r})" if sm.get("token") else "")
+                + (f" (token {sm['token']!r})" if drill and sm.get("token") else "")
                 + (f" error: {sm['error']}" if sm.get("error") else "")
             )
     b = res.get("bundle")
-    if b:
+    if b and drill:
         if not b["present"]:
             print("bundle: ABSENT — this mirror restores conversations only (no config/exports)")
         else:
@@ -1378,10 +1391,32 @@ def report_restore_drill(res: dict) -> int:
                 f"bundle: config={'yes' if b['config'] else 'no'} "
                 f"retained exports={b['retained_exports']}"
             )
-    if res.get("drill_home"):
+    elif b:
+        installed = ["config"] if b.get("config") else []
+        if b.get("retained_exports"):
+            installed.append(f"{b['retained_exports']} retained export(s)")
+        print(
+            "bundle: installed " + (", ".join(installed) if installed else "nothing")
+            + (f" (ERROR: {b['error']})" if b.get("error") else "")
+        )
+    if drill and res.get("drill_home"):
         print(f"drill home kept: {res['drill_home']}")
-    print(f"{'OK' if res.get('ok') else 'RESTORE DRILL FAILED'} ({res.get('seconds', '?')}s)")
+    if not drill:
+        if res.get("damaged_home"):
+            print(f"previous home set aside (preserved): {res['damaged_home']}")
+        if res.get("error"):
+            print(f"FAILED: {res['error']}")
+    if drill:
+        print(f"{'OK' if res.get('ok') else 'RESTORE DRILL FAILED'} ({res.get('seconds', '?')}s)")
+    else:
+        print(f"{'OK — restored to ' + str(to) if res.get('ok') else 'RESTORE FAILED'} "
+              f"({res.get('seconds', '?')}s)")
     return 0 if res.get("ok") else 1
+
+
+def report_restore_drill(res: dict) -> int:
+    """Print the operator report for an ``_api.restore_drill`` result; return its exit code."""
+    return _report_rebuild(res, drill=True)
 
 
 def cmd_restore(args: argparse.Namespace) -> int:
@@ -1406,45 +1441,8 @@ def cmd_restore(args: argparse.Namespace) -> int:
 
 
 def report_restore(res: dict, *, to: str) -> int:
-    """Print the operator report for an ``_api.restore`` result; return its exit code.
-
-    ``to`` is the home that was restored into — the result describes the rebuild,
-    not where it landed."""
-    if "mirror" in res:
-        m = res["mirror"]
-        print(
-            f"mirror: threads={m['threads']} effective={m['events_effective']} "
-            f"parse_errors={m['parse_errors']}"
-        )
-    if "rebuilt" in res:
-        r = res["rebuilt"]
-        print(f"rebuilt: threads={r['threads']} events={r['events']} fts={r.get('fts')}")
-    sm = res.get("smoke")
-    if sm:
-        if sm.get("skipped"):
-            print(f"smoke:  skipped ({sm['skipped']})")
-        else:
-            print(
-                f"smoke:  read={'ok' if sm.get('read_ok') else 'FAILED'} "
-                f"search={'ok' if sm.get('search_ok') else 'FAILED'}"
-                + (f" error: {sm['error']}" if sm.get("error") else "")
-            )
-    b = res.get("bundle")
-    if b:
-        installed = ["config"] if b.get("config") else []
-        if b.get("retained_exports"):
-            installed.append(f"{b['retained_exports']} retained export(s)")
-        print(
-            "bundle: installed " + (", ".join(installed) if installed else "nothing")
-            + (f" (ERROR: {b['error']})" if b.get("error") else "")
-        )
-    if res.get("damaged_home"):
-        print(f"previous home set aside (preserved): {res['damaged_home']}")
-    if res.get("error"):
-        print(f"FAILED: {res['error']}")
-    print(f"{'OK — restored to ' + str(to) if res.get('ok') else 'RESTORE FAILED'} "
-          f"({res.get('seconds', '?')}s)")
-    return 0 if res.get("ok") else 1
+    """Print the operator report for an ``_api.restore`` result; return its exit code."""
+    return _report_rebuild(res, drill=False, to=to)
 
 
 def cmd_nightly(args: argparse.Namespace) -> int:
@@ -2249,6 +2247,13 @@ def build_parser(*, has_viewer: Optional[bool] = None) -> argparse.ArgumentParse
                          help="suppress the live progress line")
     p_embed.set_defaults(func=cmd_embed)
 
+    p_substr = g_index.add_parser(
+        "substring",
+        help="build the trigram substring index (targeted heal for an archive predating it)",
+    )
+    _add_home_arg(p_substr)
+    p_substr.set_defaults(func=cmd_index_substring)
+
     p_mirror = g_source.add_parser(
         "mirror",
         help="mirror the raw harness stores into <home>/source-mirror",
@@ -2281,9 +2286,9 @@ def build_parser(*, has_viewer: Optional[bool] = None) -> argparse.ArgumentParse
     p_self_update = sub.add_parser(
         "self-update",
         help="update this install to the newest release on PyPI",
-        description="Update this packaged install to the newest release on PyPI: "
-                    "resolve, install, smoke-check, restart the service agents. A "
-                    "source clone updates with git instead.",
+        description="Update this install to the newest release on PyPI: "
+                    "resolve, install, smoke-check, restart the service agents. PyPI "
+                    "is the only install this moves; a source checkout is not one.",
     )
     _add_home_arg(p_self_update)
     p_self_update.add_argument(
@@ -2341,7 +2346,8 @@ def build_parser(*, has_viewer: Optional[bool] = None) -> argparse.ArgumentParse
         "nightly",
         help="the scheduled pipeline: run → verify → drill",
         description="The scheduled pipeline: backup → verify (age-gated deep/hashes "
-                    "escalation) → restore drill, with per-stage health records.",
+                    "escalation) → restore drill (age-gated weekly, nightly while "
+                    "failing), with per-stage health records.",
     )
     _add_home_arg(p_nightly)
     p_nightly.add_argument("dest", help="backup destination dir")

@@ -105,12 +105,7 @@ SHAPE_SUBSTAGES = ("rank_ms", "coherence_ms", "group_ms", "extend_ms", "enrich_m
 #: index had not moved. The two differ by orders of magnitude on a real corpus —
 #: measured here, ~850 ms against ~1 ms — so the split is what says whether a slow
 #: ``set_ms`` is a large corpus or a memo that ingest is defeating.
-#:
-#: ``set_deltas`` — a scan bounded to the rows appended since a memoized answer,
-#: folded into it (~19 ms) — is :func:`~.fts.matched_threads`' outcome alone. The
-#: served path calls only :func:`~.fts.count_matches`, whose ``n_threads`` DISTINCT
-#: cannot be carried across a delta, so it stays zero on a search row.
-SET_OUTCOMES = ("set_scans", "set_deltas", "set_hits")
+SET_OUTCOMES = ("set_scans", "set_hits")
 
 
 class SearchProbe:

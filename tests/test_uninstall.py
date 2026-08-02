@@ -116,9 +116,9 @@ def _args(home, *, yes: bool = True, dry_run: bool = False):
 
 def _install_all(home) -> None:
     """The full set of agents this host runs for ``home``."""
-    _service.install_watcher(str(home))
-    _service.install_mcp(str(home))
-    _service.install_backup("/tmp/mirror", str(home))
+    _service.install_agent("watcher", str(home))
+    _service.install_agent("mcp", str(home))
+    _service.install_agent("backup", str(home), dest="/tmp/mirror")
 
 
 def _heartbeat(tmp_path, monkeypatch) -> Path:
@@ -149,7 +149,7 @@ def test_bare_machine_has_nothing_to_remove(archive_home, host, capsys) -> None:
 def test_survey_reads_the_manifest_not_the_process(archive_home, host) -> None:
     """An agent whose process is down is still scheduled — and still ours to
     remove. The probe asks the manifest on disk."""
-    _service.install_watcher(str(archive_home))
+    _service.install_agent("watcher", str(archive_home))
     machine = Machine()
     assert machine.agent_installed("watcher") and not machine.agent_installed("mcp")
     assert machine.agent_home("watcher") == str(archive_home)
@@ -204,8 +204,8 @@ def test_agents_serving_another_archive_are_left_alone(
     tmp_path, archive_home, host, monkeypatch, capsys
 ) -> None:
     other = tmp_path / "other-archive"
-    _service.install_watcher(str(other))
-    _service.install_backup("/tmp/mirror", str(other))
+    _service.install_agent("watcher", str(other))
+    _service.install_agent("backup", str(other), dest="/tmp/mirror")
     beat = _heartbeat(tmp_path, monkeypatch)
 
     assert main(["uninstall", "--home", str(archive_home), "--yes"]) == 0
@@ -256,7 +256,7 @@ def test_cancelling_at_the_prompt_removes_nothing(archive_home, host, capsys) ->
 def test_a_refused_removal_fails_the_run_and_reports_which(
     tmp_path, archive_home, host, stub_bin, capsys
 ) -> None:
-    _service.install_watcher(str(archive_home))
+    _service.install_agent("watcher", str(archive_home))
     _claude_config(stub_bin, tmp_path, _entry(home=str(archive_home)), remove="error")
 
     assert main(["uninstall", "--home", str(archive_home), "--yes"]) == 1
@@ -288,7 +288,7 @@ def test_a_home_it_cannot_write_reports_what_it_could_not_remove(
     it could take still go."""
     (archive_home / "product.json").write_text("{}", encoding="utf-8")
     save_config({"setup": {"watcher": "launchd"}}, str(archive_home))
-    _service.install_watcher(str(archive_home))
+    _service.install_agent("watcher", str(archive_home))
     archive_home.chmod(0o500)  # readable, walkable, not writable
     try:
         assert main(["uninstall", "--home", str(archive_home), "--yes"]) == 1
@@ -322,7 +322,7 @@ def test_an_unreadable_config_is_never_rewritten(archive_home, host) -> None:
     uninstall is not the moment to overwrite the one file holding the operator's
     source choices."""
     (archive_home / "config.json").write_text("{not json", encoding="utf-8")
-    _service.install_watcher(str(archive_home))
+    _service.install_agent("watcher", str(archive_home))
 
     assert main(["uninstall", "--home", str(archive_home), "--yes"]) == 0
     assert (archive_home / "config.json").read_text(encoding="utf-8") == "{not json"
@@ -391,7 +391,7 @@ def test_the_closing_report_names_every_place_the_data_is(
     aside.mkdir()  # what `restore --replace` preserves
     host.mkdir(parents=True, exist_ok=True)
     (host / ".thread_archive").symlink_to(archive_home)
-    _service.install_watcher(str(archive_home))
+    _service.install_agent("watcher", str(archive_home))
 
     assert main(["uninstall", "--home", str(archive_home), "--yes"]) == 0
 
@@ -421,7 +421,7 @@ def test_a_backup_scheduled_but_never_run_is_still_named(
 ) -> None:
     """The agent's manifest is the only record of a nightly that has not fired
     yet — and this run removes it, so the dest is read before that happens."""
-    _service.install_backup("/Volumes/Nightly/arc", str(archive_home))
+    _service.install_agent("backup", str(archive_home), dest="/Volumes/Nightly/arc")
 
     assert main(["uninstall", "--home", str(archive_home), "--yes"]) == 0
 

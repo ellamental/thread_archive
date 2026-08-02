@@ -47,8 +47,9 @@ def test_nightly_green_run_records_everything(archive_home, tmp_path, monkeypatc
     res = ta.nightly(str(tmp_path / "mirror"))
 
     assert res["ok"] is True and res["failed_stages"] == []
-    # First-ever run: no verify_deep_last / verify_hashes_last yet → both due.
-    assert res["escalations"] == {"deep": True, "hashes": True}
+    # First-ever run: no verify_deep_last / verify_hashes_last / restore_drill_last
+    # yet → all three due.
+    assert res["escalations"] == {"deep": True, "hashes": True, "drill": True}
     assert res["drill"]["ok"] is True
     assert res["drill"]["smoke"]["ok"] is True
 
@@ -140,9 +141,45 @@ def test_nightly_drift_alert_notifies(archive_home, tmp_path):
 def test_nightly_escalation_is_age_gated(archive_home, tmp_path):
     _seed(archive_home)
     dest = str(tmp_path / "mirror")
-    assert ta.nightly(dest)["escalations"] == {"deep": True, "hashes": True}
-    # Fresh, green deep/hashes records → the next nightly stays shallow.
-    assert ta.nightly(dest)["escalations"] == {"deep": False, "hashes": False}
+    assert ta.nightly(dest)["escalations"] == {"deep": True, "hashes": True, "drill": True}
+    # Fresh, green deep/hashes/drill records → the next nightly stays shallow and
+    # skips the drill, which is the stage the night's wall clock is made of.
+    assert ta.nightly(dest)["escalations"] == {"deep": False, "hashes": False, "drill": False}
+
+
+def test_nightly_drill_is_weekly_and_absent_on_the_nights_between(archive_home, tmp_path):
+    """The drill runs on its gate, not every night. A skipped drill leaves no
+    ``drill`` result and no ``restore-drill`` timing — absent, not failed — and
+    the health record from the night it *did* run is left standing, which is what
+    the stage's tolerance window then reads."""
+    _seed(archive_home)
+    dest = str(tmp_path / "mirror")
+    first = ta.nightly(dest)
+    assert first["escalations"]["drill"] is True
+    assert first["drill"]["ok"] is True
+    drilled_at = _health(archive_home)["restore_drill_last"]["at"]
+
+    second = ta.nightly(dest)
+    assert second["ok"] is True and second["failed_stages"] == []
+    assert second["escalations"]["drill"] is False
+    assert "drill" not in second
+    assert "restore-drill" not in second["stage_s"]
+    # The earlier drill's verdict survives the nights that skip it.
+    assert _health(archive_home)["restore_drill_last"]["at"] == drilled_at
+    assert _health(archive_home)["nightly_last"]["drill"] is False
+
+
+def test_nightly_failed_drill_reruns_the_next_night(archive_home, tmp_path):
+    """Weekly while healthy, nightly while broken. A restore-path regression is
+    the reason the drill was nightly at all, so a not-ok record has to read as
+    due — otherwise a break found on Monday goes unretested until the following
+    Monday."""
+    _seed(archive_home)
+    dest = str(tmp_path / "mirror")
+    ta.nightly(dest)
+    assert ta.nightly(dest)["escalations"]["drill"] is False  # green → not due
+    ops_health.record_health("restore_drill_last", {"ok": False})
+    assert ta.nightly(dest)["escalations"]["drill"] is True
 
 
 def test_nightly_hashes_pass_scans_the_mirror_without_a_deep_pass(archive_home, tmp_path):
@@ -156,7 +193,7 @@ def test_nightly_hashes_pass_scans_the_mirror_without_a_deep_pass(archive_home, 
     ops_health.record_health("verify_hashes_last", {"ok": False})  # hashes only
 
     res = ta.nightly(dest)
-    assert res["escalations"] == {"deep": False, "hashes": True}
+    assert res["escalations"] == {"deep": False, "hashes": True, "drill": False}
     assert "hashes" in res["verify"]["backup"]
 
 

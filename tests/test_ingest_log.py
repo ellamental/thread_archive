@@ -163,16 +163,14 @@ def test_summarize_on_an_archive_that_has_ingested_nothing(tmp_path) -> None:
     assert res["retained_bytes"] == 0
 
 
-def test_parse_errors_and_lag_ride_along_on_the_row(tmp_path) -> None:
-    """Both mark the pass's timings as describing degraded work: lines the import
-    dropped, and how far behind the loop was running when it started."""
+def test_parse_errors_ride_along_on_the_row(tmp_path) -> None:
+    """Dropped lines mark the pass's timings as describing degraded work."""
     with _probe.install() as probe:
         _probe.count("items", 1)
     ingest_log.record_pass("claude-code", home=tmp_path, probe=probe, pass_ms=10.0,
-                           result=WatchResult(parse_errors=3), lag_s=42.5)
+                           result=WatchResult(parse_errors=3))
     (row,) = _rows(tmp_path)
     assert row["parse_errors"] == 3
-    assert row["lag_s"] == 42.5
     assert "errors" not in row, "zero clean-import errors is absence, not a 0"
 
 

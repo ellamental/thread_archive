@@ -15,24 +15,21 @@ their watchers drive them directly and they declare no dispatch kind.
 
 from __future__ import annotations
 
-from ._result import DbScanResult, IncrementalImportResult
+from ._result import DbScanResult, DbUnitImportResult, IncrementalImportResult
 from .antigravity import import_antigravity_session_incremental
 from .claude_code import import_session_incremental  # noqa: F401 — re-export
 from .claude_science import (
-    ClaudeScienceImportResult,
     import_claude_science_db,
     import_claude_science_frame,
 )
 from .codex import import_codex_session_incremental
 from .cowork import import_cowork_session_incremental
 from .cursor import (
-    CursorImportResult,
     import_cursor_db,
     import_cursor_from_payload,
 )
 from .grok import import_grok_session_incremental
 from .opencode import (
-    OpenCodeImportResult,
     import_opencode_db,
     import_opencode_from_payload,
 )
@@ -64,21 +61,19 @@ def providers(home=None) -> list[str]:
 
 __all__ = [
     "DbScanResult",
+    "DbUnitImportResult",
     "IncrementalImportResult",
     "import_session_incremental",
     "import_codex_session_incremental",
     "import_cowork_session_incremental",
     "import_claude_science_db",
     "import_claude_science_frame",
-    "ClaudeScienceImportResult",
     "import_grok_session_incremental",
     "import_antigravity_session_incremental",
     "import_cursor_db",
     "import_cursor_from_payload",
     "import_opencode_db",
     "import_opencode_from_payload",
-    "CursorImportResult",
-    "OpenCodeImportResult",
     "line_stream_importers",
     "db_scanners",
     "providers",

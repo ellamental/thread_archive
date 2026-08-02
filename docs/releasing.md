@@ -1,19 +1,18 @@
 # Releasing thread-archive
 
-Distribution is PyPI (`pip install thread-archive`) and the git clone (an
-editable install from a checkout, or
-`pip install "git+<repo-url>@vX.Y.Z"`). A release is a stabilization branch:
+Distribution is PyPI (`pip install thread-archive`) and nothing else — no
+`git+<repo-url>` install, no distro package, no tap
+([public/scope.md](public/scope.md)). A release is a stabilization branch:
 cut `release/X.Y.Z` from `dev`, harden it in its own worktree while `dev`
 keeps moving, and open a PR to `main`. The operator merging that PR is the
-ship. A workflow on `main` turns the merge into the annotated tag — what a
-clone pins and fast-forwards to, what `thread-archive status` / bug reports
+ship. A workflow on `main` turns the merge into the annotated tag — what this
+machine's checkout fast-forwards to, what `thread-archive status` / bug reports
 correlate against — and the PyPI upload
 (`.github/workflows/release.yml` → `publish.yml`, via Trusted Publishing).
 
-**Merging the release PR is the point of no return.** A packaged install gets
-the release when its operator runs `thread-archive self-update` (`--check` is
-how they see one exists); a clone gets it when someone checks the tag out.
-That is a delay, not a safety net: the release is offered to every install
+**Merging the release PR is the point of no return.** An install gets the
+release when its operator runs `thread-archive self-update` (`--check` is
+how they see one exists). That is a delay, not a safety net: the release is offered to every install
 the moment the publish lands, and the preflight below is the only gate
 between a bad release and the first operator who reaches for it. This
 machine's clone runs `dev`, which carries everything a release carries, so a
@@ -34,9 +33,8 @@ during stabilization all land on that branch, in a dedicated worktree, while
 `dev` moves on underneath. `main` advances only by merging release PRs — one
 merge commit per version, its tree identical to the release branch's tip —
 so what a visitor sees on GitHub (README, CI badge, browsable code) is
-always the latest release, and `pip install git+…@main` means something.
-Release tags point at `main`'s merge commits, so a clone parked on `main`
-fast-forwards cleanly from tag to tag.
+always the latest release. Release tags point at `main`'s merge commits, so a
+checkout parked on `main` fast-forwards cleanly from tag to tag.
 
 Two rules keep the topology sound:
 
@@ -53,7 +51,7 @@ Two rules keep the topology sound:
 ## 0. The repo is release infrastructure — keep it hardened
 
 A release tag is executable software offered to every install — it is what
-publishes the wheel `self-update` installs, and what a clone checks out. The
+publishes the wheel `self-update` installs. The
 GitHub repo's protections are therefore part of the release mechanism, not
 optional hygiene. The standing requirements:
 
@@ -126,7 +124,7 @@ All in the worktree:
   tests/test_package_artifact.py` — builds the wheel + sdist with
   `python -m build`, proves their contents, installs the wheel into a clean
   venv, and runs the real entry points. Nothing is uploaded anywhere; this is
-  the gate that proves a fresh-clone install actually works (files present,
+  the gate that proves a from-scratch install actually works (files present,
   console scripts wired), rather than only the long-lived editable install.
 - GitHub CI green on `release/X.Y.Z` (ruff, mypy, coverage floor, the pytest
   suite across the interpreter matrix, frontend and devweb checks, and the
@@ -170,9 +168,9 @@ All in the worktree:
 - If `frontend/` changed since the last release, the committed
   `_web/static/` bundle must be current: `cd frontend && npm run build`,
   and the regenerated static assets committed with the change that caused
-  them — a clone runs whatever bundle is in the tree. This gates the clone
-  only; the viewer is dev-only and no wheel carries it, so a stale bundle
-  cannot reach an installed user.
+  them — a checkout runs whatever bundle is in the tree. This gates the
+  checkout only; the viewer is dev-only and no wheel carries it, so a stale
+  bundle cannot reach an installed user.
 
 ## Release candidates — every release publishes at least one
 
@@ -213,11 +211,11 @@ or the PR — it is a tagged commit on `release/X.Y.Z`, published by hand:
    ```
 
 4. Watch the Publish run. Its `verify` job installs the just-published rc
-   from PyPI into a fresh interpreter and smoke-tests the real entry
-   points — the same check §6 runs by hand for a final. A green `verify` on
-   the rc is the point of cutting one: it proves the published artifact
-   installs and runs over the exact path the final will take, before the
-   final's version number is at stake.
+   from PyPI into a fresh interpreter, smoke-tests the real entry points, and
+   runs a full ingest lifecycle on it — the same check §6 runs by hand for a
+   final. A green `verify` on the rc is the point of cutting one: it proves
+   the published artifact installs and *works* over the exact path the final
+   will take, before the final's version number is at stake.
 
 Fixes found during the rc land on the release branch as usual; the next
 round is `rcN+1` — the §3 release commit (changelog compression + version
@@ -308,22 +306,24 @@ and the fix is a fixed vX.Y.(Z+1).
 
 ## 6. Verify from the outside
 
-Prove the release installs from the tag, not just from this checkout's
-long-lived venv:
+Prove the release installs from PyPI — the only shape an operator gets — and
+not just from this checkout's long-lived venv.
+
+That proof is automated: the Publish run's `verify` job installs the
+published version from PyPI into a fresh interpreter (wheel only — the
+self-update path), runs the entry points, checks the installed `__version__`
+against the tag, and then drives a real lifecycle on it — a corpus for every
+provider, imported through each provider's own importer, the index rebuilt
+from the JSONL truth, every provider's marker searched back out
+(`tests/install/e2e_check.py`, from the tagged tree; the package under test
+stays the wheel, which the job asserts). That last step is the only place the
+published artifact does real work against dependencies resolved fresh from the
+index — the `package` and install lanes both prove a locally built wheel
+against locally resolved ones. Watch it go green. To repeat it by hand:
 
 ```bash
 python3 -m venv /tmp/ta-verify
-/tmp/ta-verify/bin/pip install "git+ssh://git@github.com/ellamental/thread_archive.git@vX.Y.Z"
-/tmp/ta-verify/bin/thread-archive --help
-```
-
-The PyPI half is automated: the Publish run's `verify` job installs the
-published version from PyPI into a fresh interpreter (wheel only — the
-self-update path), runs the entry points, and checks the installed
-`__version__` against the tag. Watch it go green. To repeat it by hand:
-
-```bash
-/tmp/ta-verify/bin/pip install --force-reinstall "thread-archive==X.Y.Z"
+/tmp/ta-verify/bin/pip install "thread-archive==X.Y.Z"
 /tmp/ta-verify/bin/thread-archive --help
 ```
 
@@ -382,14 +382,15 @@ Yank the release on PyPI first (project → release → Options → Yank) — th
 where self-update resolves from, and a yanked version stops being a candidate
 for it and for every fresh `pip install`. A `==X.Y.Z` pin still gets it, and the
 version number is burned: PyPI never accepts a re-upload of it. Then delete the
-bad tag, which is the clone path and what a `git+…@vX.Y.Z` install resolves:
+bad tag — it is the release's identity, what `status` output and bug reports
+correlate against, and what a checkout would otherwise move to:
 
 ```bash
 git push origin :refs/tags/vX.Y.Z     # delete the remote tag
 ```
 
 Neither heals an install whose operator already applied the release, nor
-removes a tag a clone already fetched locally. Always follow with the real fix:
+removes a tag already fetched into a checkout. Always follow with the real fix:
 
 ```bash
 # fix, then release vX.Y.(Z+1) normally

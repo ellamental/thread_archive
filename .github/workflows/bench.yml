@@ -103,3 +103,23 @@ jobs:
 
       - name: Run the quality gate (quick tier)
         run: python -m search_lab gate --run --quick
+
+      # The perf trend, non-gating: per-row wall time from the pass the gate
+      # just ran (the run ledger records it), plus two synthetic hardware
+      # calibrators that let numbers from different runners be compared. One
+      # artifact per run; accumulate them to see cross-runner variance and any
+      # slowdown trend. Runs even when the gate fails — a regressed pass's cost
+      # is still a data point — and never fails the workflow itself.
+      - name: Emit perf trend
+        if: always()
+        continue-on-error: true
+        run: python -m search_lab perf --json perf-trend.json
+
+      - name: Upload perf trend
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-trend-${{ github.run_id }}
+          path: perf-trend.json
+          retention-days: 90

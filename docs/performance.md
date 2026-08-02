@@ -100,13 +100,12 @@ a delta read, a fresh base only past `_DELTA_MAX_ROWS`). This took the rebuild
 off the *warm* request path entirely; background refreshes now measure p50
 ≈ 100 ms.
 
-**Exact-set scans on page walks (found 2026-07-25).** Thread-granular tallies
-(`matched_threads` / `count_matches`) rescanned the whole match set per page —
-`set_ms` 30-50 s per page on a broad query walked to page 4. Fixed with the
-watermark-keyed **set memo + bounded delta**: an unchanged index hands the memo
-back (~1 ms), an appended-to index scans only the rows above the stored
-watermark (~19 ms) instead of the full scan (~850 ms+). The `set_scans` /
-`set_deltas` / `set_hits` counters exist so a regression here is visible again.
+**Exact-set scans on page walks (found 2026-07-25).** The match-set tally
+(`count_matches`) rescanned the whole match set per page — `set_ms` 30-50 s per
+page on a broad query walked to page 4. Fixed with the watermark-keyed **set
+memo**: an unchanged index hands the memo back (~1 ms) instead of paying the
+full scan (~850 ms+). The `set_scans` / `set_hits` counters exist so a
+regression here is visible again.
 
 **Warm passes thrashing each other.** Restarts arrive in bursts (a deploy, a
 crash loop), and two concurrent warms measured ~303 s each against ~7 s alone —

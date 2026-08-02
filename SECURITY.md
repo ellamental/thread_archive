@@ -75,9 +75,10 @@ threat model is correspondingly narrow, and these are its load-bearing walls:
 
 ## The update model
 
-Nothing updates itself, in either install shape. No install probes for
-releases on its own, none applies one, and no configuration turns unattended
-apply on. When an update happens, you ran the command.
+Nothing updates itself, in either install shape — and both shapes resolve from
+PyPI, which is the only supported install. No install probes for releases on its
+own, none applies one, and no configuration turns unattended apply on. When an
+update happens, you ran the command.
 
 **A packaged install** (`pip install thread-archive`) updates with
 `thread-archive self-update`, which is `pip install -U thread-archive` with
@@ -100,8 +101,7 @@ out of the wheel it is about to install rather than off any other artifact.
 self-update detects the receipt beside the environment and names that manager's
 own upgrade command instead of driving pip inside it.
 
-**A source clone** updates through git — fetch, check out the newer release
-tag, reinstall, restart the agents. Its trust anchor is transport security to
-the git remote you cloned from, the same trust the install itself made; there
-is no signature layer on that path. Self-update does not touch a clone: its
-code is the checkout, and what moves the checkout is you.
+**A source checkout is not one of those shapes.** PyPI is the only supported
+install, so a checkout gets no update story here: self-update refuses it — its
+code is the checkout, and what moves a checkout is you and git, under whatever
+trust you have in your own remote.

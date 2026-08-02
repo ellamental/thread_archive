@@ -168,7 +168,10 @@ timeout = 600
 # growing archive, so its verdict is not repeatable — growth and a code slowdown
 # look identical to it. Latency is watched through the retrieval usage telemetry
 # (retrieval-usage.jsonl, retrieval_report.py) and measured deliberately with
-# latency_replay.py when evaluating a change.
+# latency_replay.py when evaluating a change. The Bench workflow's perf-trend
+# artifact (search_lab/perf_trend.py) tracks the frozen-corpus gate's wall clock
+# across CI runs — also non-gating, until its series characterizes the runner
+# variance a band would have to clear.
 
 # The release lane: build the wheel + sdist, prove their contents, install the
 # wheel into a clean venv, and run the real CLI lifecycle from it. Deselected

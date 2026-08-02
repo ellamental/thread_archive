@@ -1,7 +1,7 @@
 """``python -m search_lab <command>`` — the lab's front door.
 
-Three commands, because three things in here are about the bench *as a set*
-rather than a single instrument, and are worth invoking by name:
+These commands are about the bench *as a set* rather than a single instrument,
+and are worth invoking by name:
 
 * ``benchmark`` — run the bench as a set, skipping what is already measured at
   this configuration (:mod:`search_lab.benchmark`).
@@ -13,6 +13,9 @@ rather than a single instrument, and are worth invoking by name:
 * ``packs`` — move those corpora and the built homes between machines as
   content-hashed release assets, so the gate can run off this box
   (:mod:`search_lab.bench_packs`).
+* ``perf`` — what the recorded pass cost in wall clock, with hardware
+  calibrators so runs on different machines are comparable
+  (:mod:`search_lab.perf_trend`).
 
 Every other harness stays a script (``python search_lab/retrieval_eval.py``),
 which is how they are documented and how they are run: one instrument, its own
@@ -23,7 +26,7 @@ from __future__ import annotations
 
 import sys
 
-COMMANDS = ("benchmark", "gate", "pins", "packs")
+COMMANDS = ("benchmark", "gate", "pins", "packs", "perf")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,6 +52,10 @@ def main(argv: list[str] | None = None) -> int:
         from search_lab import bench_packs
 
         return bench_packs.main(rest)
+    if command == "perf":
+        from search_lab import perf_trend
+
+        return perf_trend.main(rest)
     print(f"unknown command {command!r}; expected one of {', '.join(COMMANDS)}",
           file=sys.stderr)
     return 1

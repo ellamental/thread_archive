@@ -65,27 +65,47 @@ _FTS_COLS = "content, event_id, thread_id, event_type, content_type, tool_name, 
 _NEW_VALS = ", ".join("new." + c.strip() for c in _FTS_COLS.split(","))
 _OLD_VALS = ", ".join("old." + c.strip() for c in _FTS_COLS.split(","))
 
+# The substring index: a second external-content FTS5 over the same shadow, on
+# the same rowids, tokenized into trigrams. fts5's trigram tokenizer is what lets
+# SQLite answer an infix ``LIKE`` from an index instead of reading the corpus —
+# the one thing the porter index above cannot do, because an infix match has no
+# token to look up. Only ``content`` is declared: this index is never selected
+# from or snippeted, only intersected by rowid, so the filter columns would be
+# dead weight.
+_CREATE_SUBSTR = (
+    "CREATE VIRTUAL TABLE event_substr USING fts5("
+    "content, content='events_fts', content_rowid='id', "
+    "tokenize = 'trigram')"
+)
+
 # Shadow→index sync triggers. External-content FTS5 doesn't watch its content
 # table — every ``events_fts`` write must be mirrored, and removing a row's
 # postings (the 'delete' command form) needs the old column values, which only
-# a trigger still sees.
+# a trigger still sees. Both indexes are mirrored from one trigger per operation
+# so a shadow write can never reach one and miss the other.
 _TRIGGERS = {
     "events_fts_ai": (
         "CREATE TRIGGER events_fts_ai AFTER INSERT ON events_fts BEGIN "
         "INSERT INTO event_search(rowid, " + _FTS_COLS + ") "
-        "VALUES (new.id, " + _NEW_VALS + "); END"
+        "VALUES (new.id, " + _NEW_VALS + "); "
+        "INSERT INTO event_substr(rowid, content) VALUES (new.id, new.content); END"
     ),
     "events_fts_ad": (
         "CREATE TRIGGER events_fts_ad AFTER DELETE ON events_fts BEGIN "
         "INSERT INTO event_search(event_search, rowid, " + _FTS_COLS + ") "
-        "VALUES ('delete', old.id, " + _OLD_VALS + "); END"
+        "VALUES ('delete', old.id, " + _OLD_VALS + "); "
+        "INSERT INTO event_substr(event_substr, rowid, content) "
+        "VALUES ('delete', old.id, old.content); END"
     ),
     "events_fts_au": (
         "CREATE TRIGGER events_fts_au AFTER UPDATE ON events_fts BEGIN "
         "INSERT INTO event_search(event_search, rowid, " + _FTS_COLS + ") "
         "VALUES ('delete', old.id, " + _OLD_VALS + "); "
         "INSERT INTO event_search(rowid, " + _FTS_COLS + ") "
-        "VALUES (new.id, " + _NEW_VALS + "); END"
+        "VALUES (new.id, " + _NEW_VALS + "); "
+        "INSERT INTO event_substr(event_substr, rowid, content) "
+        "VALUES ('delete', old.id, old.content); "
+        "INSERT INTO event_substr(rowid, content) VALUES (new.id, new.content); END"
     ),
 }
 
@@ -172,14 +192,55 @@ def _event_search_shape(s: Session) -> Optional[bool]:
     return "content=" in sql
 
 
+def _substr_ready(s: Session) -> bool:
+    """Whether the trigram index can be trusted to answer for the whole shadow.
+
+    An index that is missing rows would make a prefiltered substring query return
+    fewer hits than the corpus holds — the one failure this design must not have,
+    because it reads as "no such conversation" rather than as an error. So the
+    prefilter is used only when this says yes, and everything else falls back to
+    the unindexed scan.
+
+    The probe is the newest shadow rowid's presence, not a row-count parity: both
+    catch the states that actually occur (never built; an interrupted rebuild;
+    triggers that stopped mirroring), and this one is two indexed lookups rather
+    than a pair of counting scans over a corpus this size — cheap enough to ask
+    on every query and skip the staleness a cached answer would carry. Full
+    parity is verify's job, on the daily cadence.
+    """
+    try:
+        return bool(s.execute(sa_text(
+            "SELECT EXISTS(SELECT 1 FROM event_substr_docsize WHERE id = "
+            "(SELECT max(id) FROM events_fts))"
+        )).scalar())
+    except OperationalError:  # the table predates this archive's schema
+        logger.debug("substring index: readiness probe failed", exc_info=True)
+        return False
+
+
 def _create_triggers(s: Session) -> None:
+    """Install the sync triggers, replacing any whose stored body is not the one
+    this module defines. Presence alone is not the condition: a trigger that
+    predates a change to :data:`_TRIGGERS` still fires, so it would pass an
+    existence check while mirroring a shadow write to only some of the indexes —
+    drift that surfaces as a search quietly missing rows, not as an error."""
     for name, ddl in _TRIGGERS.items():
-        exists = s.execute(
-            sa_text("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = :n"),
+        stored = s.execute(
+            sa_text("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = :n"),
             {"n": name},
         ).scalar()
-        if not exists:
-            s.execute(sa_text(ddl))
+        if stored is not None and _sql_equivalent(stored, ddl):
+            continue
+        if stored is not None:
+            s.execute(sa_text("DROP TRIGGER " + name))
+        s.execute(sa_text(ddl))
+
+
+def _sql_equivalent(a: str, b: str) -> bool:
+    """Whether two DDL strings differ by nothing but whitespace. sqlite_master
+    stores a trigger's text as written, so a comparison against the literal we
+    would issue has to tolerate reformatting to avoid recreating on every open."""
+    return " ".join(a.split()) == " ".join(b.split())
 
 
 def _drop_triggers(s: Session) -> None:
@@ -199,7 +260,14 @@ def ensure_fts(session: Optional[Session] = None) -> None:
     exist, which fts5 raises as SQLITE_CORRUPT. Triggerless, shadow writes stay
     safe (the empty index misses nothing it wasn't already missing), verify's
     ``fts_triggers`` check reports the state, and ``rebuild_fts`` restores the
-    triggers when it refills the index."""
+    triggers when it refills the index.
+
+    ``event_substr`` (the trigram substring index) is created here the same way
+    and joins the same dark window: an archive that predates it has a populated
+    shadow and an empty trigram index, which is exactly the state whose triggers
+    would raise SQLITE_CORRUPT. Until a reindex fills it, substring queries fall
+    back to the unindexed scan they used before it existed — slower, never wrong
+    (see :func:`_substr_ready`)."""
     with use_session(session) as s:
         shape = _event_search_shape(s)
         if shape is False:
@@ -212,12 +280,18 @@ def ensure_fts(session: Optional[Session] = None) -> None:
             s.execute(sa_text(_CREATE_FTS))
         elif shape is None:
             s.execute(sa_text(_CREATE_FTS))
+        if not s.execute(
+            sa_text("SELECT 1 FROM sqlite_master WHERE name = :n"), {"n": "event_substr"}
+        ).scalar():
+            s.execute(sa_text(_CREATE_SUBSTR))
         # The dark window (populated shadow, empty index — i.e. the swap above,
         # observed now or on any later open) must stay triggerless; a fresh
-        # empty-empty store is not dark and gets its triggers immediately.
+        # empty-empty store is not dark and gets its triggers immediately. Either
+        # index being dark holds back the shared triggers: they write both.
         dark = bool(s.execute(sa_text(
-            "SELECT EXISTS(SELECT 1 FROM events_fts) "
-            "AND NOT EXISTS(SELECT 1 FROM event_search_docsize)"
+            "SELECT EXISTS(SELECT 1 FROM events_fts) AND ("
+            "NOT EXISTS(SELECT 1 FROM event_search_docsize) "
+            "OR NOT EXISTS(SELECT 1 FROM event_substr_docsize))"
         )).scalar())
         if not dark:
             _create_triggers(s)
@@ -311,6 +385,18 @@ def _like_substring(term: str) -> str:
     return "%" + _escape_like(term) + "%"
 
 
+def _like_substring_raw(term: str) -> str:
+    """A substring LIKE pattern for the trigram prefilter — wildcards left
+    unescaped, and so carrying no ``ESCAPE`` clause.
+
+    Not a laxer version of :func:`_like_substring` but a deliberately weaker one:
+    it selects candidates that the escaped pattern then verifies. It has to stay
+    ESCAPE-free (the clause disables fts5's LIKE optimization), which means a
+    ``%`` or ``_`` the user typed reads as a wildcard here — widening the
+    candidate set, never narrowing it, which is what keeps the pair exact."""
+    return "%" + _sql_safe(term) + "%"
+
+
 def _substring_terms(query: str) -> list[str]:
     """The literal substrings a substring-mode query asks for, as a union.
 
@@ -336,17 +422,109 @@ def _substring_terms(query: str) -> list[str]:
     return out
 
 
-def _substring_predicate(terms: list[str]) -> tuple[str, dict]:
-    """The WHERE fragment + params matching any of ``terms`` as an infix LIKE.
+#: Shortest literal run fts5's trigram index can resolve. Below it the index has
+#: no trigram to look up and SQLite reads the whole table anyway, so a prefilter
+#: would add a second pass to a scan it cannot avoid — measurably worse.
+_TRIGRAM_MIN_RUN = 3
+
+
+def _trigram_usable(term: str) -> bool:
+    """Whether the trigram index can narrow ``term``.
+
+    The prefilter deliberately passes the term *unescaped* (see
+    :func:`_substring_predicate`), so a ``%`` or ``_`` inside it is a LIKE
+    wildcard rather than a literal — the same thing fts5 sees when it looks for a
+    literal run to resolve. ``p4`` has none long enough and takes the scan;
+    ``thread_id`` splits into ``thread`` and ``id``, and the longer run carries
+    it."""
+    return max((len(run) for run in re.split(r"[%_]", term)), default=0) >= _TRIGRAM_MIN_RUN
+
+
+#: Candidates past which a term is too common for the prefilter to pay. The
+#: prefilter's subquery is materialized before the outer ``LIMIT`` can stop, so a
+#: term matching a large slice of the corpus forfeits the early-out that makes the
+#: plain scan bearable and then pays a per-candidate verify on top — measured 2.9x
+#: *slower* than the scan for a term in 7% of the corpus. Selectivity is the whole
+#: question, and it is not decidable from the term's text: ``SET_EXAMINE_CAP`` and
+#: ``thread_id`` are the same shape and differ by four orders of magnitude in what
+#: they match.
+_PREFILTER_MAX_CANDIDATES = 2000
+
+
+def _prefilter_pays(s: Session, terms: list[str]) -> bool:
+    """Whether the trigram prefilter should carry this query.
+
+    Three gates: the index is complete (:func:`_substr_ready`), every term is long
+    enough to resolve (:func:`_trigram_usable`), and every term is selective
+    enough to be worth it — asked of the index directly, bounded to
+    :data:`_PREFILTER_MAX_CANDIDATES`, so a common term stops the probe early
+    instead of enumerating its way to the answer. Measured, the reject path costs
+    ~8% of the scan it declines to replace and the accept path a few ms against
+    the 30-60x it buys.
+
+    Never affects *which rows* a query matches — only which plan finds them (the
+    two are asserted equal in ``test_search_fuzz``). A probe that fails is read as
+    "don't", because the scan is always correct.
+    """
+    if not (terms and _substr_ready(s) and all(_trigram_usable(t) for t in terms)):
+        return False
+    try:
+        for term in terms:
+            n = s.execute(
+                sa_text(
+                    "SELECT count(*) FROM (SELECT rowid FROM event_substr "
+                    "WHERE content LIKE :p LIMIT :cap)"
+                ),
+                {"p": _like_substring_raw(term), "cap": _PREFILTER_MAX_CANDIDATES + 1},
+            ).scalar()
+            if (n or 0) > _PREFILTER_MAX_CANDIDATES:
+                return False
+    except OperationalError:
+        logger.debug("substring index: selectivity probe failed", exc_info=True)
+        return False
+    return True
+
+
+def _substring_predicate(
+    terms: list[str], *, indexed: bool = False
+) -> tuple[str, dict, bool]:
+    """The WHERE fragment + params matching any of ``terms`` as an infix LIKE,
+    with whether the fragment *seeks* rather than scans.
 
     The one builder for substring mode's predicate, shared by the candidate-pool
     pass and the exact-set queries — built twice, the two could drift, and the
-    set is what a paginated caller trusts to describe the pool's matches."""
-    params = {"sub" + str(i): _like_substring(t) for i, t in enumerate(terms)}
+    set is what a paginated caller trusts to describe the pool's matches.
+
+    With ``indexed`` (the trigram index is live — :func:`_substr_ready`) and every
+    term long enough for it, the fragment gains a rowid prefilter over
+    ``event_substr`` and the LIKE becomes a *verifier* over what it returns
+    instead of a pass over the corpus. Two properties make that exact:
+
+    * The prefilter pattern carries no ``ESCAPE``. It cannot: an ESCAPE clause
+      turns off fts5's LIKE optimization outright (measured ~30x, the whole point
+      of the index), and unescaped is the safe direction — ``%`` and ``_`` in the
+      term degrade from literals to wildcards, which only ever *widens* the
+      candidate set. The escaped LIKE still runs over that set, so the answer is
+      the same rows either way; only the work changes.
+    * Either every term is prefiltered or none is. A union where one arm rode the
+      index and another did not would answer with the rows the index could find,
+      which is not the question.
+
+    Callers read the third element as "this predicate has a MATCH's cost model,
+    not a scan's" — an indexed substring set needs no
+    :data:`SET_EXAMINE_CAP` window, and so stays exact however far the corpus
+    grows."""
+    params: dict = {"sub" + str(i): _like_substring(t) for i, t in enumerate(terms)}
     frag = " OR ".join(
         "content LIKE :sub" + str(i) + " ESCAPE '\\'" for i in range(len(terms))
     )
-    return ("(" + frag + ")" if len(terms) > 1 else frag), params
+    exact = "(" + frag + ")" if len(terms) > 1 else frag
+    if not (indexed and all(_trigram_usable(t) for t in terms)):
+        return exact, params, False
+    params.update({"tg" + str(i): _like_substring_raw(t) for i, t in enumerate(terms)})
+    probe = " OR ".join("content LIKE :tg" + str(i) for i in range(len(terms)))
+    prefilter = "rowid IN (SELECT rowid FROM event_substr WHERE " + probe + ")"
+    return prefilter + " AND " + exact, params, True
 
 
 def _in_clause(column: str, values: list, prefix: str, params: dict, negate: bool) -> str:
@@ -430,12 +608,11 @@ def _shared_filters(
     """The scope predicate every pass and every exact-set query shares, as
     ``(where_fragments, params)``.
 
-    One definition, three readers — the candidate-pool passes
-    (:func:`search_events`), the per-thread tally (:func:`matched_threads`), and
-    the capped total (:func:`count_matches`). Shared because a filter that
-    applied to the pool but not to the tally would make the two disagree about
-    the same corpus, and the tally is what a paginated caller trusts to know
-    when it has seen everything.
+    One definition, two readers — the candidate-pool passes
+    (:func:`search_events`) and the capped total (:func:`count_matches`). Shared
+    because a filter that applied to the pool but not to the tally would make the
+    two disagree about the same corpus, and the tally is what a paginated caller
+    trusts to know when it has seen everything.
     """
     shared: list[str] = []
     params: dict = {}
@@ -494,7 +671,8 @@ def _shared_filters(
 
 
 def _primary_predicate(
-    query: str, *, match_mode: str, startswith: Optional[str]
+    query: str, *, match_mode: str, startswith: Optional[str],
+    session: Optional[Session] = None,
 ) -> Optional[tuple[str, dict, bool]]:
     """The single WHERE fragment that defines a query's match **set** — what the
     exact-set queries count and group over, as ``(fragment, params, scans)``.
@@ -511,7 +689,11 @@ def _primary_predicate(
     need it to bound themselves (see :data:`SET_EXAMINE_CAP`). A ``MATCH`` walks
     one term's doclist, so its work is proportional to how much it *finds*; a
     ``LIKE`` has no index to walk and reads the corpus, so its work is
-    proportional to how much it *skips*.
+    proportional to how much it *skips*. A substring LIKE the trigram index will
+    carry (``session`` given, and :func:`_prefilter_pays` says yes) has the first
+    cost model, not the second, and says so — which is what lets its answer stay
+    exact instead of becoming a floor. Without a session the builder stays pure
+    and assumes the scan, which is the safe reading.
     """
     if startswith is not None:
         return "content LIKE :sw ESCAPE '\\'", {"sw": _like_prefix(startswith)}, True
@@ -519,8 +701,9 @@ def _primary_predicate(
         terms = _substring_terms(query)
         if not terms:
             return None
-        where, params = _substring_predicate(terms)
-        return where, params, True
+        indexed = _prefilter_pays(session, terms) if session is not None else False
+        where, params, seeks = _substring_predicate(terms, indexed=indexed)
+        return where, params, not seeks
     mode, _ = classify_query(query)
     if mode == "or":
         terms = [t for t in (_clean_query_text(t) for t in (query or "").split("|")) if t]
@@ -635,12 +818,16 @@ def search_events(
         terms = _substring_terms(query)
         if not terms:
             return []
-        sub_where, sub_params = _substring_predicate(terms)
-        # Ordered by rowid, not occurred_at: the scan already has to visit every
-        # row, and ``occurred_at`` is UNINDEXED, so sorting by it means materializing
-        # and sorting the whole match list (measured ~14s where the scan alone is
-        # ~1s). The FTS rowid is append-ordered, so DESC walks the index backwards
-        # for the same newest-first intent at no cost.
+        with use_session(session) as s:
+            sub_where, sub_params, _ = _substring_predicate(
+                terms, indexed=_prefilter_pays(s, terms)
+            )
+        # Ordered by rowid, not occurred_at: even prefiltered this visits its
+        # candidates in rowid order, and ``occurred_at`` is UNINDEXED, so sorting
+        # by it means materializing and sorting the whole match list (measured
+        # ~14s where the scan alone is ~1s). The FTS rowid is append-ordered, so
+        # DESC walks the index backwards for the same newest-first intent at no
+        # cost.
         passes.append(_Pass(sub_where, sub_params, order="rowid DESC", use_match=False))
     elif mode == "or":
         terms = [_clean_query_text(t) for t in (query or "").split("|")]
@@ -883,7 +1070,7 @@ SET_EXAMINE_CAP = 2_000_000
 
 def _set_scan_sql(
     select_cols: str, predicate: str, shared: list[str], *, group: str = "",
-    scan_floor: bool = False, ceiling: bool = False,
+    scan_floor: bool = False,
 ) -> str:
     """SQL for a capped exact-set query: take the newest ``SET_SCAN_CAP`` matched
     rows, then aggregate. The cap sits on the *inner* scan, so it bounds the work
@@ -900,17 +1087,8 @@ def _set_scan_sql(
     reads rather than seeks. fts5 takes a rowid bound as a range constraint on the
     same walk the ordering already uses, so the window truncates the scan instead
     of filtering its output — and it truncates the OLD end, which is the same
-    thing the match cap drops.
-
-    ``ceiling`` pins the NEW end to the watermark the answer is attributed to.
-    Ingest runs while this scan does, so without it a scan started at watermark W
-    can return rows above W and be stored as "the set as of W" — an overlap that a
-    later delta off W would then count a second time. Bounded, the answer is
-    exactly what its watermark claims, which is what lets one be extended by
-    another at all."""
+    thing the match cap drops."""
     bounds = ["rowid > :scan_floor"] if scan_floor else []
-    if ceiling:
-        bounds.append("rowid <= :set_ceiling")
     inner = (
         "SELECT thread_id, event_id, occurred_at FROM event_search WHERE "
         + " AND ".join([predicate] + bounds + shared)
@@ -921,11 +1099,11 @@ def _set_scan_sql(
 
 #: Upper bound on how long a memoized exact-set answer is served (see
 #: :func:`_set_memo_get`). Appends are handled exactly — the watermark below sees
-#: them and :func:`matched_threads` scans them — so this bounds only what a
-#: watermark cannot see, and it is the sole thing that does: an in-place update or
-#: a reindex's deletes change rows *below* the watermark, which every memoized set
-#: and every delta merged onto one takes on faith. A minute is short against the
-#: cadence either of those runs at.
+#: them and an entry taken at a different one is not served — so this bounds only
+#: what a watermark cannot see, and it is the sole thing that does: an in-place
+#: update or a reindex's deletes change rows *below* the watermark, which every
+#: memoized set takes on faith. A minute is short against the cadence either of
+#: those runs at.
 _SET_MEMO_TTL_S = 60.0
 
 #: Distinct exact-set answers kept. The set queries are per (query, scope), and the
@@ -999,11 +1177,9 @@ def _set_memo_get(key: tuple) -> Any:
     slices of one ordering, and a set re-resolved per page against a moving index
     can drop a row a later page was counting on.
 
-    The watermark rides in the value rather than the key, so an entry survives
-    ingest for callers that can carry it forward (:func:`matched_threads` scans
-    the delta and merges). Keyed on the query alone, an entry is *findable* after
-    the index moves; what to do about the move is the caller's decision, and the
-    two callers here answer differently.
+    The watermark rides in the value rather than the key, so an entry stays
+    *findable* after ingest moves the index; what to do about the move is the
+    reading caller's decision rather than a miss the key forces.
     """
     now = time.monotonic()
     with _set_memo_lock:
@@ -1029,62 +1205,6 @@ def _set_memo_put(key: tuple, watermark: object, value: Any) -> None:
         lru.move_to_end(key)
         while len(lru) > _SET_MEMO_MAX:
             lru.popitem(last=False)
-
-
-def _set_ceiling(watermark: object) -> dict:
-    """The ``rowid <= …`` bound for a scan attributed to ``watermark``, as SQL params.
-
-    Empty when the watermark is not a usable rowid — an empty index (``max(rowid)``
-    is NULL) or the sentinel an unreadable probe returns. Both leave the scan
-    unbounded at the new end, which is only ever *more* rows; the memo declines to
-    extend such an answer anyway (:func:`_appended_since`), so nothing can later
-    treat it as an exact set-as-of."""
-    return {"set_ceiling": watermark} if isinstance(watermark, int) else {}
-
-
-def _appended_since(stored: object, current: object) -> bool:
-    """True when ``current`` is ``stored`` plus appended rows and nothing else.
-
-    The one index movement a memoized set can be carried across. Anything else —
-    a watermark that went backwards or sideways (a reindex), or either end being
-    the sentinel an unreadable probe returns — is not an append and gets a rescan.
-    """
-    return (
-        isinstance(stored, int) and isinstance(current, int) and current > stored
-    )
-
-
-def _merge_thread_rows(base: list[dict], delta: list[dict]) -> list[dict]:
-    """Fold newly-appended per-thread tallies into a memoized set.
-
-    Exact rather than approximate, because the two scans partition the rows they
-    aggregate: the base covered rowids up to the watermark it was taken at and the
-    delta covers everything above it, so no event is counted twice and none is
-    missed. Which makes the merged row identical to what one scan over the whole
-    range would have produced — ``n_hits`` adds, and the two ``max()`` columns take
-    the larger, exactly as the SQL aggregate would.
-
-    Re-sorted newest-match-first: a thread the delta touched has moved to the front
-    of the ordering, which is the entire reason its page has to change.
-    """
-    merged = {r["thread_id"]: dict(r) for r in base}
-    for row in delta:
-        current = merged.get(row["thread_id"])
-        if current is None:
-            merged[row["thread_id"]] = dict(row)
-            continue
-        current["n_hits"] += row["n_hits"]
-        for column in ("event_id", "last_match"):
-            new, old = row[column], current[column]
-            if old is None or (new is not None and new > old):
-                current[column] = new
-    # NULL-safe: occurred_at is nullable, and SQLite's DESC puts those last. A bare
-    # comparison would raise on the first one instead.
-    return sorted(
-        merged.values(),
-        key=lambda r: (r["last_match"] is not None, r["last_match"]),
-        reverse=True,
-    )
 
 
 def reset_set_memo() -> None:
@@ -1144,124 +1264,6 @@ def _scan_window(watermark: object) -> tuple[dict, bool]:
     return {"scan_floor": watermark - SET_EXAMINE_CAP}, True
 
 
-def matched_threads(
-    query: str,
-    *,
-    match_mode: str = "token",
-    startswith: Optional[str] = None,
-    session: Optional[Session] = None,
-    set_cap: int = SET_SCAN_CAP,
-    **scope,
-) -> tuple[list[dict], bool]:
-    """Every thread the query matches, tallied — the exact-set half of a
-    thread-granular list, as ``(rows, capped)``.
-
-    Rows are ``{thread_id, n_hits, event_id, last_match}``, newest match first;
-    ``event_id`` is the thread's newest matching event, so a row opens where the
-    query landed rather than at the thread's tail. ``capped`` is True when a bound
-    truncated the enumeration — :data:`SET_SCAN_CAP` on what matched, or the
-    :data:`SET_EXAMINE_CAP` window on what a scanning predicate read — so the tally
-    is a floor rather than a total.
-
-    Thread-granular where :func:`count_matches` is a bare tally: the set is
-    resolved directly, so a caller gets the membership the candidate pool
-    :func:`search_events` returns cannot give it — that pool is a cut,
-    ``pool_floor`` rows deep and ordered by relevance, so the threads past it are
-    unreachable at any page depth and indistinguishable from a set that simply
-    ended. The search path takes the tally instead (:func:`count_matches` behind a
-    saturated pool), so nothing in the package calls this; it is the per-thread
-    half of the same scan, kept beside it because both read one predicate and one
-    memo. ``**scope`` takes the :func:`_shared_filters` arguments verbatim.
-
-    ``set_cap`` overrides :data:`SET_SCAN_CAP` for one call — how many matched
-    rows this is willing to examine before giving up on an exact answer. Lower it
-    to bound the work of a query known to be broad and accept a floor; the memo
-    keys on the query rather than the bound, so a set resolved under one is not
-    reused under a different one.
-    """
-    ensure_fts(session)
-    if match_mode not in MATCH_MODES:
-        raise ValueError("match must be 'token' or 'substring'")
-    if scope.get("thread_ids") is not None and not scope["thread_ids"]:
-        return [], False
-    predicate = _primary_predicate(query, match_mode=match_mode, startswith=startswith)
-    if predicate is None:
-        return [], False
-    where, params, scans = predicate
-    shared, shared_params = _shared_filters(**scope)
-    _t = perf_counter()
-    watermark = _set_watermark(session)
-    # The bound is part of the question: a set resolved under a low cap is a floor,
-    # and handing it to a caller that asked for the real thing would answer a
-    # different question than the one asked.
-    key = _set_memo_key("threads", where, params, shared, shared_params, set_cap)
-    tally = (
-        "thread_id, count(*) AS n_hits, max(event_id) AS event_id, "
-        "max(occurred_at) AS last_match"
-    )
-    grouped = " GROUP BY thread_id ORDER BY last_match DESC"
-
-    memo = _set_memo_get(key)
-    if memo is not None:
-        stored, (rows, capped, saturated) = memo
-        if stored == watermark:
-            # Fresh dicts per hand-out: the rows travel into a caller that builds
-            # hits beside them, and a shared dict is one careless write away from a
-            # memoized answer that drifts from the query it answers.
-            _probe.record("set_ms", _t)
-            _probe.bump("set_hits")
-            return [dict(r) for r in rows], capped
-        # A saturated set is not extendable. It holds the newest SET_SCAN_CAP
-        # matched rows and nothing else, so folding more in makes something that is
-        # no longer that set — a tally that grows past its own cap with every page,
-        # instead of the fixed floor the cap defines. Those rescan.
-        if not saturated and _appended_since(stored, watermark):
-            # The index moved by appending, which is what it does all day: a live
-            # watcher writes every few seconds, so a walk of any length spans
-            # several. Rescanning the whole set per page for those few rows is what
-            # makes the memo miss exactly when it is needed most — the answer for
-            # everything below the old watermark is still on hand and still correct,
-            # so only the rows above it are scanned. Bounded at both ends: the base
-            # holds everything through ``stored`` and this must hold exactly the
-            # rest, or the overlap is double-counted into the tally.
-            sql = sa_text(_set_scan_sql(tally, where, shared, group=grouped,
-                                        scan_floor=True, ceiling=True))
-            with use_session(session) as s:
-                fresh = s.execute(
-                    sql,
-                    {**shared_params, **params, "scan_floor": stored,
-                     "set_ceiling": watermark, "set_cap": set_cap},
-                ).mappings().all()
-            merged = _merge_thread_rows(rows, [dict(r) for r in fresh])
-            # Both scans enumerated their ranges completely, so the merge is exact
-            # over the union however large it grows — the cap only makes an answer
-            # a floor when it actually truncated one.
-            saturated = sum(r["n_hits"] for r in fresh) >= set_cap
-            capped = capped or saturated
-            _probe.record("set_ms", _t)
-            _probe.bump("set_deltas")
-            _set_memo_put(key, watermark, (merged, capped, saturated))
-            return [dict(r) for r in merged], capped
-
-    window, floored = _scan_window(watermark) if scans else ({"scan_floor": 0}, False)
-    # Pinned to the watermark this answer will be stored under, so a row ingest
-    # appends mid-scan lands in the next delta rather than in both.
-    ceiling = _set_ceiling(watermark)
-    sql = sa_text(_set_scan_sql(tally, where, shared, group=grouped,
-                                scan_floor=scans, ceiling=bool(ceiling)))
-    with use_session(session) as s:
-        rows = s.execute(
-            sql, {**shared_params, **params, **window, **ceiling,
-                  "set_cap": set_cap},
-        ).mappings().all()
-    _probe.record("set_ms", _t)
-    _probe.bump("set_scans")
-    saturated = sum(r["n_hits"] for r in rows) >= set_cap
-    capped = floored or saturated
-    _set_memo_put(key, watermark, ([dict(r) for r in rows], capped, saturated))
-    return [dict(r) for r in rows], capped
-
-
 def count_matches(
     query: str,
     *,
@@ -1273,8 +1275,8 @@ def count_matches(
     """The match set's size as ``(n_events, n_threads, capped)`` — what a result
     page is a page *of*.
 
-    The event-granular counterpart to :func:`matched_threads`, under the same
-    :data:`SET_SCAN_CAP`; ``capped`` True means both numbers are floors. An exact
+    Bounded by :data:`SET_SCAN_CAP`; ``capped`` True means both numbers are
+    floors — the scan stopped before the set did. An exact
     uncapped count is deliberately not offered: over this corpus a common term
     costs seconds to count exactly, and every search would pay it to render one
     header line."""
@@ -1283,7 +1285,10 @@ def count_matches(
         raise ValueError("match must be 'token' or 'substring'")
     if scope.get("thread_ids") is not None and not scope["thread_ids"]:
         return 0, 0, False
-    predicate = _primary_predicate(query, match_mode=match_mode, startswith=startswith)
+    with use_session(session) as s:
+        predicate = _primary_predicate(
+            query, match_mode=match_mode, startswith=startswith, session=s
+        )
     if predicate is None:
         return 0, 0, False
     where, params, scans = predicate
@@ -1296,11 +1301,10 @@ def count_matches(
         _probe.record("set_ms", _t)
         _probe.bump("set_hits")
         return memo[1]
-    # No delta path here, unlike :func:`matched_threads`: ``n_threads`` is a
-    # DISTINCT, and a count cannot tell whether the threads a delta touched were
-    # already in it. Carrying it forward would need the id set this deliberately
-    # does not keep — and the walk that made the delta path worth building drives
-    # the thread tally, not this.
+    # A memo taken at another watermark is not carried forward: ``n_threads`` is a
+    # DISTINCT, and a count cannot tell whether the threads newly-appended rows
+    # touched were already in it. Extending one would need the id set this
+    # deliberately does not keep, so a moved index rescans.
     window, floored = _scan_window(watermark) if scans else ({"scan_floor": 0}, False)
     sql = sa_text(_set_scan_sql(
         "count(*) AS n_events, count(DISTINCT thread_id) AS n_threads", where, shared,
@@ -1725,10 +1729,13 @@ def rebuild_fts(session: Optional[Session] = None) -> int:
             "(SELECT e.occurred_at FROM events e WHERE e.id = events_fts.event_id)"
         ))
 
-        # 2. Retokenize the FTS5 index from the shadow, then restore the sync
+        # 2. Retokenize both FTS5 indexes from the shadow, then restore the sync
         #    triggers so the thread-meta sync below (and every later writer)
-        #    mirrors through them.
+        #    mirrors through them. The trigram index is rebuilt in the same
+        #    transaction as the porter one: a rebuild that filled one and not the
+        #    other would leave the pair disagreeing about what the corpus holds.
         s.execute(sa_text("INSERT INTO event_search(event_search) VALUES('rebuild')"))
+        s.execute(sa_text("INSERT INTO event_substr(event_substr) VALUES('rebuild')"))
         _create_triggers(s)
 
         # 3. Derive the thread-meta docs (titles). The shadow refill
@@ -1746,10 +1753,44 @@ def rebuild_fts(session: Optional[Session] = None) -> int:
     return int(count)
 
 
+def build_substr_index(session: Optional[Session] = None) -> int:
+    """Build the trigram substring index from the existing shadow, and install the
+    sync triggers that keep it current. Returns the rows indexed.
+
+    The targeted heal for an archive that predates the index. :func:`rebuild_fts`
+    also produces it, but by way of re-deriving the whole shadow from the events
+    — hours over a multi-million-event corpus, where this reads the shadow that
+    is already there and retokenizes it alone.
+
+    One transaction on purpose. SQLite serializes writers, so ingest waits rather
+    than interleaves: a row appended by the pre-existing triggers *during* an
+    unsynchronized build would land in the shadow and never in the trigram index,
+    and it would be invisible afterwards — the build having already passed its
+    rowid, the triggers not yet installed to catch it.
+    """
+    ensure_fts(session)
+    own = session is None
+    with use_session(session) as s:
+        s.execute(sa_text("INSERT INTO event_substr(event_substr) VALUES('rebuild')"))
+        _create_triggers(s)
+        count = s.execute(sa_text("SELECT count(*) FROM event_substr_docsize")).scalar() or 0
+        if own:
+            s.commit()
+    logger.info("build_substr_index: indexed %d documents", count)
+    return int(count)
+
+
 def fts_status(session: Optional[Session] = None) -> dict:
     with use_session(session) as s:
         exists = s.execute(
             sa_text("SELECT 1 FROM sqlite_master WHERE name = :n"), {"n": "event_search"}
         ).scalar()
         count = s.execute(sa_text("SELECT count(*) FROM event_search")).scalar() if exists else 0
-    return {"indexed": int(count or 0), "table": "event_search"}
+        substr = _substr_ready(s)
+    return {
+        "indexed": int(count or 0),
+        "table": "event_search",
+        # False means substring queries are running as unindexed scans — correct,
+        # but on the cost model the trigram index exists to retire.
+        "substring_indexed": substr,
+    }

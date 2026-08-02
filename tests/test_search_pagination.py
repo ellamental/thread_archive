@@ -24,7 +24,7 @@ import json
 from thread_archive._importers import import_session_incremental
 from thread_archive._retrieval import search
 from thread_archive._retrieval.format import format_results
-from thread_archive._retrieval.fts import count_matches, matched_threads
+from thread_archive._retrieval.fts import count_matches
 from thread_archive._store import init_db
 
 
@@ -254,9 +254,6 @@ def test_substring_or_set_agrees_with_the_pool(archive_home) -> None:
     a set that answered the single-literal question would disagree with every
     page it is supposed to describe."""
     _seed_within_token(archive_home)
-    tallies, capped = matched_threads('"mp4" OR "p4 rollout"', match_mode="substring")
-    assert capped is False
-    assert len(tallies) == 2
     n_events, n_threads, capped = count_matches(
         '"mp4" OR "p4 rollout"', match_mode="substring", content_types=["user"]
     )
@@ -285,17 +282,15 @@ def test_an_unknown_match_mode_is_rejected(archive_home) -> None:
 # ── the exact-set primitives ─────────────────────────────────────────────────
 
 
-def test_matched_threads_counts_hits_per_thread(archive_home) -> None:
+def test_count_matches_counts_events_not_threads(archive_home) -> None:
+    """Two matching turns in one thread are two events and one thread — the two
+    numbers answer different questions and a page header shows both."""
     init_db()
     f = archive_home / "m.jsonl"
     _write_cc(f, [_cc_user("m1", "widget one", 1),
                   _cc_user("m2", "widget two", 1, "11:00")])
     import_session_incremental(f, "proj:m")
-    rows, capped = matched_threads("widget", content_types=["user"])
-    assert capped is False
-    assert len(rows) == 1
-    assert rows[0]["n_hits"] == 2
-    assert rows[0]["event_id"]  # the newest matching event, an anchor to open at
+    assert count_matches("widget", content_types=["user"]) == (2, 1, False)
 
 
 def test_count_matches_reports_events_and_threads(archive_home) -> None:
@@ -366,9 +361,10 @@ def test_a_substring_set_within_the_window_is_still_exact(archive_home) -> None:
     _write_cc(f, [_cc_user("s1", "the mp4 encode failed", 1),
                   _cc_user("s2", "unrelated report", 2)])
     import_session_incremental(f, "proj:mp4")
-    rows, capped = matched_threads("p4", match_mode="substring", content_types=["user"])
+    n_events, n_threads, capped = count_matches(
+        "p4", match_mode="substring", content_types=["user"])
     assert capped is False  # nothing was cut, so the enumeration is a total
-    assert len(rows) == 1 and rows[0]["n_hits"] == 1
+    assert (n_events, n_threads) == (1, 1)
 
 
 def test_the_exact_set_honors_the_same_scope_as_the_pool(archive_home) -> None:
@@ -415,30 +411,7 @@ def test_the_memoized_set_still_sees_newly_indexed_threads(archive_home) -> None
     assert search("widget", limit=10).total_threads == before + 1
 
 
-def test_ingest_costs_the_thread_set_a_delta_scan_not_a_rescan(archive_home) -> None:
-    """A live watcher appends every few seconds, so a walk of any length spans
-    several ingests. Keying the memo on the watermark made every one of those a
-    full rescan — the memo missed hardest exactly while a walk was in progress.
-    The set below the old watermark is still correct, so an append is answered by
-    scanning what arrived above it and folding that in."""
-    from thread_archive._retrieval.fts import reset_set_memo, set_memo_stats
-
-    _seed_many(archive_home, 6)
-    reset_set_memo()
-    matched_threads("widget", content_types=["user"])
-    assert set_memo_stats()["misses"] == 1
-
-    f = archive_home / "late.jsonl"
-    _write_cc(f, [_cc_user("late1", "the widget report number 99", 5)])
-    import_session_incremental(f, "proj:late")
-
-    rows, _ = matched_threads("widget", content_types=["user"])
-    # Found and carried forward rather than thrown away and rebuilt.
-    assert set_memo_stats() == {"entries": 1, "hits": 1, "misses": 1}
-    assert len(rows) == 7
-
-
-def test_the_ledger_says_which_of_the_three_the_set_stage_did(archive_home) -> None:
+def test_the_ledger_says_which_of_the_two_the_set_stage_did(archive_home) -> None:
     """The memo problem this stage had was invisible in ``set_ms``: a defeated memo
     and an expensive corpus produce the same number. Each outcome now names itself,
     so the question is one field in the ledger rather than an inference."""
@@ -449,11 +422,11 @@ def test_the_ledger_says_which_of_the_three_the_set_stage_did(archive_home) -> N
     reset_set_memo()
 
     with _probe.install() as first:
-        matched_threads("widget", content_types=["user"])
+        count_matches("widget", content_types=["user"])
     assert first.as_record()["set_scans"] == 1
 
     with _probe.install() as repeat:
-        matched_threads("widget", content_types=["user"])
+        count_matches("widget", content_types=["user"])
     rec = repeat.as_record()
     assert rec["set_hits"] == 1 and "set_scans" not in rec
 
@@ -461,95 +434,11 @@ def test_the_ledger_says_which_of_the_three_the_set_stage_did(archive_home) -> N
     _write_cc(f, [_cc_user("late1", "the widget report number 99", 5)])
     import_session_incremental(f, "proj:late")
 
+    # An append moves the watermark, and a count cannot be carried across one.
     with _probe.install() as after_ingest:
-        matched_threads("widget", content_types=["user"])
+        count_matches("widget", content_types=["user"])
     rec = after_ingest.as_record()
-    assert rec["set_deltas"] == 1, "an append did not take the delta path"
-    assert "set_scans" not in rec
-
-
-def test_a_delta_folds_into_the_thread_it_extends(archive_home) -> None:
-    """The two scans partition the rows they aggregate — base up to the old
-    watermark, delta above it — so a new event in a thread already in the set adds
-    to that thread's tally rather than arriving as a second row for it, and the
-    thread moves to the front of the newest-match ordering."""
-    from thread_archive._retrieval.fts import reset_set_memo
-
-    _seed_many(archive_home, 3)
-    reset_set_memo()
-    base = {r["thread_id"]: r for r in matched_threads("widget", content_types=["user"])[0]}
-    assert all(r["n_hits"] == 1 for r in base.values())
-
-    # A second matching turn in an existing thread, newer than anything seeded.
-    f = archive_home / "t1.jsonl"
-    _write_cc(f, [_cc_user("u1", "the widget report number 1", 1),
-                  _cc_user("u1b", "another widget entirely", 28, "23:59")])
-    import_session_incremental(f, "proj:t1")
-
-    rows, _ = matched_threads("widget", content_types=["user"])
-    assert len(rows) == len(base), "the delta arrived as a new row instead of merging"
-    extended = [r for r in rows if r["n_hits"] == 2]
-    assert len(extended) == 1
-    assert rows[0]["thread_id"] == extended[0]["thread_id"], "not re-sorted by last match"
-    # Identical to what one scan over the whole range would have said.
-    reset_set_memo()
-    assert [dict(r) for r in matched_threads("widget", content_types=["user"])[0]] == [
-        dict(r) for r in rows]
-
-
-def test_a_truncated_set_is_rescanned_rather_than_extended(archive_home) -> None:
-    """A set that hit the scan cap holds the newest ``set_cap`` matched rows and
-    nothing else. Folding a delta into that makes something which is no longer that
-    set — a tally that grows past its own cap with every page — so it rescans and
-    stays the fixed floor the cap defines.
-
-    Checked against the answer one scan gives, which is the only definition of
-    right here: a floor may be less than the truth, never more."""
-    from thread_archive._retrieval.fts import reset_set_memo
-
-    _seed_many(archive_home, 6)
-    reset_set_memo()
-    rows, capped = matched_threads("widget", content_types=["user"], set_cap=3)
-    assert capped, "the cap did not engage"
-    truncated = sum(r["n_hits"] for r in rows)
-
-    f = archive_home / "late.jsonl"
-    _write_cc(f, [_cc_user("late1", "the widget report number 99", 5)])
-    import_session_incremental(f, "proj:late")
-
-    after, still_capped = matched_threads("widget", content_types=["user"], set_cap=3)
-    assert still_capped
-    assert sum(r["n_hits"] for r in after) == truncated, "the delta grew a capped set"
-    reset_set_memo()
-    fresh, _ = matched_threads("widget", content_types=["user"], set_cap=3)
-    assert [dict(r) for r in after] == [dict(r) for r in fresh]
-
-
-def test_the_cap_is_part_of_the_question_the_memo_answers(archive_home) -> None:
-    """A floor resolved under a low cap must not be handed to a caller that asked
-    for the real set — that answers a different question than the one asked."""
-    from thread_archive._retrieval.fts import reset_set_memo
-
-    _seed_many(archive_home, 6)
-    reset_set_memo()
-    bounded, capped = matched_threads("widget", content_types=["user"], set_cap=3)
-    full, uncapped = matched_threads("widget", content_types=["user"])
-    assert capped and not uncapped
-    assert len(full) == 6 and len(bounded) < 6
-
-
-def test_a_reindex_is_not_an_append_and_gets_a_fresh_scan(archive_home) -> None:
-    """The delta path takes the rows below the watermark on faith, which appends
-    earn and nothing else does. A watermark that moved any other way — backwards,
-    or into a rebuilt index — must not be treated as one."""
-    from thread_archive._retrieval import fts
-
-    assert fts._appended_since(100, 140) is True
-    assert fts._appended_since(140, 100) is False, "a shrunk index read as an append"
-    assert fts._appended_since(100, 100) is False
-    # The sentinel an unreadable watermark probe returns can never look appendable.
-    assert fts._appended_since(100, object()) is False
-    assert fts._appended_since(object(), 140) is False
+    assert rec["set_scans"] == 1 and "set_hits" not in rec
 
 
 def test_resetting_the_memo_forces_a_fresh_scan(archive_home) -> None:
@@ -565,13 +454,3 @@ def test_resetting_the_memo_forces_a_fresh_scan(archive_home) -> None:
     reset_set_memo()
     assert count_matches("widget", content_types=["user"])[0] == 4
     assert set_memo_stats() == {"entries": 1, "hits": 0, "misses": 1}
-
-
-def test_the_memo_does_not_hand_out_its_own_rows(archive_home) -> None:
-    """Rows travel into a caller that builds hits beside them; a shared dict is one
-    careless write away from a memoized answer drifting from its query."""
-    _seed_many(archive_home, 3)
-    first, _ = matched_threads("widget", content_types=["user"])
-    first[0]["n_hits"] = 999
-    second, _ = matched_threads("widget", content_types=["user"])
-    assert second[0]["n_hits"] == 1

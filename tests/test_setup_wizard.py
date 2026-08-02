@@ -12,6 +12,7 @@ for by name cannot resolve to the operator's real one.
 
 from __future__ import annotations
 
+import argparse
 import json
 import time
 from typing import Optional
@@ -220,13 +221,23 @@ class FakeWatcher(SourceWatcher):
 
 
 def _args(*argv: str):
-    return wizard.build_parser().parse_args(list(argv))
+    """The namespace `thread-archive setup` hands the flow (see cli.build_parser)."""
+    p = argparse.ArgumentParser()
+    p.add_argument("command", nargs="?", choices=["setup", "status"], default=None)
+    p.add_argument("-y", "--yes", action="store_true")
+    p.add_argument("--home", default=None)
+    p.add_argument("--skip-import", action="store_true")
+    p.add_argument("--skip-watcher", action="store_true")
+    p.add_argument("--skip-backup", action="store_true")
+    p.add_argument("--backup-dest", default=None)
+    p.add_argument("--skip-mcp", action="store_true")
+    return p.parse_args(list(argv))
 
 
 def test_non_tty_without_yes_does_no_work(archive_home, capsys) -> None:
     # Under pytest stdin/stdout are not TTYs, so the bare fresh-home invocation
     # must land on guidance, import nothing, and create no index.
-    assert wizard.main([]) == 0
+    assert wizard.run_setup(_args()) == 0
     out = capsys.readouterr().out
     assert "Nothing was imported" in out
     assert not (archive_home / "index.db").exists()
@@ -415,13 +426,14 @@ def test_skip_import_keeps_sources_enabled(archive_home, capsys) -> None:
     assert "claude-code" not in cfg.get("sources", {})  # skipping import ≠ disabling
 
 
-def test_bare_rerun_lands_on_status(archive_home, capsys) -> None:
+def test_a_completed_home_reads_as_set_up_and_renders_status(archive_home, capsys) -> None:
     wizard.run_setup(
         _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-backup", "--skip-mcp"),
         watchers=[], machine=FakeMachine(),
     )
     capsys.readouterr()
-    assert wizard.main([]) == 0
+    assert wizard._setup_completed(_args()) is True  # setup stamped the config
+    assert wizard.print_status(_args("status"), machine=FakeMachine()) == 0
     out = capsys.readouterr().out
     assert "thread_archive — status" in out  # the status header, not the setup flow
     assert "thread-archive setup" in out  # the re-entry hint
@@ -437,10 +449,10 @@ def test_status_command(archive_home, capsys) -> None:
     assert "no nightly backup" in out  # the promoted CTA, not buried in passing
 
 
-def test_status_command_dispatches_from_main(archive_home, capsys) -> None:
+def test_status_builds_its_own_machine(archive_home, capsys) -> None:
     # `thread-archive status` on this host, whatever kind it is: the flow builds
     # its own Machine and the status view renders.
-    assert wizard.main(["status"]) == 0
+    assert wizard.print_status(_args("status")) == 0
     out = capsys.readouterr().out
     assert "0 conversations" in out and "all enabled" in out
 
