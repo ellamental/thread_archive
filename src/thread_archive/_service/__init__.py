@@ -15,6 +15,7 @@ whose platform is forced (the test seam) gets the matching backend.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Optional
 
@@ -25,6 +26,7 @@ from .base import NullBackend, ServiceBackend, active_backend, registered_backen
 from .spec import (
     MCP_DEFAULT_HOST,
     MCP_DEFAULT_PORT,
+    AgentSpec,
     backup_spec,
     entry_path,
     mcp_spec,
@@ -81,7 +83,7 @@ def _log_dir(home: Optional[str]) -> Path:
 #: builder that shapes it. Installation is the only op where the three differ —
 #: every other verb takes the agent's name and nothing else — so this table plus
 #: a builder in :mod:`.spec` is the whole of adding one.
-_SPEC_BUILDERS = {
+_SPEC_BUILDERS: dict[str, tuple[str, Callable[..., AgentSpec]]] = {
     "watcher": ("thread-archive", watcher_spec),
     "mcp": ("archive-mcp", mcp_spec),
     "backup": ("thread-archive", backup_spec),

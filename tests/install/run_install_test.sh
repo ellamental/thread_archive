@@ -24,6 +24,20 @@ if ! docker info >/dev/null 2>&1; then
   docker info >/dev/null
 fi
 
+# Docker Hub is this lane's flakiest dependency: a registry timeout on the
+# base-image pull is an environmental red, not a product one, and it has been
+# the dominant cause of red install rows. Pull the base explicitly with
+# retries, and settle for an already-local copy when the registry stays down —
+# the build then resolves FROM against the local image and never reaches Hub.
+BASE_IMAGE="$(awk '/^FROM /{print $2; exit}' "$ROOT/tests/install/Dockerfile")"
+for i in 1 2 3; do
+  docker pull "$BASE_IMAGE" && break
+  echo ">> pull attempt $i of $BASE_IMAGE failed$([ "$i" -lt 3 ] && echo '; retrying in 20s')"
+  [ "$i" -lt 3 ] && sleep 20
+done
+docker image inspect "$BASE_IMAGE" >/dev/null 2>&1 \
+  || { echo ">> $BASE_IMAGE: registry unreachable and no local copy — infra, not product" >&2; exit 1; }
+
 echo ">> building $IMAGE (context: $ROOT)"
 docker build -f "$ROOT/tests/install/Dockerfile" -t "$IMAGE" "$ROOT"
 

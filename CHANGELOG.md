@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- The release process closes the seams a post-0.0.14 audit found. `release_finish.sh` no longer
+  settles for the tag existing: it finds the tag's Publish run and blocks until the whole workflow —
+  the `verify` job included — is green (0.0.12 and 0.0.13 both finished while verification was still
+  running), and it refuses to remove the release worktree while any process is still running from it
+  (a mid-sweep removal was one source of phantom-red local CI). CI's `push: release/**` trigger is
+  gone — release_cut.sh opens the release PR at cut time, so every release-branch push already runs
+  as a `pull_request` event, and the branch-push run was a ~25-runner-minute duplicate that could
+  never cancel against it. Bench's actions are SHA-pinned like the other credentialed workflows (it
+  holds the packs token), and Dependabot now also covers both npm lockfile trees. The install lane
+  pre-pulls its base image with retries and settles for a local copy when Docker Hub is down —
+  registry timeouts were the dominant cause of red install rows in local sweeps.
+
 - The nightly restore drill goes weekly, on the same age gate the deep verify rides
   (`_DRILL_EVERY_DAYS = 7`) — and stays nightly for as long as it is failing, because `_health_is_due`
   reads a not-ok record as due. That keeps the property that made it nightly (the restore path is code;
