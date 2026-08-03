@@ -69,13 +69,14 @@ PINS_PATH = Path(__file__).resolve().parent / "dataset-pins.json"
 CACHE_FILE = "dataset-hashes.json"
 
 #: How far a file's modification time must predate the read that hashed it before
-#: that pairing is trusted again. Filesystem timestamps are coarse — Linux stamps
-#: them from a jiffy-granular clock, and several filesystems round to whole
-#: seconds — so a write landing in the same tick as the read leaves ``mtime_ns``
-#: untouched, and at an unchanged length leaves the whole memo key untouched.
-#: Two seconds clears every granularity in use (FAT's two-second rounding is the
-#: coarsest) and costs a corpus nothing: a dataset is fetched once and read for
-#: months, so its mtime is never inside the window.
+#: that pairing is trusted again. The nanosecond field is not nanosecond-precise:
+#: granularity belongs to the filesystem, and whole-second stamping is common
+#: enough that the container the install proof builds in does exactly that. Under
+#: a clock that coarse a write landing in the same tick as the read leaves
+#: ``mtime_ns`` untouched, and at an unchanged length leaves the whole memo key
+#: untouched. Two seconds clears the coarsest stamping in practical use and costs
+#: a corpus nothing: a dataset is fetched once and read for months, so its mtime
+#: is never inside the window.
 SETTLE_NS = 2_000_000_000
 
 

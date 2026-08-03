@@ -5,8 +5,9 @@
 - A drifted corpus could verify as its own pin, on exactly the filesystems the install lane runs on.
   `dataset_pins.file_digest` memoizes each file's sha256 on `(size, mtime_ns)`, which only detects a
   change where the bytes moving are guaranteed to move that key — and timestamps are too coarse for
-  that on a freshly written file: Linux stamps mtime from a jiffy-granular clock, so a same-length
-  rewrite landing in the same tick as the read that hashed the file moves nothing the memo looks at.
+  that on a freshly written file: granularity belongs to the filesystem, and the install proof's
+  container stamps whole seconds, so a same-length rewrite landing in the same tick as the read that
+  hashed the file moves nothing the memo looks at.
   Entries now also record when they were read, and are believed only where the file's mtime predates
   that read by two seconds (`SETTLE_NS`, clearing every timestamp granularity in use); anything more
   recent is re-read, which costs a real corpus nothing, since the settled files are the gigabytes.

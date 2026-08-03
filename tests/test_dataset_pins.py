@@ -80,10 +80,10 @@ def test_a_swap_that_preserves_count_and_size_still_changes_it(tmp_path) -> None
 
 def test_a_same_size_edit_sharing_a_timestamp_tick_still_changes_it(tmp_path) -> None:
     """The memo keys on ``(size, mtime_ns)``, and a filesystem whose timestamps are
-    coarse hands it two different corpora under one key: Linux stamps mtime from a
-    jiffy-granular clock, so a same-length rewrite moments after the read that
-    hashed the file moves nothing the memo looks at, and a drifted corpus verifies
-    as its own pin.
+    coarse hands it two different corpora under one key: where stamps round to the
+    whole second — as they do in the container the install proof builds in — a
+    same-length rewrite moments after the read that hashed the file moves nothing
+    the memo looks at, and a drifted corpus verifies as its own pin.
 
     ``utime`` reproduces deliberately what a coarse filesystem produces on its
     own, so the guarantee is pinned on every box rather than only where the clock
