@@ -125,3 +125,11 @@ dependencies change).
 thread-archive is the standalone member of a larger personal project ("thread"), built to
 stand on its own — self-contained, no hosted backend or external services. It is
 alpha software, and the version number says so.
+
+It is also one person's project — no organization behind it, and no promise of
+maintenance. The design budgets for that: an installed archive depends on
+nothing that expires (no hosted service, no account, no phone-home), released
+wheels stay on PyPI, import drift is repairable locally without a new release
+([the repair loop](https://github.com/ellamental/thread_archive/blob/main/docs/public/import-drift.md)),
+and the license invites a fork. If this project ever goes quiet, your archive
+doesn't.

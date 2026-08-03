@@ -39,8 +39,8 @@ Everything else is private support machinery and may change without notice:
 the viewer's bundle and markup, the `/api/*` endpoints not named above, and
 every Python module in the package — there is no public Python API, and the
 `cli` module is public in name only, because it is what the console script
-resolves to. More surface gets exposed
-deliberately as it matures. `tests/test_public_api.py` ratchets the boundary.
+resolves to. More surface, if any ever joins this list, gets exposed
+deliberately. `tests/test_public_api.py` ratchets the boundary.
 
 Releases (changelog compression, version bump, release commit, annotated tag)
 follow [../releasing.md](../releasing.md).

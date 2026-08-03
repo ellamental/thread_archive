@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- A drifted corpus could verify as its own pin, on exactly the filesystems the install lane runs on.
+  `dataset_pins.file_digest` memoizes each file's sha256 on `(size, mtime_ns)`, which only detects a
+  change where the bytes moving are guaranteed to move that key — and timestamps are too coarse for
+  that on a freshly written file: Linux stamps mtime from a jiffy-granular clock, so a same-length
+  rewrite landing in the same tick as the read that hashed the file moves nothing the memo looks at.
+  Entries now also record when they were read, and are believed only where the file's mtime predates
+  that read by two seconds (`SETTLE_NS`, clearing every timestamp granularity in use); anything more
+  recent is re-read, which costs a real corpus nothing, since the settled files are the gigabytes.
+  Entries written before this are re-hashed once. The two tests that caught it only red on a coarse
+  clock — green on APFS, red in the Linux container — so a third pins the case everywhere by forcing
+  the shared tick with `utime`.
+
 - The release machinery gets a weekly drill, so it breaks on a quiet Tuesday instead of mid-ship.
   `.github/workflows/drill.yml` (weekly cron; `scripts/release_drill.sh` dispatches it by hand) builds
   dev's tip under throwaway `999.run.N` versions, publishes an rc and a final to TestPyPI over the

@@ -17,8 +17,8 @@ answer is a support tier plus a repair loop, not a promise nobody can keep:
 - **Loud in proportion.** Drift that only *adds* — a field, block type, line
   kind or role the parser preserves without modeling — costs the reader nothing,
   so the health page holds its warning for two weeks from the finding's first
-  sighting, which is time for a release or a patch to close it before anyone is
-  asked to look. Drift that loses content warns the day it lands. So does
+  sighting, which is time for a fix — a release's, or your own via the patch
+  loop below — to close it before anyone is asked to look. Drift that loses content warns the day it lands. So does
   everything, additive or not, on an install that sets `"dev_mode": true` in
   `config.json` — there the to-do is the point. Held records stay in the ledger
   and in `thread-archive source coverage`, which prints how many it is holding:
@@ -49,8 +49,10 @@ answer is a support tier plus a repair loop, not a promise nobody can keep:
   subprocess (including a dedup re-import guard) before the override is enabled
   and the ledger-driven re-import recovers the gap.
 - **Patches are temporary by default.** The next `thread-archive self-update`
-  retires them (a core release is the proper fix's vehicle; if drift persists,
-  the notice re-fires and the fix re-runs against the new core). `thread-archive source fix
-  <provider> --pin` keeps yours forever. Every lifecycle step is audited in
+  retires them (a core release, when one ships, is the proper fix's vehicle; if
+  drift persists, the notice re-fires and the fix re-runs against the new
+  core). `thread-archive source fix <provider> --pin` keeps yours forever — the
+  right call when no core release is expected to carry the fix, and nothing
+  about a patch's working depends on one ever shipping. Every lifecycle step is audited in
   `patch-log.jsonl`, and `thread-archive source list` shows `patched` / `patched
   (pinned)` state.
