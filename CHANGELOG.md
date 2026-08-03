@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Claude Code's ledgers catch up with the format, and Claude Science stops being blamed for it.
+  Three shapes the live store carries went undeclared: the `fallback` block a safeguard-flagged turn
+  leaves when it is re-run on another model (the read path has always rendered it as a model switch —
+  only the ledger hadn't been told), and two assistant-line fields, `isAbortedMidStream` and a
+  snake_case `session_id` twin of `sessionId`. Separately, the Claude Science importer ran its
+  validation under `claude-code`: the app calls Anthropic's server-side tools, so every web search it
+  ran filed a `server_tool_use` / `web_search_tool_result` finding against Claude Code's ledger — drift
+  Claude Code hadn't grown, pointing a fix at the wrong parser and, past the threshold, degrading the
+  wrong source. It now validates under its own source against its own `ProviderConfig`, where those two
+  block types are declared. Claude Code's own ledger stays blind to them, so it still surfaces the day
+  Claude Code starts emitting them. Both live stores re-validate with no findings.
+
 - The release process closes the seams a post-0.0.14 audit found. `release_finish.sh` no longer
   settles for the tag existing: it finds the tag's Publish run and blocks until the whole workflow —
   the `verify` job included — is green (0.0.12 and 0.0.13 both finished while verification was still

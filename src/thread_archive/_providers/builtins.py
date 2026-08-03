@@ -33,7 +33,14 @@ from ._codex_render import CODEX_RENDER
 # Same shape, own provenance: a config named for the harness keeps its drift out
 # of Claude Code's ledger without claiming the format differs.
 COWORK_CONFIG = CLAUDE_CODE_CONFIG.derive("cowork")
-CLAUDE_SCIENCE_CONFIG = CLAUDE_CODE_CONFIG.derive("claude-science")
+CLAUDE_SCIENCE_CONFIG = CLAUDE_CODE_CONFIG.derive(
+    "claude-science",
+    # The Science agents call Anthropic's server-side tools, so a turn can carry
+    # the call and its results as their own blocks. Preserved raw, and declared
+    # here rather than on Claude Code's config — which has never emitted them,
+    # and should still warn if it starts.
+    expected_block_types={"server_tool_use", "web_search_tool_result"},
+)
 
 
 def _export_spec(kind: str, label: str, importer_name: str) -> ExportSpec:

@@ -219,6 +219,47 @@ def test_incremental_pass_survives_filtered_rows(archive_home, tmp_path) -> None
             assert n == 1, f"lost across the filtered-row watermark: {text!r}"
 
 
+def test_drift_is_filed_under_claude_science(archive_home, tmp_path) -> None:
+    """A frame is Claude-Code-shaped and read by Claude Code's parser, but what the
+    *app* grows is the app's drift: it lands in the ledger under ``claude-science``,
+    against Claude Science's own ProviderConfig. Filed under claude-code it would
+    degrade the wrong source and point a fix at the wrong parser.
+
+    The frame also carries the server-tool blocks the app really emits — declared on
+    its config, so they leave no record while the invented block type does."""
+    from thread_archive._importers._validation_ledger import LEDGER_FILE
+
+    init_db()
+    db = tmp_path / "operon-cli.db"
+    conn = _make_db(db)
+    _add_frame(conn, id="root1", agent_name="OPERON", status="completed",
+               conversation_type="agent", name="Web Search", model="claude-opus-4-8",
+               project_id="proj_real", created_at=1_700_000_000_000)
+    _add_messages(conn, "root1", [
+        _user("does bupropion help POTS?", "u1"),
+        {"role": "assistant", "_uuid": "a1", "content": [
+            {"type": "server_tool_use", "id": "srv1", "name": "web_search",
+             "input": {"query": "bupropion POTS"}},
+            {"type": "web_search_tool_result", "tool_use_id": "srv1",
+             "content": [{"type": "web_search_result", "title": "A paper",
+                          "url": "https://example.org/paper"}]},
+            {"type": "wobble", "text": "???"},
+        ]},
+    ])
+    conn.commit()
+    conn.close()
+
+    import_claude_science_db(db, ORG)
+
+    records = [json.loads(ln) for ln in
+               (archive_home / LEDGER_FILE).read_text().splitlines() if ln.strip()]
+    assert [r["provider"] for r in records] == ["claude-science"]
+    findings = [f for r in records for f in r["findings"]]
+    assert any("wobble" in f for f in findings)
+    assert not any("server_tool_use" in f or "web_search_tool_result" in f
+                   for f in findings)
+
+
 def test_watcher_discovers_mtime_gates_and_self_gates(archive_home, tmp_path) -> None:
     init_db()
     base = tmp_path / "orgs"

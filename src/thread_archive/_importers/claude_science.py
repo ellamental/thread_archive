@@ -164,16 +164,22 @@ def _import_science_lines(
     """Parse synthesized CC lines and assemble, merging science-specific message
     extras into ``provider_data["annotations"]`` on the parsed NormalizedMessages
     (matched by provider_message_id) before the builder runs — the CC parser can't
-    carry keys it doesn't know, so the merge happens on its output."""
+    carry keys it doesn't know, so the merge happens on its output.
+
+    The envelope's ``provider`` is the *parse* identity (it selects how the CC
+    parser reads the bundle) and stays ``"claude-code"``; validation runs under
+    this importer's own ``SOURCE``, so a block type or field the app grows lands
+    in Claude Science's ledger against its own ``ProviderConfig`` instead of
+    being blamed on Claude Code."""
     session_data = {
         "provider": "claude-code",
         "sessions": [{"session_id": "incremental", "project": "incremental", "lines": lines}],
     }
     messages = parser.parse_export(session_data)
-    preserve_unmodeled_fields(messages, provider="claude-code")
+    preserve_unmodeled_fields(messages, provider=SOURCE)
     log_parse_validation(
         messages,
-        provider="claude-code",
+        provider=SOURCE,
         conversation_id=source_id or "incremental",
         batch_safe=True,
     )

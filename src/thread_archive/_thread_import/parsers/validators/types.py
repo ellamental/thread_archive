@@ -32,6 +32,11 @@ KNOWN_BLOCK_TYPES: Set[str] = {
     "pr_link",
     "unknown_line",
     "flag",  # claude.ai safety marker blocks, preserved raw
+    "fallback",  # a turn re-run on another model, preserved raw (from/to models)
+    # Anthropic server-side tools: the call and its results ride the assistant
+    # turn as their own blocks, preserved raw.
+    "server_tool_use",
+    "web_search_tool_result",
 }
 
 
