@@ -2,145 +2,18 @@
 
 ## Unreleased
 
-- A drifted corpus could verify as its own pin, on exactly the filesystems the install lane runs on.
-  `dataset_pins.file_digest` memoizes each file's sha256 on `(size, mtime_ns)`, which only detects a
-  change where the bytes moving are guaranteed to move that key — and timestamps are too coarse for
-  that on a freshly written file: granularity belongs to the filesystem, and the install proof's
-  container stamps whole seconds, so a same-length rewrite landing in the same tick as the read that
-  hashed the file moves nothing the memo looks at.
-  Entries now also record when they were read, and are believed only where the file's mtime predates
-  that read by two seconds (`SETTLE_NS`, clearing every timestamp granularity in use); anything more
-  recent is re-read, which costs a real corpus nothing, since the settled files are the gigabytes.
-  Entries written before this are re-hashed once. The two tests that caught it only red on a coarse
-  clock — green on APFS, red in the Linux container — so a third pins the case everywhere by forcing
-  the shared tick with `utime`.
+## 0.0.15 — 2026-08-03
 
-- The release machinery gets a weekly drill, so it breaks on a quiet Tuesday instead of mid-ship.
-  `.github/workflows/drill.yml` (weekly cron; `scripts/release_drill.sh` dispatches it by hand) builds
-  dev's tip under throwaway `999.run.N` versions, publishes an rc and a final to TestPyPI over the
-  Trusted Publishing path, and drives the operator surface against what the index serves — rc opt-in
-  semantics, a fresh install running the real ingest lifecycle, and `self-update` exercised end to end
-  (upgrade, the rc-never-offered guardrail, forced rollback) via the new
-  `tests/install/self_update_check.py`. The GitHub-settings audit rides the same run as its own job
-  (via the read-only `RULESET_AUDIT_TOKEN` — bypass actors are invisible below admin) and now also
-  checks the `pypi`/`testpypi` environments exist. The drill mints no tags, never touches `main` or
-  PyPI, and takes only its own artifact from TestPyPI (`--no-deps` everywhere — an open index never
-  serves dependencies). The whole workflow gates on the `DRILL_ENABLED` repository variable (off until
-  the TestPyPI publisher and audit token exist), so it ships armed but silent.
-
-- Claude Code's ledgers catch up with the format, and Claude Science stops being blamed for it.
-  Three shapes the live store carries went undeclared: the `fallback` block a safeguard-flagged turn
-  leaves when it is re-run on another model (the read path has always rendered it as a model switch —
-  only the ledger hadn't been told), and two assistant-line fields, `isAbortedMidStream` and a
-  snake_case `session_id` twin of `sessionId`. Separately, the Claude Science importer ran its
-  validation under `claude-code`: the app calls Anthropic's server-side tools, so every web search it
-  ran filed a `server_tool_use` / `web_search_tool_result` finding against Claude Code's ledger — drift
-  Claude Code hadn't grown, pointing a fix at the wrong parser and, past the threshold, degrading the
-  wrong source. It now validates under its own source against its own `ProviderConfig`, where those two
-  block types are declared. Claude Code's own ledger stays blind to them, so it still surfaces the day
-  Claude Code starts emitting them. Both live stores re-validate with no findings.
-
-- Claude Science messages import on the app's own clock, and the store's record can no longer grow
-  a key in silence. `frame_messages` rows carry `_ts` (epoch ms) on newer app versions; the importer
-  had never read it, so every message landed on the synthetic one-second ladder built for frames that
-  have no timestamps at all — one 127-message session, 52 minutes of work, imported as 2 minutes.
-  `_ts` now wins where it exists and the ladder stays as the fallback. `_refusal`, `_intent_id` and
-  `_async_exec` (a background run's exec id and interrupted flag) join the annotations the import
-  carries; `_has_server_tools` is a documented drop, since the turn's own server-tool blocks already
-  say it. The reason a real timestamp sat unread for a month is that `msg_json` is not a source *line*,
-  so the parser's field-level drift ledger structurally cannot see it: every key the importer accounts
-  for is now named in one set, and anything outside it is preserved under the message's
-  `annotations["unmodeled"]` and recorded to the drift ledger — the same bargain the line-based sources
-  get. Events already imported keep the timestamps they were written with; the correction is forward-only.
-
-- The release process closes the seams a post-0.0.14 audit found. `release_finish.sh` no longer
-  settles for the tag existing: it finds the tag's Publish run and blocks until the whole workflow —
-  the `verify` job included — is green (0.0.12 and 0.0.13 both finished while verification was still
-  running), and it refuses to remove the release worktree while any process is still running from it
-  (a mid-sweep removal was one source of phantom-red local CI). CI's `push: release/**` trigger is
-  gone — release_cut.sh opens the release PR at cut time, so every release-branch push already runs
-  as a `pull_request` event, and the branch-push run was a ~25-runner-minute duplicate that could
-  never cancel against it. Bench's actions are SHA-pinned like the other credentialed workflows (it
-  holds the packs token), and Dependabot now also covers both npm lockfile trees. The install lane
-  pre-pulls its base image with retries and settles for a local copy when Docker Hub is down —
-  registry timeouts were the dominant cause of red install rows in local sweeps.
-
-- The nightly restore drill goes weekly, on the same age gate the deep verify rides
-  (`_DRILL_EVERY_DAYS = 7`) — and stays nightly for as long as it is failing, because `_health_is_due`
-  reads a not-ok record as due. That keeps the property that made it nightly (the restore path is code;
-  a regression in it surfaces the next morning and keeps surfacing) while a healthy restore path stops
-  spending the night on it. The drill is the one stage whose cost tracks the whole corpus — a full index
-  rebuild from the mirror, 66 of the night's 80 minutes — so it is what would have grown the window past
-  the morning. Age-gated rather than calendar-gated: a machine that was off on the due day drills on its
-  next nightly. `--no-drill` still withholds the stage outright, and `backup drill` still forces one.
-  A skipped night reports `escalations.drill = False` and carries no `drill` result — absent, not failed.
-
-- Substring search rides an index. A second external-content FTS5 over the same `events_fts` shadow, tokenized
-  into trigrams (`event_substr`), turns an infix `LIKE` from a pass over the corpus into a rowid prefilter the
-  escaped `LIKE` then verifies. Measured over 120k docs: a substring that matches nothing — the scan's worst
-  case, since no `LIMIT` can stop a walk that never finds a row — goes 36ms → 0.1ms, and ordinary identifier
-  queries 30–40x. The prefilter carries no `ESCAPE` clause (one turns fts5's LIKE optimization off outright), so
-  `%` and `_` degrade there from literals to wildcards — a strictly wider candidate set, which is what keeps the
-  pair exact; a hypothesis property asserts the two forms agree on every query. Costs ~1GB on a 0.36GB corpus.
-- The prefilter is taken only where it pays, decided per query against the index rather than from the term's
-  text. It rides on a rowid subquery, which is materialized before the outer `LIMIT` can stop — so for a term
-  matching a large slice of the corpus it forfeits the early-out that makes the plain scan bearable and then
-  adds a per-candidate verify, measured 2.9x *slower* for a term in 7% of the corpus. A bounded probe (2000
-  candidates) settles it: `thread_id` and `session` take the scan, `getattr` and `SET_EXAMINE_CAP` the index,
-  and the probe costs ~8% of the scan it declines against a few ms on the 30–60x it buys. Selectivity is not
-  readable from the query — `SET_EXAMINE_CAP` and `thread_id` are the same shape and differ ten-thousandfold in
-  what they match. Terms with no 3-character literal run (`p4`) never reach the probe.
-- An indexed substring set is no longer bounded by `SET_EXAMINE_CAP`. The window exists to stop a *scanning*
-  predicate from costing more as the corpus grows, and a prefiltered substring query does not scan — so its
-  counts and thread enumerations stay exact instead of degrading to a floor over the newest 2M rowids. That
-  bound was the nearer of the two: the shadow's rowid high-water mark was at 1.27M of it.
-- `thread-archive index substring` builds the trigram index from the shadow already on disk — the targeted heal
-  for an archive predating it, where `index rebuild` would re-derive the whole shadow from the events. One
-  transaction, so ingest waits rather than interleaving a row into the shadow that the index would never see.
-  `verify` reports the index's row count and whether it is complete, deliberately outside `ok`: an archive
-  without it has lost no data and no correctness, only the index, and retrieval probes for it and falls back.
-- The sync triggers are replaced when their stored body differs from the one the module defines, rather than
-  only when absent. A trigger that predates a change to the set still fires, so a presence check would pass it
-  while it mirrored a shadow write to only some of the indexes.
-
-- The Bench workflow keeps what each pass cost: a non-gating `perf-trend-*` artifact per CI run
-  (`python -m search_lab perf`) carrying every row's wall clock off the run ledger, normalized by two synthetic
-  hardware calibrators (BLAS matvec for the vector arm, FTS5 scan for the lexical) so numbers from different
-  runners compare. Measured across two same-day runners the machine-speed factor was ~14% with arm-shaped
-  residue — the artifact series is how the real variance envelope gets characterized before any band is set.
-
-- PyPI is the only supported install. `git+<repo-url>@vX.Y.Z` stops being a distribution channel and the manual
-  drops its from-source install: a checkout is a development environment — the maintainer's or a fork's — and its
-  recipe lives in `CONTRIBUTING.md`, while `scope.md` states the policy beside the other deliberate limits.
-  `pip`, `uv tool` and `pipx` resolve the same wheel from the same index, and self-update still refuses a checkout.
-
-- The Publish `verify` job proves the published wheel *works*, not just that it starts: after the entry-point smoke it
-  checks out the tagged tree for `tests/install/e2e_check.py` and runs a real lifecycle on the installed artifact —
-  a corpus for every provider, imported through each provider's own importer, the index rebuilt from the JSONL truth,
-  every marker searched back out. Seconds, and it covers the one surface nothing else did: the published artifact
-  under dependencies resolved fresh from the index (the `package` and install lanes both build and resolve locally).
-  A guard asserts `thread_archive` resolves under site-packages, so the lane can never quietly re-test the checkout.
-  This is what the mandatory rc's `verify` has always claimed to establish; until now it established two `--help`s.
-
-- The import-parsing layer sheds dead surface. `thread_archive.provider.parse` no longer re-exports
-  `normalize_tool_name` (its module — with `TOOL_NAME_MAP`, `FILE_TOOLS`, `PROVIDER_PATH_FIELDS` — had no callers
-  and is gone), `parsers` no longer re-exports a `ValidationSeverity` that duplicated the live one in
-  `parsers.validators.base`, and `BaseValidator` drops two override hooks nothing overrode. The three DB
-  scanners' identical per-unit result dataclasses collapse into one `DbUnitImportResult` in `_importers._result`.
-
-- The watcher stops writing telemetry nothing read. `health.json` loses `watch_embed_last` and
-  `watch_maintain_last` entirely, and `watch_pass_last` loses `pass_ms`/`pass_ms_max`/`lag_s`; the embed and
-  maintenance passes still record into the ingest ledger, which keeps a series rather than only the last pass.
-  The two probe queries those numbers cost per pass (newest event, newest embedded event) are gone with them.
-  `watch_pass_last`'s liveness and per-source counters — the keys `status` and the capture audit read — are
-  unchanged.
-
-- Service management is one API by agent name. `_service` drops twelve per-agent wrappers for
-  `install_agent`/`agent_status` beside the existing `restart_agent`/`uninstall_agent`/`agent_installed`, with a
-  spec-builder table as the only place the three agents differ; `daemon install/uninstall/restart/status` runs
-  one path instead of three copies. The setup wizard's dead standalone `main`/`build_parser` entry point goes
-  (the CLI's `setup` verb is the only way in), the restore and restore-drill reports become one renderer, and
-  the operator-facing byte formatter lives once in `_fmt.size`.
+- Substring search rides a trigram index: infix queries 30–60x faster, exact counts past the examine cap, and a
+  bounded per-query probe declining it where the scan wins; `thread-archive index substring` heals older archives.
+- Claude Science imports on the app's own clock (`_ts`) and validates under its own source; unmodeled message keys
+  are preserved and ledgered. Claude Code's ledger declares `fallback` blocks and two live assistant-line fields.
+- The release machinery gets a weekly TestPyPI drill (publish path, rc opt-in, `self-update` end to end), Publish
+  `verify` runs a real ingest lifecycle on the published wheel, and PyPI becomes the only supported install path.
+- Release seams close: `release_finish.sh` blocks until Publish `verify` is green, Bench pins actions by SHA, the
+  install lane pre-pulls its base image, and dataset pins re-read files younger than a two-second settle window.
+- The restore drill goes weekly, age-gated — nightly again while red; Bench CI keeps a per-run perf-trend artifact.
+- Dead surface shed across import parsers, watcher telemetry, and service management (one API by agent name).
 
 ## 0.0.14 — 2026-08-01
 
