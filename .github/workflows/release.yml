@@ -35,7 +35,7 @@ jobs:
       # credentials: a moving tag in the path of the deploy key is a supply
       # chain the §0 hardening otherwise leaves open. Dependabot keeps the pins
       # fresh (.github/dependabot.yml).
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Anchored to a plain X.Y.Z, and it fails rather than tags something else.
       # Deliberately excludes pre-release strings: release candidates are
