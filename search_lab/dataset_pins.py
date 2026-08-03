@@ -46,6 +46,7 @@ import argparse
 import hashlib
 import json
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,6 +67,17 @@ PINS_PATH = Path(__file__).resolve().parent / "dataset-pins.json"
 #: run: LongMemEval alone is 277 MB, and re-reading it on each invocation would
 #: make the check something a caller looks for a way around.
 CACHE_FILE = "dataset-hashes.json"
+
+#: How far a file's modification time must predate the read that hashed it before
+#: that pairing is trusted again. The nanosecond field is not nanosecond-precise:
+#: granularity belongs to the filesystem, and whole-second stamping is common
+#: enough that the container the install proof builds in does exactly that. Under
+#: a clock that coarse a write landing in the same tick as the read leaves
+#: ``mtime_ns`` untouched, and at an unchanged length leaves the whole memo key
+#: untouched. Two seconds clears the coarsest stamping in practical use and costs
+#: a corpus nothing: a dataset is fetched once and read for months, so its mtime
+#: is never inside the window.
+SETTLE_NS = 2_000_000_000
 
 
 @dataclass(frozen=True)
@@ -216,20 +228,26 @@ def _store_cache(cache: dict[str, Any]) -> None:
 
 
 def file_digest(path: Path, cache: Optional[dict[str, Any]] = None) -> str:
-    """One file's sha256, memoized on ``(size, mtime_ns)``.
+    """One file's sha256, memoized on ``(size, mtime_ns)`` once that key has settled.
 
-    The memo key is metadata and the value is content, so the one way to fool it
-    is to change a file's bytes while preserving both its length and its
-    modification time to the nanosecond. That is not something a re-download, a
-    ``git pull`` or an editor does; it takes deliberate effort, and the honest
-    trade is naming it here rather than re-reading gigabytes on every run."""
+    The memo key is metadata and the value is content, so it may only be believed
+    where a change to the bytes is guaranteed to move the key. Timestamps are too
+    coarse for that to hold on a freshly written file: a rewrite landing in the
+    same tick as the read that hashed it leaves ``mtime_ns`` identical, and at an
+    unchanged length nothing in the key moves at all. So an entry also records
+    *when* it was read, and is trusted only where the file's mtime predates that
+    read by :data:`SETTLE_NS`. Anything more recent is re-read — which is the
+    cheap case, since a settled corpus is the one that is gigabytes."""
     stat = path.stat()
     key = str(path)
     entry = (cache or {}).get(key)
     if (isinstance(entry, dict) and entry.get("size") == stat.st_size
             and entry.get("mtime_ns") == stat.st_mtime_ns
-            and isinstance(entry.get("sha256"), str)):
+            and isinstance(entry.get("sha256"), str)
+            and isinstance(entry.get("read_at"), int)
+            and stat.st_mtime_ns + SETTLE_NS < entry["read_at"]):
         return entry["sha256"]
+    read_at = time.time_ns()
     h = hashlib.sha256()
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
@@ -237,7 +255,7 @@ def file_digest(path: Path, cache: Optional[dict[str, Any]] = None) -> str:
     digest = h.hexdigest()
     if cache is not None:
         cache[key] = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
-                      "sha256": digest}
+                      "sha256": digest, "read_at": read_at}
     return digest
 
 

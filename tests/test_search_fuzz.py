@@ -37,8 +37,14 @@ from thread_archive._retrieval import search, search_events
 from thread_archive._retrieval.fts import (
     _like_prefix,
     _like_substring,
+    _prefilter_pays,
+    _primary_predicate,
     _quote_all_tokens,
     _quote_phrase,
+    _substr_ready,
+    _substring_predicate,
+    _substring_terms,
+    _trigram_usable,
     to_match_query,
 )
 from thread_archive._store import get_session
@@ -184,6 +190,75 @@ def test_a_prefix_scan_matches_exactly_the_text_starting_with_it(sqlite_like, pr
     """``startswith`` is a structural scan an agent points at raw content, so its
     pattern carries user text into LIKE with the same escaping obligation."""
     assert sqlite_like(haystack, _like_prefix(prefix)) == haystack.startswith(prefix)
+
+
+# ── the trigram prefilter changes cost, never answers ────────────────────────
+
+
+def _substring_rowids(terms: list[str], *, indexed: bool) -> set:
+    """The rowids substring mode matches for ``terms``, through the real
+    predicate builder and real SQL — the indexed and unindexed forms differ only
+    in the ``indexed`` flag, which is exactly the variable under test."""
+    where, params, _ = _substring_predicate(terms, indexed=indexed)
+    with get_session() as s:
+        return {
+            r[0] for r in s.execute(
+                sa_text("SELECT rowid FROM event_search WHERE " + where), params
+            ).fetchall()
+        }
+
+
+@settings(parent=_BASE, max_examples=200)
+@given(query=st.one_of(QUERIES, _LIKE_TEXT, st.sampled_from([
+    "p4", "mp4", "get_session", "a.b.c", "__init__", "100%", "authentication",
+    "日本語", "café", "session | login", "nothingmatchesthis",
+])))
+def test_the_trigram_prefilter_never_changes_the_match_set(corpus, query) -> None:
+    """The substring index is a cost optimization with an exactness obligation:
+    the prefilter selects candidates with an ESCAPE-free pattern (a ``%`` or
+    ``_`` the user typed reads there as a wildcard) and the escaped LIKE then
+    verifies them. That is only sound while the candidate set is a true superset,
+    so the two forms must agree on every query — including the ones where the
+    prefilter widens hardest.
+
+    Asserted over one real archive with real SQL rather than by reasoning about
+    the patterns: the failure this guards against is a *narrowing* prefilter,
+    which returns fewer rows and reads as "no such conversation" rather than as
+    an error.
+    """
+    terms = _substring_terms(query)
+    if not terms:
+        return
+    assert _substring_rowids(terms, indexed=True) == _substring_rowids(terms, indexed=False)
+
+
+def test_an_indexed_substring_set_is_not_bounded_by_the_examine_window(corpus) -> None:
+    """The payoff: an indexed substring predicate reports itself as seeking, and
+    the exact-set queries read that to mean they need no
+    :data:`~thread_archive._retrieval.fts.SET_EXAMINE_CAP` window. That is what
+    keeps a substring count exact as the corpus grows past the window instead of
+    silently becoming a floor over its newest slice."""
+    with get_session() as s:
+        assert _substr_ready(s), "fresh archive should have built the trigram index"
+        assert _prefilter_pays(s, ["authentication"]), "a rare term is worth the prefilter"
+        indexed = _primary_predicate("authentication", match_mode="substring",
+                                     startswith=None, session=s)
+    plain = _primary_predicate("authentication", match_mode="substring", startswith=None)
+    assert indexed is not None and plain is not None
+    assert indexed[2] is False, "an indexed substring predicate seeks, so it is not floored"
+    assert plain[2] is True, "without the index it scans, and the window still applies"
+
+
+def test_short_terms_keep_the_scan(corpus) -> None:
+    """``p4`` is the query substring mode exists for, and it is below the shortest
+    literal run a trigram can resolve — so it must not pay for a prefilter that
+    cannot narrow it. Measured, the two-stage form is slower there than the plain
+    scan; the gate is what keeps the flagship case off it."""
+    assert not _trigram_usable("p4")
+    assert _trigram_usable("mp4")
+    assert _trigram_usable("thread_id"), "the 'thread' run carries it past the gate"
+    where, _, seeks = _substring_predicate(["p4"], indexed=True)
+    assert seeks is False and "event_substr" not in where
 
 
 # ── what SQLite cannot carry ─────────────────────────────────────────────────

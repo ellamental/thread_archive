@@ -1,6 +1,6 @@
 # Web viewer
 
-**The viewer is dev-only — it runs from a clone and ships in no wheel.**
+**The viewer is dev-only — it runs from a source checkout and ships in no wheel.**
 `thread_archive._web` and its built bundle are excluded from the wheel, because a
 browser UI is not what an install is for: preservation, retrieval, and the MCP
 server are, and the bundle alone is a quarter of the download.
@@ -11,7 +11,7 @@ exists, `setup` offers a browser only there, and the service layer writes no
 unit carrying `--web` without one. An install neither advertises nor half-serves
 a UI it hasn't got.
 
-From a clone, the always-on watcher cohosts a local search + reader UI:
+In a checkout, the always-on watcher cohosts a local search + reader UI:
 `thread-archive watch --web` (the watcher service passes it) serves at
 `http://127.0.0.1:8787` — a stdlib HTTP server handing out a pre-built React
 bundle plus a few JSON endpoints, in the watcher's *own* process. One process,
@@ -23,7 +23,7 @@ where the persistent URL is.
 `thread-archive web dev` puts a link to the dev panels in the rail first (below);
 `web --no-dev` takes it back out.
 
-**The URLs are steady within a clone.** Other programs link into the viewer —
+**The URLs are steady within a checkout.** Other programs link into the viewer —
 editor "open in archive" buttons, sibling consoles' navbars, health probes — so
 these paths keep working (a promise to this machine's own family rather than a
 public interface, since no install has them — see
@@ -101,7 +101,7 @@ header — which no cross-origin form can set, so a page this server did not ser
 must first win a preflight that is never answered.
 
 **Runtime is node-free**: the bundle is built ahead of time and committed under
-`_web/static/`, so running the viewer from a clone never touches node (and an
+`_web/static/`, so running the viewer from a checkout never touches node (and an
 install, having no viewer, never touches it either). Node is a *build*-only tool:
 
 ```bash

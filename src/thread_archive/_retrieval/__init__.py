@@ -36,16 +36,8 @@ from ._classify import resolve_relative_date
 from ._context import extract_context_lines, get_context_events, parse_context_events_spec
 from ._types import EventHit, Pool, Results
 from .browse import browse_threads
-from .code import (
-    blame_commit,
-    blame_path,
-    code_index_status,
-    rebuild_code_index,
-    refresh_code_index,
-    thread_files,
-)
 from .format import COUNT_FETCH_CAP, format_results
-from .fts import ensure_fts, fts_status, index_events, index_thread_meta, rebuild_fts, search_events
+from .fts import fts_status, index_events, index_thread_meta, rebuild_fts, search_events
 from .model_slot import set_defer_construction
 from .params import DEFAULT as _DEFAULT_PARAMS
 from .params import SearchParams
@@ -1064,7 +1056,6 @@ def search(
 __all__ = [
     "SearchParams",
     "search",
-    "retrieve_pool",
     "pool_cache",
     "read_thread",
     "read_thread_structured",
@@ -1072,14 +1063,7 @@ __all__ = [
     "rebuild_fts",
     "index_events",
     "index_thread_meta",
-    "ensure_fts",
     "fts_status",
     "format_results",
     "search_events",
-    "blame_path",
-    "blame_commit",
-    "thread_files",
-    "refresh_code_index",
-    "rebuild_code_index",
-    "code_index_status",
 ]

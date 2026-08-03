@@ -24,6 +24,21 @@ class IncrementalImportResult:
 
 
 @dataclass
+class DbUnitImportResult:
+    """Outcome of importing one unit out of a scanned DB — a Cursor composer, an
+    OpenCode session, a Claude Science frame.
+
+    One shape across the three DB scanners: what the unit's import wrote, which
+    thread it landed in, and whether that thread is new. The scan loop tallies
+    these into a :class:`DbScanResult`.
+    """
+
+    events_created: int
+    thread_id: str
+    is_new_thread: bool
+
+
+@dataclass
 class DbScanResult:
     """Outcome of one whole-DB scan (Cursor composers, OpenCode sessions,
     Claude Science frames).

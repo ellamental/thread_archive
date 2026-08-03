@@ -276,6 +276,17 @@ def test_rejected_structured_output_stays_distinguishable_without_the_flag() -> 
     assert _one(_result(True), "tool_execution_error")
 
 
+def test_turn_and_session_bookkeeping_fields_produce_no_field_drift_warnings() -> None:
+    """``isAbortedMidStream`` (the turn's stream was cut off mid-generation) and
+    ``session_id`` (a snake_case copy of ``sessionId``, same value on the same
+    line) are ledgered as carried-not-stored. Both ride ordinary turns, so an
+    unledgered one here would bury real drift under its own volume."""
+    msgs = _parse([_assistant_line({"isAbortedMidStream": True, "session_id": "s1"})])
+    ctx = validate_messages(msgs, "s1", "claude-code", batch_safe=True)
+    drift = [w for w in ctx.warnings if "field" in w.lower()]
+    assert drift == []
+
+
 def test_invented_line_field_warns() -> None:
     msgs = _parse([_user_line({"someBrandNewField": 1})])
     ctx = validate_messages(msgs, "s1", "claude-code", batch_safe=True)

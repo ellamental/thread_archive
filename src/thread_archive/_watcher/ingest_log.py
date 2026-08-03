@@ -70,7 +70,6 @@ def record_pass(
     probe: Any,
     pass_ms: float,
     result: Any = None,
-    lag_s: Optional[float] = None,
 ) -> None:
     """Append one source's poll, with its stage split. Never raises.
 
@@ -101,8 +100,6 @@ def record_pass(
             parse_errors = getattr(result, "parse_errors", 0) or 0
             if parse_errors:
                 record["parse_errors"] = parse_errors
-        if lag_s is not None:
-            record["lag_s"] = lag_s
         ledger.append(home / LEDGER_FILE, record, max_bytes=max_bytes())
     except Exception:  # noqa: BLE001 — advisory; the poll loop must survive
         logger.debug("could not record ingest pass", exc_info=True)
@@ -274,11 +271,8 @@ def summarize(home, *, hours: int = 24) -> dict[str, Any]:
 
 
 def record_maintenance(*, home, timings: dict[str, float], counts: dict) -> None:
-    """Append one maintenance pass's sub-timings.
-
-    The health record carries the same split but only for the *last* pass, so a
-    rebalance that has been getting slower for a week is invisible there. Here it
-    is a series."""
+    """Append one maintenance pass's sub-timings, as a series — a rebalance that has
+    been getting slower for a week is only visible against its own history."""
     if not enabled(home):
         return
     try:

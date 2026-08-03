@@ -24,6 +24,13 @@ def _event_count() -> int:
         return len(s.execute(select(Event)).scalars().all())
 
 
+def _ingest_rows(home):
+    from thread_archive._ops import ledger
+    from thread_archive._watcher import ingest_log
+
+    return list(ledger.iter_rows(home / ingest_log.LEDGER_FILE))
+
+
 def _write_cc(projects_root, project, name, lines):
     pdir = projects_root / project
     pdir.mkdir(parents=True, exist_ok=True)
@@ -265,7 +272,7 @@ def test_watcher_run_loop_survives_a_failing_pass(archive_home, caplog) -> None:
     assert sum("ingest pass failed" in r.getMessage() for r in caplog.records) == 2
 
 
-def test_pass_records_its_own_latency_and_per_source_cost(archive_home, tmp_path) -> None:
+def test_pass_records_its_own_per_source_cost(archive_home, tmp_path) -> None:
     """The heartbeat carries how long the loop takes, not only what it did.
 
     Counts alone can't distinguish a source polled a million times for nothing from
@@ -281,43 +288,16 @@ def test_pass_records_its_own_latency_and_per_source_cost(archive_home, tmp_path
 
     health = json.loads((archive_home / "health.json").read_text(encoding="utf-8"))
     rec = health["watch_pass_last"]
-    assert rec["pass_ms"] >= 0.0
-    assert rec["pass_ms_max"] >= rec["pass_ms"]
     # Per-source wall time rides beside that source's yield counters.
     assert rec["sources"]["claude-code"]["ms"] >= 0
 
 
-def test_ingest_lag_sampled_only_when_a_pass_imported(archive_home, tmp_path) -> None:
-    """Lag is the ingest side's latency — how far behind real time the newest
-    ingested event is. On a quiet loop the newest event simply ages, which is the
-    machine being idle rather than ingest falling behind, so it isn't resampled."""
-    import json
-
-    init_db()
-    projects = tmp_path / "projects"
-    _write_cc(projects, "myproj", "sess", [USER, ASSISTANT])
-
-    watcher = Watcher([ClaudeCodeWatcher(projects_dirs=[projects])], interval=1.0)
-    watcher.poll_once()  # imports — samples lag
-    first = watcher._lag_s
-    assert first is not None and first > 0
-
-    watcher._lag_s = None
-    watcher.poll_once()  # nothing new — no resample
-    assert watcher._lag_s is None
-
-    health = json.loads((archive_home / "health.json").read_text(encoding="utf-8"))
-    assert "lag_s" not in health["watch_pass_last"] or health["watch_pass_last"]["lag_s"] > 0
-
-
-def test_embed_pass_records_freshness_and_the_drain_split(archive_home, tmp_path) -> None:
+def test_embed_pass_records_the_drain_split(archive_home, tmp_path) -> None:
     """The semantic half of ingest freshness.
 
     A drain that has stopped and one that has caught up both embed zero docs per
     pass; only the pending count tells them apart, which is why it is recorded
     alongside the drain's own select/encode/write split."""
-    import json
-
     from thread_archive._ops.load_runs import CollectingPhase
 
     init_db()
@@ -330,37 +310,19 @@ def test_embed_pass_records_freshness_and_the_drain_split(archive_home, tmp_path
     phase = CollectingPhase()
     phase.total = watcher.embed_batch  # a full batch: the backlog is larger than one pass
     phase.mark("select", 0.25)
-    phase.count("chunks_pending", 11)
     watcher._record_embed(embedded=8, elapsed_ms=310.0, phase=phase)
 
-    rec = json.loads((archive_home / "health.json").read_text(encoding="utf-8"))["watch_embed_last"]
+    (rec,) = [r for r in _ingest_rows(archive_home) if r.get("kind") == "embed"]
     assert rec["embedded"] == 8 and rec["ms"] == 310.0
     assert rec["pending"] == watcher.embed_batch
     assert rec["capped"] is True  # more pending than one pass can see
     assert rec["select_ms"] == 250.0
-    assert rec["chunks_pending"] == 11
-
-
-def test_embed_pass_uncapped_when_the_drain_caught_up(archive_home, tmp_path) -> None:
-    import json
-
-    from thread_archive._ops.load_runs import CollectingPhase
-
-    init_db()
-    watcher = Watcher([], interval=1.0)
-    watcher._record_embed(embedded=0, elapsed_ms=4.0, phase=CollectingPhase())
-
-    rec = json.loads((archive_home / "health.json").read_text(encoding="utf-8"))["watch_embed_last"]
-    assert rec["embedded"] == 0 and rec["pending"] == 0
-    assert "capped" not in rec  # nothing pending — caught up, not behind
 
 
 def test_maintenance_records_its_own_cost(archive_home, tmp_path) -> None:
     """`maintain()` is the interval-gated upkeep whose two halves scale with the
     archive rather than with what just arrived — the shape that becomes a quadratic
     term. Gating bounds how often it is paid, not how much, so the cost is recorded."""
-    import json
-
     init_db()
     projects = tmp_path / "projects"
     _write_cc(projects, "myproj", "sess", [USER, ASSISTANT])
@@ -369,7 +331,7 @@ def test_maintenance_records_its_own_cost(archive_home, tmp_path) -> None:
     watcher.poll_once()
     watcher.maintain()
 
-    rec = json.loads((archive_home / "health.json").read_text(encoding="utf-8"))["watch_maintain_last"]
+    (rec,) = [r for r in _ingest_rows(archive_home) if r.get("kind") == "maintenance"]
     assert rec["ms"] >= 0.0
     # Split across the two halves, so a regression names which one.
     assert rec["checkpoint_ms"] >= 0.0 and rec["thread_meta_ms"] >= 0.0

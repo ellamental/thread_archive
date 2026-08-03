@@ -35,7 +35,6 @@ class ValidationContext:
     first_user_msg_has_context: bool = False
     assistant_msg_count: int = 0
     assistant_msgs_with_thinking: int = 0
-    assistant_msgs_with_tools: int = 0
 
     # Model-specific tracking
     thinking_required_msgs: int = 0
@@ -98,8 +97,7 @@ class ValidationContext:
 class BaseValidator:
     """Base class for validators with common utilities.
 
-    Subclasses should override validate() and optionally
-    validate_conversation_end().
+    Subclasses override validate().
     """
 
     def __init__(self, config: ProviderConfig, strict: bool = False):
@@ -125,29 +123,6 @@ class BaseValidator:
         """
         pass
 
-    def validate_message(
-        self, msg: NormalizedMessage, context: ValidationContext
-    ) -> None:
-        """Validate a single message.
-
-        Override in subclasses for per-message validation.
-
-        Args:
-            msg: Message to validate
-            context: Validation context to update
-        """
-        pass
-
-    def validate_conversation_end(self, context: ValidationContext) -> None:
-        """Perform end-of-conversation validation.
-
-        Override in subclasses for aggregate validation.
-
-        Args:
-            context: Validation context to update
-        """
-        pass
-
     def _add_issue(
         self,
         context: ValidationContext,
@@ -166,12 +141,6 @@ class BaseValidator:
         """Check if message has thinking/reasoning blocks."""
         blocks = msg.get("content_blocks", [])
         return any(b.get("type") == "thinking" for b in blocks)
-
-    @staticmethod
-    def _has_tool_blocks(msg: NormalizedMessage) -> bool:
-        """Check if message has tool use or result blocks."""
-        blocks = msg.get("content_blocks", [])
-        return any(b.get("type") in ("tool_use", "tool_result") for b in blocks)
 
     @staticmethod
     def _has_user_context(msg: NormalizedMessage) -> bool:

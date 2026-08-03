@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Optional
 
 from .._config import resolve_paths
+from .._fmt import size
 from .shared_work import SharedWork
 
 # The kinds, in report order — least disposable first, so a reader meets the
@@ -224,14 +225,6 @@ def _measure(paths) -> dict:
     }
 
 
-def format_bytes(n: Optional[int]) -> str:
-    """Bytes as an operator reads them — a small number and a unit that keeps it
-    small. Binary units, matching what ``du`` reports for the same directory."""
-    if n is None:
-        return "?"
-    value = float(n)
-    for unit in ("B", "KB", "MB"):
-        if abs(value) < 1024.0:
-            return f"{int(value)} B" if unit == "B" else f"{value:.1f} {unit}"
-        value /= 1024.0
-    return f"{value:.1f} GB"
+# The size renderer every operator-facing surface shares, re-exported here beside
+# the numbers it formats so a caller reading disk usage has it to hand.
+format_bytes = size

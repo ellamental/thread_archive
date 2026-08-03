@@ -29,6 +29,26 @@ cd "$ROOT"
 git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null \
   || { echo "v$VERSION is not tagged on origin — the release has not shipped; watch the Release run first (§5)" >&2; exit 1; }
 
+# The tag existing is still not the release shipped: publish.yml has yet to
+# build, upload, and verify the published wheel (§5–§6), and finishing while
+# that is in flight deploys locally and tears down the branch and worktree a
+# failed run's re-run would need. Block until the tag's whole Publish run —
+# the verify job included — is green; a run still going is watched to its
+# conclusion rather than refused, since waiting is the §5 instruction anyway.
+IFS=$'\t' read -r RUN_ID RUN_STATUS RUN_CONCLUSION < <(
+  gh run list --workflow=publish.yml --event=push --branch "v$VERSION" \
+    --json databaseId,status,conclusion --jq '.[0] | [.databaseId, .status, .conclusion] | @tsv'
+) || true
+[ -n "${RUN_ID:-}" ] || { echo "no Publish run found for v$VERSION — the tag push fired nothing; check 'gh run list --workflow=publish.yml'" >&2; exit 1; }
+if [ "$RUN_STATUS" != "completed" ]; then
+  echo "Publish run $RUN_ID for v$VERSION is still $RUN_STATUS — watching it to conclusion"
+  gh run watch "$RUN_ID" --exit-status \
+    || { echo "Publish run $RUN_ID did not succeed — not finishing; see §5 for which failures burn the version" >&2; exit 1; }
+elif [ "$RUN_CONCLUSION" != "success" ]; then
+  echo "Publish run $RUN_ID for v$VERSION concluded '$RUN_CONCLUSION' — not finishing; see §5 for which failures burn the version" >&2
+  exit 1
+fi
+
 # Back-merge. Conflicts arise only where dev diverged from a stabilization
 # fix while the release was in flight — resolve them here, once.
 git merge --no-ff "$BRANCH" -m "Merge $BRANCH back into dev"
@@ -52,6 +72,16 @@ git fetch --tags origin
 # TRACKED file is modified: that is unmerged work, not build residue.
 if [ -n "$(git -C "$WORKTREE" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
   echo "$WORKTREE has uncommitted tracked changes — not removing it; reconcile them first" >&2
+  exit 1
+fi
+
+# A thread-ci sweep may still be running inside the worktree (its ci.toml rows
+# resolve {repo} to this path); yanking the tree out from under it turns that
+# sweep into a phantom red. Anything still running from the worktree means
+# wait, not remove.
+if pgrep -qf "$WORKTREE" 2>/dev/null; then
+  echo "processes are still running from $WORKTREE (a CI sweep?) — not removing it; wait for them:" >&2
+  pgrep -lf "$WORKTREE" >&2 || true
   exit 1
 fi
 [ ! -e "$WORKTREE" ] || git worktree remove --force "$WORKTREE"

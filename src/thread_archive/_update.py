@@ -480,8 +480,9 @@ def self_update(
     if checkout is not None:
         result = {
             "ok": False, "action": "unavailable", "current": version,
-            "reason": f"source install — this runs from the clone at {checkout}; "
-                      "move it with git (checkout the release tag, reinstall)",
+            "reason": f"source install — this runs from the checkout at {checkout}, "
+                      "which is not an install shape this moves; its code is the "
+                      "checkout, and git is what moves it",
         }
     elif manager is not None:
         result = {"ok": False, "action": "unavailable", "current": version,

@@ -95,7 +95,6 @@ from .._thread_import.parsers.residual import (
     unmodeled_residual,
 )
 from .._thread_import.timestamps import parse_timestamp, parse_timestamp_iso
-from .._thread_import.tool_names import normalize_tool_name
 
 __all__ = [
     # Parsing
@@ -140,5 +139,4 @@ __all__ = [
     # Utilities
     "parse_timestamp",
     "parse_timestamp_iso",
-    "normalize_tool_name",
 ]

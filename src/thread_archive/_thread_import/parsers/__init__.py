@@ -50,7 +50,6 @@ from .base import (
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
-    ValidationSeverity,
 )
 
 # Provider parsers (ProviderParser subclasses, one per provider)
@@ -128,7 +127,6 @@ __all__ = [
     "ContentBlock",
     # Field mapping infrastructure
     "FieldMapping",
-    "ValidationSeverity",
     # Block types
     "TextBlock",
     "ThinkingBlock",

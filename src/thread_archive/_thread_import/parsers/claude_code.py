@@ -136,7 +136,6 @@ class ClaudeCodeParser(ProviderParser):
 
     Uses the pipeline architecture with:
     - PROVIDER_CONFIG: Claude Code-specific configuration (model_specific thinking)
-    - Types: ClaudeCodeExport, ClaudeCodeSession for typed input
 
     ## How to Use
 

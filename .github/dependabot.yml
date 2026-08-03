@@ -1,7 +1,7 @@
 # Keeps the SHA-pinned actions in .github/workflows fresh: the credentialed
-# workflows (publish.yml, release.yml, release-pr.yml) pin by commit so a moving
-# tag can't move under the deploy key or the OIDC grant, and pins that nobody
-# bumps rot into a different risk. PRs target dev — main only ever moves by
+# workflows (publish.yml, release.yml, release-pr.yml, bench.yml) pin by commit
+# so a moving tag can't move under the deploy key, the OIDC grant, or the bench
+# packs token, and pins that nobody bumps rot into a different risk. PRs target dev — main only ever moves by
 # release PR (docs/releasing.md), so a bot PR must never point there.
 version: 2
 updates:
@@ -10,3 +10,25 @@ updates:
     target-branch: dev
     schedule:
       interval: weekly
+
+  # The two npm trees have committed lockfiles, which is where dependency rot
+  # hides — the Python side is deliberately NOT here: its ranges float by
+  # design (pyproject documents the floors), so there is nothing for a bot to
+  # bump. Grouped so a week's churn is one PR per tree, not twenty.
+  - package-ecosystem: npm
+    directory: /frontend
+    target-branch: dev
+    schedule:
+      interval: weekly
+    groups:
+      frontend-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /devweb/frontend
+    target-branch: dev
+    schedule:
+      interval: weekly
+    groups:
+      devweb-deps:
+        patterns: ["*"]

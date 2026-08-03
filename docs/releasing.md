@@ -1,19 +1,18 @@
 # Releasing thread-archive
 
-Distribution is PyPI (`pip install thread-archive`) and the git clone (an
-editable install from a checkout, or
-`pip install "git+<repo-url>@vX.Y.Z"`). A release is a stabilization branch:
+Distribution is PyPI (`pip install thread-archive`) and nothing else — no
+`git+<repo-url>` install, no distro package, no tap
+([public/scope.md](public/scope.md)). A release is a stabilization branch:
 cut `release/X.Y.Z` from `dev`, harden it in its own worktree while `dev`
 keeps moving, and open a PR to `main`. The operator merging that PR is the
-ship. A workflow on `main` turns the merge into the annotated tag — what a
-clone pins and fast-forwards to, what `thread-archive status` / bug reports
+ship. A workflow on `main` turns the merge into the annotated tag — what this
+machine's checkout fast-forwards to, what `thread-archive status` / bug reports
 correlate against — and the PyPI upload
 (`.github/workflows/release.yml` → `publish.yml`, via Trusted Publishing).
 
-**Merging the release PR is the point of no return.** A packaged install gets
-the release when its operator runs `thread-archive self-update` (`--check` is
-how they see one exists); a clone gets it when someone checks the tag out.
-That is a delay, not a safety net: the release is offered to every install
+**Merging the release PR is the point of no return.** An install gets the
+release when its operator runs `thread-archive self-update` (`--check` is
+how they see one exists). That is a delay, not a safety net: the release is offered to every install
 the moment the publish lands, and the preflight below is the only gate
 between a bad release and the first operator who reaches for it. This
 machine's clone runs `dev`, which carries everything a release carries, so a
@@ -34,9 +33,8 @@ during stabilization all land on that branch, in a dedicated worktree, while
 `dev` moves on underneath. `main` advances only by merging release PRs — one
 merge commit per version, its tree identical to the release branch's tip —
 so what a visitor sees on GitHub (README, CI badge, browsable code) is
-always the latest release, and `pip install git+…@main` means something.
-Release tags point at `main`'s merge commits, so a clone parked on `main`
-fast-forwards cleanly from tag to tag.
+always the latest release. Release tags point at `main`'s merge commits, so a
+checkout parked on `main` fast-forwards cleanly from tag to tag.
 
 Two rules keep the topology sound:
 
@@ -53,7 +51,7 @@ Two rules keep the topology sound:
 ## 0. The repo is release infrastructure — keep it hardened
 
 A release tag is executable software offered to every install — it is what
-publishes the wheel `self-update` installs, and what a clone checks out. The
+publishes the wheel `self-update` installs. The
 GitHub repo's protections are therefore part of the release mechanism, not
 optional hygiene. The standing requirements:
 
@@ -79,6 +77,13 @@ optional hygiene. The standing requirements:
 - A branch ruleset on `dev`: collaborators go through a PR with one
   approval; the repository admin bypasses, which is what lets the operator —
   and the agents pushing as the operator — land work directly.
+- The Trusted Publishing anchors: the `pypi` environment (publish.yml's, on
+  PyPI's publisher tuple) and the `testpypi` environment (drill.yml's, on
+  TestPyPI's — the weekly drill below rides it).
+- The `RULESET_AUDIT_TOKEN` secret: a fine-grained PAT, this repository only,
+  repository Administration **read** — what lets the weekly drill's audit job
+  see bypass actors, which the rulesets API hides from anything below admin.
+  Read-only by construction: a leak shows settings, it cannot change them.
 
 `scripts/audit_release_settings.py` reads all of this over `gh api` and holds
 it against this section. Settings drift is invisible from the repo, and the
@@ -126,7 +131,7 @@ All in the worktree:
   tests/test_package_artifact.py` — builds the wheel + sdist with
   `python -m build`, proves their contents, installs the wheel into a clean
   venv, and runs the real entry points. Nothing is uploaded anywhere; this is
-  the gate that proves a fresh-clone install actually works (files present,
+  the gate that proves a from-scratch install actually works (files present,
   console scripts wired), rather than only the long-lived editable install.
 - GitHub CI green on `release/X.Y.Z` (ruff, mypy, coverage floor, the pytest
   suite across the interpreter matrix, frontend and devweb checks, and the
@@ -170,9 +175,9 @@ All in the worktree:
 - If `frontend/` changed since the last release, the committed
   `_web/static/` bundle must be current: `cd frontend && npm run build`,
   and the regenerated static assets committed with the change that caused
-  them — a clone runs whatever bundle is in the tree. This gates the clone
-  only; the viewer is dev-only and no wheel carries it, so a stale bundle
-  cannot reach an installed user.
+  them — a checkout runs whatever bundle is in the tree. This gates the
+  checkout only; the viewer is dev-only and no wheel carries it, so a stale
+  bundle cannot reach an installed user.
 
 ## Release candidates — every release publishes at least one
 
@@ -213,11 +218,11 @@ or the PR — it is a tagged commit on `release/X.Y.Z`, published by hand:
    ```
 
 4. Watch the Publish run. Its `verify` job installs the just-published rc
-   from PyPI into a fresh interpreter and smoke-tests the real entry
-   points — the same check §6 runs by hand for a final. A green `verify` on
-   the rc is the point of cutting one: it proves the published artifact
-   installs and runs over the exact path the final will take, before the
-   final's version number is at stake.
+   from PyPI into a fresh interpreter, smoke-tests the real entry points, and
+   runs a full ingest lifecycle on it — the same check §6 runs by hand for a
+   final. A green `verify` on the rc is the point of cutting one: it proves
+   the published artifact installs and *works* over the exact path the final
+   will take, before the final's version number is at stake.
 
 Fixes found during the rc land on the release branch as usual; the next
 round is `rcN+1` — the §3 release commit (changelog compression + version
@@ -308,22 +313,24 @@ and the fix is a fixed vX.Y.(Z+1).
 
 ## 6. Verify from the outside
 
-Prove the release installs from the tag, not just from this checkout's
-long-lived venv:
+Prove the release installs from PyPI — the only shape an operator gets — and
+not just from this checkout's long-lived venv.
+
+That proof is automated: the Publish run's `verify` job installs the
+published version from PyPI into a fresh interpreter (wheel only — the
+self-update path), runs the entry points, checks the installed `__version__`
+against the tag, and then drives a real lifecycle on it — a corpus for every
+provider, imported through each provider's own importer, the index rebuilt
+from the JSONL truth, every provider's marker searched back out
+(`tests/install/e2e_check.py`, from the tagged tree; the package under test
+stays the wheel, which the job asserts). That last step is the only place the
+published artifact does real work against dependencies resolved fresh from the
+index — the `package` and install lanes both prove a locally built wheel
+against locally resolved ones. Watch it go green. To repeat it by hand:
 
 ```bash
 python3 -m venv /tmp/ta-verify
-/tmp/ta-verify/bin/pip install "git+ssh://git@github.com/ellamental/thread_archive.git@vX.Y.Z"
-/tmp/ta-verify/bin/thread-archive --help
-```
-
-The PyPI half is automated: the Publish run's `verify` job installs the
-published version from PyPI into a fresh interpreter (wheel only — the
-self-update path), runs the entry points, and checks the installed
-`__version__` against the tag. Watch it go green. To repeat it by hand:
-
-```bash
-/tmp/ta-verify/bin/pip install --force-reinstall "thread-archive==X.Y.Z"
+/tmp/ta-verify/bin/pip install "thread-archive==X.Y.Z"
 /tmp/ta-verify/bin/thread-archive --help
 ```
 
@@ -376,20 +383,75 @@ implicated; repeat until the branch is green everywhere. Only then does the
 final ship, once, and `main` goes green because the merge carries a fix
 already proven on the exact machinery that was failing.
 
+## The weekly drill — the machinery exercised between releases
+
+Release machinery is the least-executed code in the repo: it runs when a
+release ships, which is exactly when a quiet breakage hurts most. The weekly
+drill runs the delivery path on throwaway versions so that breakage surfaces
+on a schedule instead of mid-ship — the same property the backup restore
+drill buys for backups. The clock is `.github/workflows/drill.yml`'s own
+weekly cron; `scripts/release_drill.sh` runs the same thing by hand — after
+fixing release machinery, ahead of a release — without waiting for the
+schedule. (A cron fire executes `main`'s copy of the workflow file — GitHub
+runs scheduled workflows from the default branch only — but every job checks
+out `dev` explicitly, so the drill always builds and harnesses dev's tip. A
+drill.yml change therefore reaches the *schedule* at the next release, while
+a dispatch on `dev` runs it immediately.)
+
+Two halves, jobs of the same run:
+
+1. **The settings audit** (`scripts/audit_release_settings.py`) — the §0
+   requirements read live. GitHub-side settings are load-bearing unversioned
+   state, and the audit is the only thing that looks; the weekly fire is what
+   turns "someone thinks to run it" into a clock. Its job authenticates with
+   the `RULESET_AUDIT_TOKEN` secret (§0), because the rulesets API hides
+   bypass actors from anything below admin — a `GITHUB_TOKEN` read shows the
+   rules but not who may skip them, which is half of what §0 protects.
+2. **The TestPyPI drill** — dev's tip built under drill version numbers
+   (`999.run.N`, plain X.Y.Z, unmistakably not a release), an rc and a final
+   published to TestPyPI over the same Trusted Publishing handshake shape the
+   real publish uses, and then the operator surface driven against what the
+   index actually serves: plain resolution lands the final and skips the rc,
+   the rc installs by explicit opt-in, the fresh install runs the real ingest
+   lifecycle (the same `tests/install/e2e_check.py` the Publish `verify` job
+   runs on a real release), `self-update` carries an install from the base
+   drill version to the target, refuses to offer the rc, and rolls back to
+   the base when the post-install smoke fails
+   (`tests/install/self_update_check.py`). Dependencies never resolve against
+   TestPyPI — it is an open index anyone can upload to — so every leg pins
+   `--no-deps` and takes only the artifact under judgement from it.
+
+The whole workflow is gated on the `DRILL_ENABLED` repository variable: until
+it is `true`, every trigger — cron and dispatch alike — skips all jobs, and
+`release_drill.sh` refuses to dispatch rather than report an all-skipped run
+as a pass. That is how the drill ships ahead of its standing requirements
+(the TestPyPI publisher, the audit token) and how it pauses deliberately:
+`gh variable set DRILL_ENABLED -b true` (or `-b false`) is the switch.
+
+The drill mints no refs: no tag (a `v*` push would fire the real publish), no
+branch, no commit — its only residue is throwaway versions on TestPyPI. That
+boundary is also its limit: the tag ruleset + deploy-key push (release.yml)
+and the real PyPI publisher tuple cannot be drilled without shipping, so they
+stay covered by the mandatory per-release rc lane and the audit. A red drill
+means the release machinery is broken *now*, on a quiet week — fix it on
+`dev` and dispatch again; nothing is in flight, nothing is burned that
+matters.
+
 ## Yanking a bad release
 
 Yank the release on PyPI first (project → release → Options → Yank) — that is
 where self-update resolves from, and a yanked version stops being a candidate
 for it and for every fresh `pip install`. A `==X.Y.Z` pin still gets it, and the
 version number is burned: PyPI never accepts a re-upload of it. Then delete the
-bad tag, which is the clone path and what a `git+…@vX.Y.Z` install resolves:
+bad tag — it is the release's identity, what `status` output and bug reports
+correlate against, and what a checkout would otherwise move to:
 
 ```bash
 git push origin :refs/tags/vX.Y.Z     # delete the remote tag
 ```
 
 Neither heals an install whose operator already applied the release, nor
-removes a tag a clone already fetched locally. Always follow with the real fix:
+removes a tag already fetched into a checkout. Always follow with the real fix:
 
 ```bash
 # fix, then release vX.Y.(Z+1) normally

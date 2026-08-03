@@ -1,0 +1,320 @@
+# The release drill — the publish machinery, exercised against TestPyPI.
+#
+# Release machinery is the least-executed code in the repo: it runs only when a
+# release ships, which is exactly when a quiet breakage hurts most. This
+# workflow runs the delivery path on throwaway versions so that breakage
+# surfaces on a schedule instead of mid-ship: build dev's tip under drill
+# version numbers, publish rc and final to TestPyPI over the same Trusted
+# Publishing handshake shape the real publish uses, install what the index
+# actually serves, run the real ingest lifecycle on it, then drive
+# `self-update` — the upgrade, the rc-never-offered guardrail, and the
+# rollback — against those published artifacts.
+#
+# What it deliberately does NOT touch: PyPI, `main`, and every tag. A `v*` tag
+# push fires the real publish (publish.yml), so the drill mints no refs at
+# all — its only residue is throwaway versions on TestPyPI. What it therefore
+# cannot drill: the tag ruleset + deploy-key push (release.yml) and the real
+# PyPI publisher tuple; those stay covered by the mandatory per-release rc lane
+# (docs/releasing.md) and the settings audit.
+#
+# The GitHub-side settings audit rides the same schedule as its own job:
+# rulesets are load-bearing unversioned state, and this is what turns "someone
+# thinks to run the audit" into a clock. It authenticates with
+# RULESET_AUDIT_TOKEN (a fine-grained PAT, repository Administration: read,
+# this repo only) because the rulesets API hides bypass actors from anything
+# below admin — GITHUB_TOKEN would see the rules but not who may skip them,
+# which is half of what §0 protects. Read-only by construction: a leak shows
+# settings, it cannot change them.
+#
+# The weekly cron runs the default branch's (main's) copy of this file, but
+# every job checks out `dev` explicitly — the drill always builds and
+# harnesses dev's tip, whichever trigger fired it. scripts/release_drill.sh
+# is the by-hand entry: it dispatches this on dev and watches.
+#
+# Drill versions are 999.<run_number>.<run_attempt*10 [+1]> — plain X.Y.Z (the
+# only shape self-update accepts), unmistakably not a release, monotonic across
+# runs and re-runs. A published version is burned on TestPyPI like anywhere
+# else; a full re-run gets fresh numbers from the attempt, so nothing collides.
+#
+# Standing requirements this rides on: a Trusted Publisher on test.pypi.org
+# for project `thread-archive` — repo ellamental/thread_archive, workflow
+# drill.yml, environment testpypi — the `testpypi` environment existing in
+# the repo settings, and the RULESET_AUDIT_TOKEN secret. The settings audit
+# names all of them.
+#
+# The whole workflow is gated on the DRILL_ENABLED repository variable: until
+# it is 'true', every trigger — cron and dispatch alike — skips all jobs, so
+# the drill sits armed but silent while its standing requirements are being
+# set up (or is paused deliberately) without a weekly red run. Flip it with
+# `gh variable set DRILL_ENABLED -b true`.
+
+name: Drill
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Tuesday morning UTC; the odd minute keeps clear of the on-the-hour herd.
+    - cron: "23 9 * * 2"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drill
+
+env:
+  TESTPYPI_SIMPLE: https://test.pypi.org/simple/
+
+jobs:
+  # The §0 hardening, read live against docs/releasing.md — the only checks in
+  # this workflow that need a credential beyond OIDC (see the header).
+  audit:
+    if: vars.DRILL_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: dev
+
+      - name: Audit the GitHub-side release settings
+        env:
+          GH_TOKEN: ${{ secrets.RULESET_AUDIT_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "RULESET_AUDIT_TOKEN is not configured — the audit cannot see" \
+                 "bypass actors without an admin-scoped read (docs/releasing.md §0)." >&2
+            exit 1
+          fi
+          python3 scripts/audit_release_settings.py
+
+  # Build all three drill dists up front: base final, rc, target final. The
+  # verify jobs install from TestPyPI, never from these artifacts — the
+  # artifacts only cross into the publish jobs, mirroring publish.yml's
+  # build/publish split (the OIDC grant lives in jobs that run no project
+  # code).
+  build:
+    if: vars.DRILL_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      base: ${{ steps.versions.outputs.base }}
+      rc: ${{ steps.versions.outputs.rc }}
+      final: ${{ steps.versions.outputs.final }}
+    steps:
+      # Pinned by SHA, like every action in the workflows that hold publish
+      # credentials (see publish.yml); Dependabot keeps the pins fresh.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: dev
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Compute drill versions
+        id: versions
+        run: |
+          patch=$(( GITHUB_RUN_ATTEMPT * 10 ))
+          {
+            echo "base=999.${GITHUB_RUN_NUMBER}.${patch}"
+            echo "final=999.${GITHUB_RUN_NUMBER}.$(( patch + 1 ))"
+            echo "rc=999.${GITHUB_RUN_NUMBER}.$(( patch + 1 ))rc1"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build the three dists
+        env:
+          BASE: ${{ steps.versions.outputs.base }}
+          RC: ${{ steps.versions.outputs.rc }}
+          FINAL: ${{ steps.versions.outputs.final }}
+        run: |
+          pip install build
+          for pair in "base $BASE" "rc $RC" "final $FINAL"; do
+            set -- $pair
+            python3 - "$2" <<'PY'
+          import pathlib, re, sys
+          init = pathlib.Path("src/thread_archive/__init__.py")
+          text, n = re.subn(r'^__version__ = ".*"$',
+                            f'__version__ = "{sys.argv[1]}"', init.read_text(), flags=re.M)
+          if n != 1:
+              sys.exit(f"expected exactly one __version__ line, found {n}")
+          init.write_text(text)
+          PY
+            python -m build --outdir "dist-$1"
+            ls "dist-$1"
+            test -f "dist-$1/thread_archive-$2-py3-none-any.whl"
+            test -f "dist-$1/thread_archive-$2.tar.gz"
+          done
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dists
+          path: |
+            dist-base/
+            dist-rc/
+            dist-final/
+
+  # Base final + rc go up first; the target final waits until the rc-lane
+  # checks pass, so the "plain resolution skips the rc" and "self-update never
+  # offers an rc" assertions run while the rc really is the newest thing on
+  # the index — the state every real release passes through.
+  publish-base:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dists
+
+      - name: Stage base + rc
+        run: mkdir dist && mv dist-base/* dist-rc/* dist/
+
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  verify-rc:
+    needs: [build, publish-base]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BASE: ${{ needs.build.outputs.base }}
+      RC: ${{ needs.build.outputs.rc }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: dev
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      # One probe, two answers: waits out TestPyPI's index lag, and asserts
+      # the resolver semantics an operator gets — a plain resolve lands on the
+      # base final (the rc, though newer, is skipped), and the rc is
+      # reachable only by explicit opt-in. --no-deps keeps TestPyPI's role to
+      # serving our artifact; dependencies never resolve against it (it is an
+      # open index anyone can upload to).
+      - name: Plain resolution serves the base final; the rc is opt-in only
+        run: |
+          for i in $(seq 1 20); do
+            pip download --no-deps --only-binary :all: --index-url "$TESTPYPI_SIMPLE" \
+              -d probe-plain thread-archive \
+            && pip download --no-deps --only-binary :all: --index-url "$TESTPYPI_SIMPLE" \
+              -d probe-rc "thread-archive==$RC" && break
+            echo "attempt $i: TestPyPI not serving both drill versions yet; retrying in 30s"
+            rm -rf probe-plain probe-rc
+            sleep 30
+          done
+          ls probe-plain probe-rc
+          test -f "probe-plain/thread_archive-$BASE-py3-none-any.whl"
+          test -f "probe-rc/thread_archive-$RC-py3-none-any.whl"
+
+      # The rc must be runnable — it is offered to real testers via --pre.
+      # The wheel is the one TestPyPI served; dependencies come from PyPI.
+      - name: The served rc installs and runs
+        run: |
+          python -m venv /tmp/rc-venv
+          /tmp/rc-venv/bin/pip install --quiet probe-rc/*.whl
+          /tmp/rc-venv/bin/thread-archive --help >/dev/null
+          /tmp/rc-venv/bin/archive-mcp --help >/dev/null
+          installed=$(/tmp/rc-venv/bin/python -c "import thread_archive; print(thread_archive.__version__)")
+          test "$installed" = "$RC"
+
+      # The guardrail docs/releasing.md leans on: `self-update` never takes a
+      # pre-release. With the rc the newest thing on the index, an install at
+      # the base final must read as up-to-date.
+      - name: self-update never offers the rc
+        run: |
+          python -m venv /tmp/base-venv
+          /tmp/base-venv/bin/pip install --quiet probe-plain/*.whl
+          /tmp/base-venv/bin/python tests/install/self_update_check.py up-to-date \
+            --current "$BASE" -- --index-url "$TESTPYPI_SIMPLE"
+
+  publish-final:
+    needs: [verify-rc]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dists
+
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist-final/
+
+  # The final over the full operator surface: fresh install of what the index
+  # serves, entry points, the real ingest lifecycle (publish.yml's verify job
+  # for a real release), then self-update base → final and a forced rollback —
+  # each leg against the published artifacts, real pip end to end.
+  verify-final:
+    needs: [build, publish-final]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BASE: ${{ needs.build.outputs.base }}
+      FINAL: ${{ needs.build.outputs.final }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: dev
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Plain resolution now serves the target final
+        run: |
+          for i in $(seq 1 20); do
+            pip download --no-deps --only-binary :all: --index-url "$TESTPYPI_SIMPLE" \
+              -d probe thread-archive \
+            && test -f "probe/thread_archive-$FINAL-py3-none-any.whl" && break
+            echo "attempt $i: TestPyPI not serving $FINAL yet; retrying in 30s"
+            rm -rf probe
+            sleep 30
+          done
+          test -f "probe/thread_archive-$FINAL-py3-none-any.whl"
+          pip download --no-deps --only-binary :all: --index-url "$TESTPYPI_SIMPLE" \
+            -d probe-base "thread-archive==$BASE"
+
+      - name: Fresh install of the served final — entry points and lifecycle
+        run: |
+          python -m venv /tmp/final-venv
+          /tmp/final-venv/bin/pip install --quiet probe/*.whl
+          /tmp/final-venv/bin/thread-archive --help >/dev/null
+          /tmp/final-venv/bin/archive-mcp --help >/dev/null
+          installed=$(/tmp/final-venv/bin/python -c "import thread_archive; print(thread_archive.__version__)")
+          test "$installed" = "$FINAL"
+          /tmp/final-venv/bin/python - <<'PY'
+          import pathlib, sys, sysconfig
+          import thread_archive
+          pkg = pathlib.Path(thread_archive.__file__).resolve()
+          site = pathlib.Path(sysconfig.get_paths()["purelib"]).resolve()
+          if site not in pkg.parents:
+              sys.exit(f"thread_archive resolves to {pkg}, not the installed wheel under {site}")
+          print(f"under test: {pkg}")
+          PY
+          /tmp/final-venv/bin/python tests/install/e2e_check.py
+
+      - name: self-update takes the install from base to final
+        run: |
+          python -m venv /tmp/update-venv
+          /tmp/update-venv/bin/pip install --quiet probe-base/*.whl
+          /tmp/update-venv/bin/python tests/install/self_update_check.py update \
+            --current "$BASE" --target "$FINAL" -- --index-url "$TESTPYPI_SIMPLE"
+
+      - name: A failed update rolls back to the base final
+        run: |
+          python -m venv /tmp/rollback-venv
+          /tmp/rollback-venv/bin/pip install --quiet probe-base/*.whl
+          /tmp/rollback-venv/bin/python tests/install/self_update_check.py rollback \
+            --current "$BASE" --target "$FINAL" -- --index-url "$TESTPYPI_SIMPLE"

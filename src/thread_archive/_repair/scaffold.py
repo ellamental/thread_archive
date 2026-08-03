@@ -23,8 +23,8 @@ Layout under ``<home>/plugins/<provider>/``::
 The fix module and tests are generated only when absent — re-running
 ``thread-archive source fix`` refreshes evidence, samples, quirks, and the protocol
 around an in-progress fix without discarding it. Everything the scaffold writes stays
-outside the archive's git clone: the self-updater's clean-tree requirement is
-untouched by any number of patches.
+under the archive home, never in archive's own installed code: no number of patches
+puts the install in a state ``self-update`` has to reason about.
 """
 
 from __future__ import annotations

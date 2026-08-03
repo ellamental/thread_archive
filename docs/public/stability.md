@@ -29,7 +29,7 @@ The public API is exactly four things:
   follow the private tree's churn, so these names keep working.
 The web viewer is not on this list, because it is not in the product an install
 gets: it is dev-only and ships in no wheel ([web-viewer.md](web-viewer.md)).
-Within a clone its URLs are still held steady — editor buttons, sibling navbars,
+Within a checkout its URLs are still held steady — editor buttons, sibling navbars,
 and health probes link `http://127.0.0.1:8787` from outside the repo — and
 `frontend/e2e/route-coverage.spec.ts` pins the page routes against the route
 table. That is a promise to this machine's own family, not to an installed
@@ -39,8 +39,8 @@ Everything else is private support machinery and may change without notice:
 the viewer's bundle and markup, the `/api/*` endpoints not named above, and
 every Python module in the package — there is no public Python API, and the
 `cli` module is public in name only, because it is what the console script
-resolves to. More surface gets exposed
-deliberately as it matures. `tests/test_public_api.py` ratchets the boundary.
+resolves to. More surface, if any ever joins this list, gets exposed
+deliberately. `tests/test_public_api.py` ratchets the boundary.
 
 Releases (changelog compression, version bump, release commit, annotated tag)
 follow [../releasing.md](../releasing.md).

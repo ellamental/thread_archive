@@ -57,7 +57,7 @@ written.
   (`thread_search(pr=4)`), or what a session actually changed.
 - **Built like a database, not a folder of exports** — plain JSONL as the
   source of truth, crash-safe writes with intent journaling, built-in backup
-  with nightly restore drills. The index is a disposable projection that
+  with scheduled restore drills. The index is a disposable projection that
   rebuilds at any time.
 - **Import drift is loud and repairable** — when a provider changes its
   transcript format, coverage checks catch it, raw files are preserved before
@@ -74,17 +74,17 @@ import from account exports you download by hand.
 ## Documentation
 
 This is the manual, and it ships inside the package: `thread-archive docs` lists
-these pages and `thread-archive docs <page>` prints one, offline. From a clone,
-the web viewer serves the same pages at `/docs`. The links below are those pages
+these pages and `thread-archive docs <page>` prints one, offline. In a source
+checkout, the web viewer serves the same pages at `/docs`. The links below are those pages
 on GitHub. (`docs/*.md`, one level up from them, is the other half — the release
 process, the bench landscape, the maintainer's dev panels — written for whoever
 works on this repo, and in no install.)
 
-- [Install](https://github.com/ellamental/thread_archive/blob/main/docs/public/install.md) — the setup wizard, optional semantic search, updating, from-source, uninstall
+- [Install](https://github.com/ellamental/thread_archive/blob/main/docs/public/install.md) — the setup wizard, optional semantic search, updating, uninstall
 - [Search and retrieval](https://github.com/ellamental/thread_archive/blob/main/docs/public/retrieval.md) — the two tools, filters, and the code index
 - [CLI](https://github.com/ellamental/thread_archive/blob/main/docs/public/cli.md) — every verb, grouped by what it acts on
 - [MCP](https://github.com/ellamental/thread_archive/blob/main/docs/public/mcp.md) — server modes and client wiring
-- [Web viewer](https://github.com/ellamental/thread_archive/blob/main/docs/public/web-viewer.md) — the dev-only local UI, run from a clone
+- [Web viewer](https://github.com/ellamental/thread_archive/blob/main/docs/public/web-viewer.md) — the dev-only local UI, run from a source checkout
 - [How it works](https://github.com/ellamental/thread_archive/blob/main/docs/public/architecture.md) — the event model, durability, platform assumptions, repo layout
 - [Stability](https://github.com/ellamental/thread_archive/blob/main/docs/public/stability.md) — the four public interfaces and what may change
 - [When an import drifts](https://github.com/ellamental/thread_archive/blob/main/docs/public/import-drift.md) — the support tier and the repair loop
@@ -125,3 +125,11 @@ dependencies change).
 thread-archive is the standalone member of a larger personal project ("thread"), built to
 stand on its own — self-contained, no hosted backend or external services. It is
 alpha software, and the version number says so.
+
+It is also one person's project — no organization behind it, and no promise of
+maintenance. The design budgets for that: an installed archive depends on
+nothing that expires (no hosted service, no account, no phone-home), released
+wheels stay on PyPI, import drift is repairable locally without a new release
+([the repair loop](https://github.com/ellamental/thread_archive/blob/main/docs/public/import-drift.md)),
+and the license invites a fork. If this project ever goes quiet, your archive
+doesn't.

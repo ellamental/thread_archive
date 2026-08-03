@@ -305,11 +305,39 @@ def _corpus_arrays(s) -> tuple:
 
     LEFT JOIN, so the row space stays exactly ``event_vectors``: an inner join would
     silently drop a vector whose event is missing, and the pack's arrays are all
-    positional — one short array would misalign every id from that row on."""
+    positional — one short array would misalign every id from that row on.
+
+    The matrix is filled into one preallocated array in blocks rather than
+    accumulated as a list of blobs and joined at the end. The list form holds the
+    corpus twice at the moment of the join — every blob, plus the concatenation of
+    all of them — which is the peak a base build has to fit in RAM, and it grows
+    with the corpus without bound. Filling in place holds it once plus a block.
+    """
     ids: list[int] = []
     cts: list[str] = []
     occ: list = []
-    vecs: list[bytes] = []
+    # Same transaction as the read below, so this counts the rows that iterate.
+    n = int(s.execute(sa_text("SELECT count(*) FROM event_vectors")).scalar() or 0)
+    mat: Optional[np.ndarray] = None
+    filled = 0
+    block: list[bytes] = []
+
+    def _drain() -> None:
+        """Decode the pending blobs into ``mat`` — one join + one frombuffer per
+        block, never per row: the per-row form spends most of a base build's CPU
+        on hundreds of thousands of tiny allocations. Ragged input (a blob whose
+        length disagrees with the rest) fails the reshape, which is what keeps a
+        corrupt row an error rather than a misalignment."""
+        nonlocal mat, filled
+        if not block:
+            return
+        rows = np.frombuffer(b"".join(block), dtype=np.float32).reshape(len(block), -1)
+        if mat is None:
+            mat = np.empty((n, rows.shape[1]), dtype=np.float32)
+        mat[filled:filled + len(block)] = rows
+        filled += len(block)
+        block.clear()
+
     result = s.execute(sa_text(
         "SELECT v.event_id, v.content_type, v.vec, e.occurred_at FROM event_vectors v "
         "LEFT JOIN events e ON e.id = v.event_id "
@@ -318,14 +346,26 @@ def _corpus_arrays(s) -> tuple:
     for r in result:
         ids.append(int(r[0]))
         cts.append(str(r[1]))
-        vecs.append(r[2])
         occ.append(r[3])
+        block.append(r[2])
+        if len(block) >= _STACK_BLOCK:
+            _drain()
+    _drain()
     ct_names = sorted(set(cts))
     codes = {c: i for i, c in enumerate(ct_names)}
-    mat = _stack_blobs(vecs)
+    # ``filled`` is the truth about how many rows arrived; the count above only
+    # sized the buffer. They agree unless the table changed under the read, and a
+    # short pack is right where a tail of uninitialized rows would be garbage.
+    mat = _stack_blobs([]) if mat is None else mat[:filled]
     ids_arr = np.asarray(ids, dtype=np.int64)
     ct_codes = np.asarray([codes[c] for c in cts], dtype=np.int16)
     return mat, ids_arr, ct_codes, _occurred_array(occ), ct_names
+
+
+#: Rows decoded per block by :func:`_corpus_arrays`. Bounds the transient buffer a
+#: base build holds on top of the matrix itself (~25MB at 768 float32 dims) while
+#: staying wide enough that the per-block join keeps its one-pass efficiency.
+_STACK_BLOCK = 8192
 
 
 def _stack_blobs(vecs: list[bytes]) -> np.ndarray:
@@ -1317,7 +1357,6 @@ def search(
     limit: int = 20,
     since: Optional[str] = None,
     until: Optional[str] = None,
-    tool_name: Optional[str] = None,
     exclude_content_types: Optional[list[str]] = None,
     source: Optional[list[str]] = None,
     thread_ids: Optional[list[str]] = None,

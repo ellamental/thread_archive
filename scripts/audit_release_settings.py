@@ -152,10 +152,24 @@ def main() -> int:
                "v* bypass is exactly the release deploy key + the repository admin",
                json.dumps(sorted(map(str, actors))))
 
+    # ── environments: each publish surface's repo-side half of its trust tuple ─
+    # PyPI verifies repo + workflow + environment; the environment existing here
+    # is the half this API can see. `pypi` anchors the real publish
+    # (publish.yml), `testpypi` the weekly drill (drill.yml).
+    envs = gh_api(f"repos/{REPO}/environments")
+    have_envs = {e.get("name") for e in envs.get("environments", [])}
+    for env, workflow in (("pypi", "publish.yml"), ("testpypi", "drill.yml")):
+        report(env in have_envs,
+               f"environment '{env}' exists ({workflow}'s Trusted Publishing tuple names it)",
+               json.dumps(sorted(have_envs)))
+
     print()
     print("MANUAL  2FA on every account that can push (no API exposes another user's setting).")
     print("MANUAL  PyPI Trusted Publishing tuple: pypi.org → thread-archive → Publishing —")
     print("        repo ellamental/thread_archive, workflow publish.yml, environment pypi.")
+    print("MANUAL  TestPyPI Trusted Publishing tuple (the weekly drill): test.pypi.org →")
+    print("        thread-archive → Publishing — repo ellamental/thread_archive,")
+    print("        workflow drill.yml, environment testpypi.")
 
     if failures:
         print(f"\n{failures} check(s) failed — §0 of docs/releasing.md says what each one protects.")

@@ -221,18 +221,32 @@ def verify(
     # statement as the shadow write). No shadow row may point at a missing event.
     # All index-internal drift — a reindex rebuilds it — but silently
     # unsearchable content is loss in effect, so it must be *seen* daily.
-    fts_shadow = fts5 = fts_orphans = 0
+    fts_shadow = fts5 = fts_orphans = fts_substr = 0
     fts_triggers_missing = False
+    has_substr = False
     with get_session() as s:
         conn = s.connection().connection
         has_fts = conn.execute(
             "SELECT count(*) FROM sqlite_master WHERE name IN ('events_fts', 'event_search')"
         ).fetchone()[0] == 2
+        has_substr = conn.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'event_substr'"
+        ).fetchone()[0] == 1
         if has_fts and watermark:
             fts_shadow, fts5 = conn.execute(
                 "SELECT (SELECT count(*) FROM events_fts), "
                 "(SELECT count(*) FROM event_search_docsize)"
             ).fetchone()
+            # The trigram index rides the same shadow and must hold the same row
+            # count. Short, it does not report an error — a prefiltered substring
+            # query just returns fewer hits than the corpus holds, which reads as
+            # "no such conversation". Retrieval falls back on its own readiness
+            # probe; this is what makes the state *visible* rather than merely
+            # survivable.
+            if has_substr:
+                fts_substr = conn.execute(
+                    "SELECT count(*) FROM event_substr_docsize"
+                ).fetchone()[0]
             fts_orphans = conn.execute(
                 "SELECT count(*) FROM events_fts f WHERE f.event_id <= ? "
                 "AND NOT EXISTS(SELECT 1 FROM events e WHERE e.id = f.event_id)",
@@ -292,6 +306,14 @@ def verify(
             "orphan_rows": int(fts_orphans),
             "missing": fts_missing,
             "triggers_missing": fts_triggers_missing,
+            # Reported, deliberately not in ``failed``: a short or absent trigram
+            # index costs substring queries their index and nothing else — the
+            # retrieval path probes for it and falls back to the scan it used
+            # before this index existed. Every archive predating the index reads
+            # short here until a reindex builds it, and a red nightly for a
+            # capability an operator has not lost would be crying wolf.
+            "substring_rows": int(fts_substr),
+            "substring_indexed": bool(has_substr and fts_substr == fts_shadow),
         },
     }
     if deep:

@@ -23,6 +23,7 @@ table, not a description of them.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -75,6 +76,28 @@ def test_a_swap_that_preserves_count_and_size_still_changes_it(tmp_path) -> None
     after = dataset_pins.fingerprint("cdr", root=root)
 
     assert before != after
+
+
+def test_a_same_size_edit_sharing_a_timestamp_tick_still_changes_it(tmp_path) -> None:
+    """The memo keys on ``(size, mtime_ns)``, and a filesystem whose timestamps are
+    coarse hands it two different corpora under one key: where stamps round to the
+    whole second — as they do in the container the install proof builds in — a
+    same-length rewrite moments after the read that hashed the file moves nothing
+    the memo looks at, and a drifted corpus verifies as its own pin.
+
+    ``utime`` reproduces deliberately what a coarse filesystem produces on its
+    own, so the guarantee is pinned on every box rather than only where the clock
+    happens to be blunt enough to expose it."""
+    root = _tree(tmp_path)
+    path = root / dataset_pins.SOURCES["locomo"].paths[0]
+    stamped = path.stat()
+    before = dataset_pins.fingerprint("locomo", root=root)
+
+    path.write_bytes(b"one\nTWO\n")
+    os.utime(path, ns=(stamped.st_atime_ns, stamped.st_mtime_ns))
+    assert path.stat().st_size == stamped.st_size, "the case is a same-length edit"
+
+    assert before and dataset_pins.fingerprint("locomo", root=root) != before
 
 
 def test_the_fingerprint_is_stable_across_calls(tmp_path) -> None:

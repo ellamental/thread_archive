@@ -140,14 +140,14 @@ class Machine:
         with the reason when the service manager refuses the load."""
         from .. import _service
 
-        _service.install_watcher(home)
+        _service.install_agent("watcher", home)
 
     def install_backup(self, dest: str, home: Optional[str] = None) -> None:
         """Schedule the nightly backup pipeline for ``home`` → ``dest``. Raises
         ``SystemExit`` with the reason when the service manager refuses."""
         from .. import _service
 
-        _service.install_backup(dest, home)
+        _service.install_agent("backup", home, dest=dest)
 
     def uninstall_agent(self, agent: str) -> None:
         """Unschedule an agent and remove its manifest. Raises ``SystemExit``

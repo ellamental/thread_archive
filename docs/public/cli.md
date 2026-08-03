@@ -16,7 +16,7 @@ thread-archive search [query]   # the thread_search tool: filters by time, sourc
 thread-archive read <id>        # the thread_read tool: replay a thread (--mode user|chat|full|last|ends,
                                 #   --summary files, --around-event <id> to open a search hit);
                                 #   takes a ULID, a legacy integer id, or a provider session uuid
-thread-archive web              # open the cohosted viewer (clone only; the watcher serves it)
+thread-archive web              # open the cohosted viewer (source checkout only; the watcher serves it)
 
 # ingest
 thread-archive watch            # watch local AI-tool stores and import incrementally
@@ -59,9 +59,9 @@ thread-archive service <action> # install/uninstall/restart/status a service age
                                 #   systemd --user on Linux) — the always-on watcher (default), --mcp
                                 #   the shared server, --backup the nightly pipeline
                                 #   (`service install --backup --dest <path> [--at HH:MM]`)
-thread-archive self-update      # packaged installs only: install the newest release from PyPI — operator-
-                                #   driven, nothing updates on its own (--check reports without installing;
-                                #   a clone updates with git, a uv/pipx install with its own upgrade verb)
+thread-archive self-update      # install the newest release from PyPI — operator-driven, nothing updates
+                                #   on its own (--check reports without installing; a uv/pipx install
+                                #   moves with its own upgrade verb)
 thread-archive uninstall        # remove this machine's archive machinery — agents, MCP wiring, manifest,
                                 #   heartbeat, install record; the conversations are never touched
                                 #   (--dry-run reports, --yes skips the confirmation)
@@ -88,17 +88,17 @@ implementation `archive-mcp` serves, so a query typed here and the same query
 asked mid-conversation return the same answer.
 
 `docs` reads this directory — `docs/public/`, whose pages ship as package data
-inside the wheel, so an install answers for itself with no clone and no network.
+inside the wheel, so an install answers for itself with no checkout, no network.
 Same pages the viewer serves at `/docs`. Only this directory: `docs/*.md` one
 level up is written for whoever works on the repo, ships in no wheel, and is
 listed by neither reader.
 
 The web viewer is a third door onto the same archive, cohosted by
 `thread-archive watch --web` — but it is dev-only and ships in no wheel, so
-`web` and `watch --web` are registered only in a clone. An install's `--help`
-does not list them, which is why the listing above may show fewer verbs than
-yours ([web-viewer.md](web-viewer.md)).
+`web` and `watch --web` are registered only in a source checkout. An install's
+`--help` does not list them, which is why the listing above may show fewer verbs
+than yours ([web-viewer.md](web-viewer.md)).
 
 The maintainer's instruments — the retrieval report, telemetry, the search lab —
 are not a verb here at all. They are their own app on their own server, run with
-`python -m devweb` from a clone ([../devweb.md](../devweb.md)).
+`python -m devweb` from a source checkout ([../devweb.md](../devweb.md)).

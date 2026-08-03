@@ -76,6 +76,36 @@ def test_parser_preservation_block_types_are_not_drift(caplog, archive_home):
     assert _validation_logs(caplog) == []
 
 
+def test_model_fallback_marker_is_not_drift(caplog, archive_home):
+    # Claude Code re-runs a safeguard-flagged turn on another model and records the
+    # switch as a `fallback` block, which the archive preserves raw and renders as a
+    # model-switch marker. Declared, so a session that hits one doesn't read as drift.
+    with caplog.at_level(logging.WARNING, logger=_EVENTS_LOGGER):
+        log_parse_validation(
+            [_msg("assistant", block_type="fallback")],
+            provider="claude-code", conversation_id="c1", batch_safe=True,
+        )
+    assert _validation_logs(caplog) == []
+
+
+def test_server_tool_blocks_are_declared_per_provider(caplog, archive_home):
+    # Anthropic's server-side tools (the call, then its results) ride Claude
+    # Science's transcripts, so they are declared on ITS config. Claude Science and
+    # Claude Code share a parser, and a shared ledger would swallow the day Claude
+    # Code starts emitting them too.
+    msgs = [_msg("assistant", block_type="server_tool_use")]
+    with caplog.at_level(logging.WARNING, logger=_EVENTS_LOGGER):
+        log_parse_validation(msgs, provider="claude-science",
+                             conversation_id="c1", batch_safe=True)
+    assert _validation_logs(caplog) == []
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=_EVENTS_LOGGER):
+        log_parse_validation(msgs, provider="claude-code",
+                             conversation_id="c1", batch_safe=True)
+    assert any("server_tool_use" in m for m in _validation_logs(caplog))
+
+
 def test_genuinely_new_line_type_is_drift_named_specifically(caplog, archive_home):
     # An unknown_line whose line_type the parser has never declared IS the
     # drift signal — and the finding names the new line kind, not the wrapper.

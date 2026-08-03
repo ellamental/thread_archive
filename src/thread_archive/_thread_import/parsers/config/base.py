@@ -250,6 +250,10 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
         "progress",  # hook/tool progress telemetry (e.g. PostToolUse hook callbacks)
         "attachment",  # non-queued_command attachment sub-kinds, preserved as hidden system records
         "model_change",  # a manual /model switch, preserved so the archive can show it
+        # An automatic model switch: a turn the active model's safeguards flagged,
+        # re-run on another model. Preserved raw (it carries the from/to models);
+        # the read path renders it as a model-switch marker.
+        "fallback",
         "pr_link",  # the pull request a session is working on (folded into event_git_refs)
         "unknown_line",  # verbatim preservation of an unmodeled line kind (see below)
     },
@@ -335,11 +339,16 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
             "entrypoint",
             "error",
             "gitBranch",
+            "isAbortedMidStream",  # the turn's stream was cut off mid-generation
             "isApiErrorMessage",
             "isSidechain",
             "message",
             "parentUuid",
             "requestId",
+            # A snake_case duplicate of ``sessionId``, same value on the same
+            # line: carried, not stored, since the session id is already the
+            # thread's provider_conversation_id.
+            "session_id",
             "sessionId",
             "slug",
             "supersedesUuids",

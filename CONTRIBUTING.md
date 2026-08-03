@@ -24,6 +24,33 @@ What does help:
 - **Fork it.** MIT license, no CLA, genuinely encouraged — if you want to take
   it somewhere we wouldn't, that's the right vehicle, not a patch queue.
 
+## A development checkout
+
+PyPI is the only supported install
+([docs/public/scope.md](docs/public/scope.md)) — a checkout is a development
+environment, for a fork or for working on the repo, and nothing here is offered
+as a way to run archive day to day:
+
+```bash
+git clone https://github.com/ellamental/thread_archive.git thread-archive && cd thread-archive
+python3 -m venv .venv
+.venv/bin/pip install --upgrade pip        # `--group` is PEP 735; needs pip >= 25.1
+.venv/bin/pip install -e . --group dev     # add -e '.[embeddings]' for local semantic search
+.venv/bin/pytest tests/ -q                 # confirm green (add `-m package` for the wheel/sdist release lane)
+
+# wire the read MCP server into this checkout's .mcp.json (absolute venv path)
+sed "s|ABSOLUTE_REPO_PATH|$(pwd)|g" .mcp.json.example > .mcp.json
+```
+
+Populate it the way an install does — `.venv/bin/thread-archive setup` for the
+wizard, or `.venv/bin/thread-archive watch --once` for a single ingest pass —
+and restart the client so it loads the server. The checkout's absolute path is
+baked into its `.mcp.json` wiring and any service units installed from it, so
+relocating it means re-running that wiring plus `thread-archive service
+restart`, not a plain `mv`. `thread-archive self-update` is for installs and
+says so when run from a checkout: its code is the checkout, and moving that is
+git's job.
+
 ## Security Reporting
 
 Security reports go through [SECURITY.md](SECURITY.md), not the issue

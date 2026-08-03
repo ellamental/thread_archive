@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.0.15 — 2026-08-03
+
+- Substring search rides a trigram index: infix queries 30–60x faster, exact counts past the examine cap, and a
+  bounded per-query probe declining it where the scan wins; `thread-archive index substring` heals older archives.
+- Claude Science imports on the app's own clock (`_ts`) and validates under its own source; unmodeled message keys
+  are preserved and ledgered. Claude Code's ledger declares `fallback` blocks and two live assistant-line fields.
+- The release machinery gets a weekly TestPyPI drill (publish path, rc opt-in, `self-update` end to end), Publish
+  `verify` runs a real ingest lifecycle on the published wheel, and PyPI becomes the only supported install path.
+- Release seams close: `release_finish.sh` blocks until Publish `verify` is green, Bench pins actions by SHA, the
+  install lane pre-pulls its base image, and dataset pins re-read files younger than a two-second settle window.
+- The restore drill goes weekly, age-gated — nightly again while red; Bench CI keeps a per-run perf-trend artifact.
+- Dead surface shed across import parsers, watcher telemetry, and service management (one API by agent name).
+
 ## 0.0.14 — 2026-08-01
 
 - CI proves both platforms: macOS lanes for the pytest bar and the wheel install, beside the Linux matrix now

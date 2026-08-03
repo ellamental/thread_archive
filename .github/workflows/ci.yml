@@ -23,10 +23,14 @@ name: CI
 
 # dev is where development lands; release/* branches stabilize a cut while dev
 # keeps moving; main only moves when a release PR merges (docs/releasing.md),
-# so the README badge pins main.
+# so the README badge pins main. release/* branches carry no push trigger:
+# release_cut.sh opens the release PR at cut time, so every push to one runs
+# CI as a pull_request event already — a branch-push run would be a duplicate
+# ~25 runner-minutes whose concurrency key (the branch ref, not the PR merge
+# ref) can never cancel against the PR run's.
 on:
   push:
-    branches: [main, dev, "release/**"]
+    branches: [main, dev]
   pull_request:
 
 # Every job only reads the repo; nothing here needs a write-capable token.
@@ -64,7 +68,7 @@ jobs:
           - os: macos-latest
             python-version: "3.14"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -109,7 +113,7 @@ jobs:
   python-serial:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -134,7 +138,7 @@ jobs:
   systemd:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -173,9 +177,9 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -212,9 +216,9 @@ jobs:
       run:
         working-directory: devweb/frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -248,7 +252,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -278,7 +282,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: From-nothing install proof
         run: tests/install/run_install_test.sh

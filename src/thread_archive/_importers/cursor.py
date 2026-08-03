@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -35,7 +34,7 @@ from thread_archive._thread_import.timestamps import parse_timestamp_iso
 from .._store import ImportState, get_session
 from . import _probe
 from ._events import assemble_events
-from ._result import DbScanResult
+from ._result import DbScanResult, DbUnitImportResult
 from ._state import (
     create_thread,
     get_import_state,
@@ -55,13 +54,6 @@ def _prefix_range(prefix: str) -> tuple[str, str]:
     string the prefix can begin — so ``lo <= key < hi`` selects exactly the prefix's
     keys and SQLite serves it from the key index instead of scanning the table."""
     return prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1)
-
-
-@dataclass
-class CursorImportResult:
-    events_created: int
-    thread_id: str
-    is_new_thread: bool
 
 
 def import_cursor_db(db_path) -> DbScanResult:
@@ -220,7 +212,7 @@ def _import_cursor_error_stub(
 
 def import_cursor_from_payload(
     *, composer_id: str, composer_data: dict[str, Any], bubbles: dict[str, Any], session=None
-) -> CursorImportResult:
+) -> DbUnitImportResult:
     """Import one Cursor composer (atomic per-composer transaction when no session)."""
     _probe.count("items")
     if session is not None:
@@ -232,23 +224,23 @@ def import_cursor_from_payload(
         return result
 
 
-def _run_cursor(session, composer_id, composer_data, bubbles) -> CursorImportResult:
+def _run_cursor(session, composer_id, composer_data, bubbles) -> DbUnitImportResult:
     source_id = composer_id
     import_state = get_import_state(session, "cursor", source_id)
 
     if _cursor_composer_unchanged(import_state, composer_data):
-        return CursorImportResult(0, (import_state.thread_id or "") if import_state else "", False)
+        return DbUnitImportResult(0, (import_state.thread_id or "") if import_state else "", False)
 
     messages = _build_cursor_messages(composer_id, composer_data, bubbles)
     if not messages:
-        return CursorImportResult(0, "", False)
+        return DbUnitImportResult(0, "", False)
 
     thread_id, is_new_thread = _cursor_resolve_thread(session, import_state, source_id, composer_data)
 
     start_index = import_state.last_line_count if import_state else 0
     new_messages = messages[start_index:]
     if not new_messages:
-        return CursorImportResult(0, thread_id, is_new_thread)
+        return DbUnitImportResult(0, thread_id, is_new_thread)
 
     normalized = [_cursor_to_normalized(m) for m in new_messages]
     # cross_pass_dedup: a full re-scan of an already-imported composer (import_state
@@ -269,7 +261,7 @@ def _run_cursor(session, composer_id, composer_data, bubbles) -> CursorImportRes
         last_file_size=0,
         last_message_uuid=messages[-1].get("id") if messages else None,
     )
-    return CursorImportResult(events_created, thread_id, is_new_thread)
+    return DbUnitImportResult(events_created, thread_id, is_new_thread)
 
 
 def _cursor_composer_unchanged(import_state: Optional[ImportState], composer_data: dict[str, Any]) -> bool:

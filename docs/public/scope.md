@@ -24,12 +24,22 @@ on a release:
   here.
 - **More than one user.** No accounts, no authentication, no per-user scoping.
   Everything that serves the archive binds loopback and assumes whoever reaches
-  it owns all of it — the shared MCP server, and the web viewer where a clone
-  runs one.
+  it owns all of it — the shared MCP server, and the web viewer where a
+  checkout runs one.
 - **Live capture of web chats.** claude.ai, ChatGPT, and xAI arrive from account
   exports you download by hand — drop the ZIP into `<home>/dumps/`, or run
-  `thread-archive source import-account` (from a clone, the viewer's `/upload`
+  `thread-archive source import-account` (in a checkout, the viewer's `/upload`
   page is the same drop folder with a browser in front of it). The self-feeding
   path is the local agent harnesses.
 - **Driving a conversation.** The archive preserves and retrieves. It never
   writes back to a harness store and never sends a message.
+- **Any install but PyPI.** `pip install thread-archive` — or `uv tool` /
+  `pipx`, which resolve the same wheel from the same index — is the install.
+  Nothing else is offered: no `pip install git+…`, no distro package, no
+  Homebrew tap. A git checkout is a development environment, not a supported
+  install shape: `self-update` refuses to move one, the update model in
+  [SECURITY.md](https://github.com/ellamental/thread_archive/blob/main/SECURITY.md)
+  covers PyPI's trust anchor and nothing about a git remote, and a bug that
+  reproduces only from a checkout is the maintainer's or the fork's. The
+  dev-only surfaces a checkout carries — the web viewer, the dev panels — are
+  documented as what they are and reach no install.
