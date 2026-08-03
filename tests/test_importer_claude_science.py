@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import timedelta
 
 from sqlalchemy import func, select
 
@@ -217,6 +218,118 @@ def test_incremental_pass_survives_filtered_rows(archive_home, tmp_path) -> None
                 )
             ).scalar_one()
             assert n == 1, f"lost across the filtered-row watermark: {text!r}"
+
+
+def _payloads(event_type: str) -> list[dict]:
+    with get_session() as s:
+        return list(s.execute(
+            select(Event.payload).where(Event.event_type == event_type)
+        ).scalars().all())
+
+
+def _thread_span(source_id: str):
+    """Last event minus first, for the thread behind ``source_id``."""
+    with get_session() as s:
+        thread = s.execute(
+            select(Thread).where(Thread.source_id == source_id)
+        ).scalar_one()
+        times = list(s.execute(
+            select(Event.occurred_at).where(Event.thread_id == thread.id)
+        ).scalars().all())
+    return max(times) - min(times)
+
+
+def test_store_timestamps_place_the_messages(archive_home, tmp_path) -> None:
+    """A message's own ``_ts`` (epoch ms) is what the events are stamped with. The
+    synthetic ladder is the fallback for a frame the app never timestamped, and it
+    is only a *placement*: at a second per message it would fold ten minutes of
+    this conversation into two."""
+    init_db()
+    db = tmp_path / "operon-cli.db"
+    conn = _make_db(db)
+    for fid in ("stamped", "unstamped"):
+        _add_frame(conn, id=fid, agent_name="OPERON", status="completed",
+                   conversation_type="agent", name=fid, model="claude-opus-4-8",
+                   project_id="proj_real", created_at=1_700_000_000_000)
+    _add_messages(conn, "stamped", [
+        {**_user("what does this cell type do?", "u1"), "_ts": 1_700_000_000_000},
+        {**_assistant("ten minutes of work later", "a1"), "_ts": 1_700_000_600_000},
+    ])
+    _add_messages(conn, "unstamped", [_user("same shape, no clock", "u2"),
+                                      _assistant("stamped by the ladder", "a2")])
+    conn.commit()
+    conn.close()
+
+    import_claude_science_db(db, ORG)
+
+    assert _thread_span(f"{ORG}:stamped") == timedelta(minutes=10)
+    assert _thread_span(f"{ORG}:unstamped") == timedelta(seconds=1)
+
+
+def test_message_extras_ride_as_annotations(archive_home, tmp_path) -> None:
+    """The app's per-message extras are carried on the sanctioned annotations
+    channel. ``_has_server_tools`` is not: it is true exactly when the turn has a
+    server-tool block, so keeping it would give one fact two places to drift."""
+    init_db()
+    db = tmp_path / "operon-cli.db"
+    conn = _make_db(db)
+    _add_frame(conn, id="root1", agent_name="OPERON", status="completed",
+               conversation_type="agent", name="Extras", model="claude-opus-4-8",
+               project_id="proj_real", created_at=1_700_000_000_000)
+    _add_messages(conn, "root1", [
+        {**_user("run it in the background", "u1"),
+         "_intent_id": "intent-1",
+         "_async_exec": {"toolu_1": {"exec_id": "e1", "interrupted": True}}},
+        {**_assistant("I can't help with that", "a1"),
+         "_refusal": True, "_has_server_tools": True},
+    ])
+    conn.commit()
+    conn.close()
+
+    import_claude_science_db(db, ORG)
+
+    (sent,) = _payloads("user_message_sent")
+    assert sent["annotations"]["intent_id"] == "intent-1"
+    assert sent["annotations"]["async_exec"]["toolu_1"]["interrupted"] is True
+    (completed,) = _payloads("api_request_completed")
+    assert completed["annotations"]["refusal"] is True
+    assert "has_server_tools" not in completed["annotations"]
+    # Every key here is accounted for, so none of it reads as drift.
+    from thread_archive._importers._validation_ledger import LEDGER_FILE
+    assert not (archive_home / LEDGER_FILE).exists()
+
+
+def test_a_new_store_key_is_preserved_and_reported(archive_home, tmp_path) -> None:
+    """``msg_json`` is not a source *line*, so the parser's field-level ledger can
+    never see the app add a key to it — this importer is the only thing that can.
+    The value rides ``annotations['unmodeled']`` and the ledger names the key, from
+    the same set, so preservation and warning cannot disagree."""
+    from thread_archive._importers._validation_ledger import LEDGER_FILE
+
+    init_db()
+    db = tmp_path / "operon-cli.db"
+    conn = _make_db(db)
+    _add_frame(conn, id="root1", agent_name="OPERON", status="completed",
+               conversation_type="agent", name="New Key", model="claude-opus-4-8",
+               project_id="proj_real", created_at=1_700_000_000_000)
+    _add_messages(conn, "root1", [
+        {**_user("hello", "u1"), "_brand_new": {"v": 2}},
+        _assistant("hi", "a1"),
+    ])
+    conn.commit()
+    conn.close()
+
+    import_claude_science_db(db, ORG)
+
+    (sent,) = _payloads("user_message_sent")
+    assert sent["annotations"]["unmodeled"] == {"_brand_new": {"v": 2}}
+
+    records = [json.loads(ln) for ln in
+               (archive_home / LEDGER_FILE).read_text().splitlines() if ln.strip()]
+    assert [r["provider"] for r in records] == ["claude-science"]
+    assert records[0]["source_id"] == f"{ORG}:root1"
+    assert records[0]["additive"] is True  # preserved, so it gets the grace window
+    assert any("msg_json._brand_new" in f for f in records[0]["findings"])
 
 
 def test_drift_is_filed_under_claude_science(archive_home, tmp_path) -> None:

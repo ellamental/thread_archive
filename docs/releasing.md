@@ -77,6 +77,13 @@ optional hygiene. The standing requirements:
 - A branch ruleset on `dev`: collaborators go through a PR with one
   approval; the repository admin bypasses, which is what lets the operator —
   and the agents pushing as the operator — land work directly.
+- The Trusted Publishing anchors: the `pypi` environment (publish.yml's, on
+  PyPI's publisher tuple) and the `testpypi` environment (drill.yml's, on
+  TestPyPI's — the weekly drill below rides it).
+- The `RULESET_AUDIT_TOKEN` secret: a fine-grained PAT, this repository only,
+  repository Administration **read** — what lets the weekly drill's audit job
+  see bypass actors, which the rulesets API hides from anything below admin.
+  Read-only by construction: a leak shows settings, it cannot change them.
 
 `scripts/audit_release_settings.py` reads all of this over `gh api` and holds
 it against this section. Settings drift is invisible from the repo, and the
@@ -375,6 +382,60 @@ any install. Fix, push, read the checks, `rcN+1` if the publish surface is
 implicated; repeat until the branch is green everywhere. Only then does the
 final ship, once, and `main` goes green because the merge carries a fix
 already proven on the exact machinery that was failing.
+
+## The weekly drill — the machinery exercised between releases
+
+Release machinery is the least-executed code in the repo: it runs when a
+release ships, which is exactly when a quiet breakage hurts most. The weekly
+drill runs the delivery path on throwaway versions so that breakage surfaces
+on a schedule instead of mid-ship — the same property the backup restore
+drill buys for backups. The clock is `.github/workflows/drill.yml`'s own
+weekly cron; `scripts/release_drill.sh` runs the same thing by hand — after
+fixing release machinery, ahead of a release — without waiting for the
+schedule. (A cron fire executes `main`'s copy of the workflow file — GitHub
+runs scheduled workflows from the default branch only — but every job checks
+out `dev` explicitly, so the drill always builds and harnesses dev's tip. A
+drill.yml change therefore reaches the *schedule* at the next release, while
+a dispatch on `dev` runs it immediately.)
+
+Two halves, jobs of the same run:
+
+1. **The settings audit** (`scripts/audit_release_settings.py`) — the §0
+   requirements read live. GitHub-side settings are load-bearing unversioned
+   state, and the audit is the only thing that looks; the weekly fire is what
+   turns "someone thinks to run it" into a clock. Its job authenticates with
+   the `RULESET_AUDIT_TOKEN` secret (§0), because the rulesets API hides
+   bypass actors from anything below admin — a `GITHUB_TOKEN` read shows the
+   rules but not who may skip them, which is half of what §0 protects.
+2. **The TestPyPI drill** — dev's tip built under drill version numbers
+   (`999.run.N`, plain X.Y.Z, unmistakably not a release), an rc and a final
+   published to TestPyPI over the same Trusted Publishing handshake shape the
+   real publish uses, and then the operator surface driven against what the
+   index actually serves: plain resolution lands the final and skips the rc,
+   the rc installs by explicit opt-in, the fresh install runs the real ingest
+   lifecycle (the same `tests/install/e2e_check.py` the Publish `verify` job
+   runs on a real release), `self-update` carries an install from the base
+   drill version to the target, refuses to offer the rc, and rolls back to
+   the base when the post-install smoke fails
+   (`tests/install/self_update_check.py`). Dependencies never resolve against
+   TestPyPI — it is an open index anyone can upload to — so every leg pins
+   `--no-deps` and takes only the artifact under judgement from it.
+
+The whole workflow is gated on the `DRILL_ENABLED` repository variable: until
+it is `true`, every trigger — cron and dispatch alike — skips all jobs, and
+`release_drill.sh` refuses to dispatch rather than report an all-skipped run
+as a pass. That is how the drill ships ahead of its standing requirements
+(the TestPyPI publisher, the audit token) and how it pauses deliberately:
+`gh variable set DRILL_ENABLED -b true` (or `-b false`) is the switch.
+
+The drill mints no refs: no tag (a `v*` push would fire the real publish), no
+branch, no commit — its only residue is throwaway versions on TestPyPI. That
+boundary is also its limit: the tag ruleset + deploy-key push (release.yml)
+and the real PyPI publisher tuple cannot be drilled without shipping, so they
+stay covered by the mandatory per-release rc lane and the audit. A red drill
+means the release machinery is broken *now*, on a quiet week — fix it on
+`dev` and dispatch again; nothing is in flight, nothing is burned that
+matters.
 
 ## Yanking a bad release
 

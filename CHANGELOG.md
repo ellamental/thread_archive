@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- The release machinery gets a weekly drill, so it breaks on a quiet Tuesday instead of mid-ship.
+  `.github/workflows/drill.yml` (weekly cron; `scripts/release_drill.sh` dispatches it by hand) builds
+  dev's tip under throwaway `999.run.N` versions, publishes an rc and a final to TestPyPI over the
+  Trusted Publishing path, and drives the operator surface against what the index serves — rc opt-in
+  semantics, a fresh install running the real ingest lifecycle, and `self-update` exercised end to end
+  (upgrade, the rc-never-offered guardrail, forced rollback) via the new
+  `tests/install/self_update_check.py`. The GitHub-settings audit rides the same run as its own job
+  (via the read-only `RULESET_AUDIT_TOKEN` — bypass actors are invisible below admin) and now also
+  checks the `pypi`/`testpypi` environments exist. The drill mints no tags, never touches `main` or
+  PyPI, and takes only its own artifact from TestPyPI (`--no-deps` everywhere — an open index never
+  serves dependencies). The whole workflow gates on the `DRILL_ENABLED` repository variable (off until
+  the TestPyPI publisher and audit token exist), so it ships armed but silent.
+
 - Claude Code's ledgers catch up with the format, and Claude Science stops being blamed for it.
   Three shapes the live store carries went undeclared: the `fallback` block a safeguard-flagged turn
   leaves when it is re-run on another model (the read path has always rendered it as a model switch —
@@ -13,6 +26,19 @@
   wrong source. It now validates under its own source against its own `ProviderConfig`, where those two
   block types are declared. Claude Code's own ledger stays blind to them, so it still surfaces the day
   Claude Code starts emitting them. Both live stores re-validate with no findings.
+
+- Claude Science messages import on the app's own clock, and the store's record can no longer grow
+  a key in silence. `frame_messages` rows carry `_ts` (epoch ms) on newer app versions; the importer
+  had never read it, so every message landed on the synthetic one-second ladder built for frames that
+  have no timestamps at all — one 127-message session, 52 minutes of work, imported as 2 minutes.
+  `_ts` now wins where it exists and the ladder stays as the fallback. `_refusal`, `_intent_id` and
+  `_async_exec` (a background run's exec id and interrupted flag) join the annotations the import
+  carries; `_has_server_tools` is a documented drop, since the turn's own server-tool blocks already
+  say it. The reason a real timestamp sat unread for a month is that `msg_json` is not a source *line*,
+  so the parser's field-level drift ledger structurally cannot see it: every key the importer accounts
+  for is now named in one set, and anything outside it is preserved under the message's
+  `annotations["unmodeled"]` and recorded to the drift ledger — the same bargain the line-based sources
+  get. Events already imported keep the timestamps they were written with; the correction is forward-only.
 
 - The release process closes the seams a post-0.0.14 audit found. `release_finish.sh` no longer
   settles for the tag existing: it finds the tag's Publish run and blocks until the whole workflow —
