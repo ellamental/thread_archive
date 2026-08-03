@@ -73,7 +73,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: dev
 
@@ -104,7 +104,7 @@ jobs:
     steps:
       # Pinned by SHA, like every action in the workflows that hold publish
       # credentials (see publish.yml); Dependabot keeps the pins fresh.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: dev
 
@@ -185,7 +185,7 @@ jobs:
       BASE: ${{ needs.build.outputs.base }}
       RC: ${{ needs.build.outputs.rc }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: dev
 
@@ -264,7 +264,7 @@ jobs:
       BASE: ${{ needs.build.outputs.base }}
       FINAL: ${{ needs.build.outputs.final }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: dev
 
